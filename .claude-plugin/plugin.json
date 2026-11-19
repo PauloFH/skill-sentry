@@ -6,7 +6,7 @@
     "name": "Paulo Roberto Fernandes Holanda"
   },
   "license": "MIT",
-  "repository": "https://github.com/OWNER/skill-sentry",
-  "homepage": "https://github.com/OWNER/skill-sentry",
+  "repository": "https://github.com/PauloFH/skill-sentry",
+  "homepage": "https://github.com/PauloFH/skill-sentry",
   "keywords": ["security", "audit", "scanner", "guard", "skills", "hooks", "mcp"]
 }

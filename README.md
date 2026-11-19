@@ -28,7 +28,7 @@ Mitigations worth doing regardless: pin plugin versions, avoid auto-update for t
 ## Install
 
 ```
-/plugin marketplace add OWNER/skill-sentry
+/plugin marketplace add PauloFH/skill-sentry
 /plugin install skill-sentry@skill-sentry
 ```
 

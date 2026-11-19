@@ -18,8 +18,8 @@ test('manifests parse and carry the expected identity', () => {
   assert.equal(plugin.name, 'skill-sentry');
   assert.equal(plugin.version, '0.1.0');
   assert.equal(plugin.license, 'MIT');
-  assert.equal(plugin.repository, 'https://github.com/OWNER/skill-sentry');
-  assert.equal(plugin.homepage, 'https://github.com/OWNER/skill-sentry');
+  assert.equal(plugin.repository, 'https://github.com/PauloFH/skill-sentry');
+  assert.equal(plugin.homepage, 'https://github.com/PauloFH/skill-sentry');
   assert.ok(plugin.author?.name);
   assert.equal(market.$schema, 'https://anthropic.com/claude-code/marketplace.schema.json');
   assert.equal(market.name, 'skill-sentry');

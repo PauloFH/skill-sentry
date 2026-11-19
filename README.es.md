@@ -28,7 +28,7 @@ Medidas que conviene tomar de todos modos: fijar las versiones de los plugins, e
 ## Instalación
 
 ```
-/plugin marketplace add OWNER/skill-sentry
+/plugin marketplace add PauloFH/skill-sentry
 /plugin install skill-sentry@skill-sentry
 ```
 

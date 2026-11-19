@@ -28,7 +28,7 @@ skill-sentry 是一双额外的眼睛，而不是一面盾牌。在信任它之�
 ## 安装
 
 ```
-/plugin marketplace add OWNER/skill-sentry
+/plugin marketplace add PauloFH/skill-sentry
 /plugin install skill-sentry@skill-sentry
 ```
 
