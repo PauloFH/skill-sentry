@@ -37,6 +37,24 @@ export function isSensitiveLinkTarget(target) {
 }
 
 /**
+ * Link text naming a network (UNC, `//host`) or device-namespace path. Such a link is never
+ * realpath'd or stat'ed: resolving it would open an SMB connection. `\\?\X:\...` is a local path.
+ */
+export function isRemoteLinkText(text) {
+  const t = String(text ?? '');
+  return /^[\\/]{2}/.test(t) && !/^[\\/]{2}\?[\\/][a-z]:/i.test(t);
+}
+
+/** Link text of `p` when it is a symlink/junction to a remote path, else null (no I/O beyond lstat/readlink). */
+function remoteLinkTarget(p) {
+  try {
+    if (!fs.lstatSync(p).isSymbolicLink()) return null;
+    const t = fs.readlinkSync(p);
+    return isRemoteLinkText(t) ? t : null;
+  } catch { return null; }
+}
+
+/**
  * Recursively list files under dir. Symlinks and junctions are followed only when their real path
  * stays inside dir's real path; the others are returned in `outside` ({ path, target }) and never read.
  * Skips node_modules, .git, .venv and __pycache__ (the names seen are returned in `skipped`).
@@ -54,6 +72,11 @@ export function listFiles(dir, limits, { deadline } = {}) {
   let stop = false;
   let dirs = 0;
   const visited = new Set();
+  const rootRemote = remoteLinkTarget(dir);
+  if (rootRemote !== null) {
+    outside.push({ path: dir, target: rootRemote });
+    return { files, truncated, skipped, timedOut, outside };
+  }
   let rootReal;
   try { rootReal = realKey(dir); } catch { return { files, truncated, skipped, timedOut, outside }; }
   const late = () => {
@@ -77,6 +100,8 @@ export function listFiles(dir, limits, { deadline } = {}) {
       let isDir = e.isDirectory();
       let isFile = e.isFile();
       if (e.isSymbolicLink()) {
+        const remote = remoteLinkTarget(full);
+        if (remote !== null) { outside.push({ path: full, target: remote }); continue; }
         let target = null;
         try { target = fs.realpathSync.native(full); } catch { /* broken link: listed, the scanner skips it */ }
         if (target === null) isFile = true;
@@ -245,6 +270,24 @@ export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits, de
       return read(f);
     };
     const relPath = p => path.resolve(root, String(p).replace(/^\$\{CLAUDE_PLUGIN_ROOT\}[\\/]?/, ''));
+    // Manifest-referenced files must stay inside the plugin root: lexically first (no fs call on an
+    // outside or UNC path), then no remote link on the way, then by real path (a link may point out).
+    const readInside = rp => {
+      const rootN = normDir(root);
+      let inside = isInside(normDir(rp), rootN);
+      if (inside) {
+        const rel = path.relative(root, rp).split(/[\\/]/).filter(Boolean);
+        for (let i = 1; inside && i <= rel.length; i++) if (remoteLinkTarget(path.join(root, ...rel.slice(0, i))) !== null) inside = false;
+      }
+      if (inside) {
+        try { inside = isInside(realKey(rp), realDir(root)); } catch { /* missing: read() stays silent */ }
+      }
+      if (!inside) {
+        configFindings.push({ ruleId: 'CONFIG_UNREADABLE', category: 'config', severity: 'info', line: 0, snippet: 'path outside plugin root', file: rp });
+        return null;
+      }
+      return readFileOnce(rp);
+    };
     const hookLabel = `plugin:${name}`;
     const hooksFrom = (v, src) => addHooks(isObj(v) && isObj(v.hooks) ? v.hooks : v, 'plugin', hookLabel, root, src);
     const mcpFrom = (v, src) => addMcp(isObj(v) && isObj(v.mcpServers) ? v.mcpServers : v, hookLabel, 'plugin', root, src);
@@ -265,7 +308,7 @@ export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits, de
       else for (const p of [].concat(typeof h === 'string' || Array.isArray(h) ? h : [])) {
         if (typeof p !== 'string') continue;
         const rp = relPath(p);
-        const v = readFileOnce(rp);
+        const v = readInside(rp);
         if (isObj(v)) hooksFrom(v, rp);
       }
       const m = manifest.mcpServers;
@@ -273,7 +316,7 @@ export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits, de
       else for (const p of [].concat(typeof m === 'string' || Array.isArray(m) ? m : [])) {
         if (typeof p !== 'string') continue;
         const rp = relPath(p);
-        const v = readFileOnce(rp);
+        const v = readInside(rp);
         if (isObj(v)) mcpFrom(v, rp);
       }
     }
@@ -330,16 +373,37 @@ export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits, de
   // --- Standalone skills ---
   const skillRoots = [{ scope: 'user', dir: path.join(claudeHome, 'skills') }];
   if (projectDir && !projectClaudeIsUser) skillRoots.push({ scope: 'project', dir: path.join(projectDir, '.claude', 'skills') });
+  // Entries of a skills root count against the directory cap; past the deadline a skill stays listed
+  // (incomplete) but is not walked.
+  const maxEntries = { ...DEFAULT_LIMITS, ...limits }.maxDirs;
   for (const { scope, dir } of skillRoots) {
     let entries = [];
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { /* absent */ }
+    let seenEntries = 0;
     for (const e of entries) {
       const root = path.join(dir, e.name);
       if (!e.isDirectory() && !e.isSymbolicLink()) continue;
-      if (!fs.existsSync(path.join(root, 'SKILL.md'))) continue;
+      if (++seenEntries > maxEntries) {
+        configFindings.push({
+          ruleId: 'SCAN_TRUNCATED', category: 'config', severity: 'info', line: 0, file: dir,
+          snippet: `skills directory has more than ${maxEntries} entries; the rest were not inspected`,
+        });
+        break;
+      }
+      const late = deadline !== undefined && Date.now() >= deadline;
+      const remote = e.isSymbolicLink() ? remoteLinkTarget(root) : null;
+      if (remote === null && !fs.existsSync(path.join(root, 'SKILL.md'))) continue;
       const comp = { id: `skill:${scope}:${e.name}`, kind: 'skill', name: e.name, scope, root, meta: {} };
-      // skillFiles: false leaves the walk to scanComponent (the guard scans only the attributed component).
-      if (skillFiles) {
+      if (remote !== null) {
+        // Linked to a network path: listed, never read (no SMB connection).
+        comp.files = [];
+        comp.meta.symlinksOutside = [{ path: root, target: remote }];
+      } else if (late && skillFiles) {
+        comp.files = [];
+        comp.meta.filesTruncated = true;
+        comp.meta.incomplete = true;
+      } else if (skillFiles) {
+        // skillFiles: false leaves the walk to scanComponent (the guard scans only the attributed component).
         const r = listFiles(root, limits, { deadline });
         comp.files = r.files;
         if (r.truncated || r.timedOut) comp.meta.filesTruncated = true;

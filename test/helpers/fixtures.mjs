@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { removeTree } from './tmp.mjs';
 
 // Malicious-looking content is assembled at runtime from fragments and written to a tmp dir,
 // so no signature string ever sits in the repository.
@@ -78,5 +79,5 @@ const BUILDERS = {
 export function buildFixture(name) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `ss-${name}-`));
   BUILDERS[name](root);
-  return { root, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
+  return { root, cleanup: () => removeTree(root) };
 }

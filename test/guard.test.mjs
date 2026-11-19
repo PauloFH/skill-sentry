@@ -8,11 +8,12 @@ import { fileURLToPath } from 'node:url';
 import { extractTargets, decide, formatReason, scanSummary, originToComponentId, isUnusualPath } from '../scripts/lib/guardcore.mjs';
 import { findOrigin } from '../scripts/lib/origin.mjs';
 import { discover } from '../scripts/lib/inventory.mjs';
+import { tmpFactory, removeTree } from './helpers/tmp.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const GUARD = path.resolve(HERE, '..', 'scripts', 'guard.mjs');
 const T = name => path.join(HERE, 'fixtures', 'transcripts', name);
-const tmp = p => fs.mkdtempSync(path.join(os.tmpdir(), `ss-guard-${p}-`));
+const tmp = tmpFactory('ss-guard-');
 
 // Signature strings are assembled from fragments (antivirus safety, Ruling E).
 const j = (...p) => p.join('');
@@ -859,7 +860,7 @@ test('guard main: a data dir blocked by a file does not disable deny', async () 
 // ---- Ruling L1: the decision is written before any slow work ----
 
 const cleanup = [];
-after(() => { for (const d of cleanup) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } } });
+after(() => { for (const d of cleanup) removeTree(d); });
 
 let bigHome = null;
 /** fakeHome whose user skill `mine` holds 20,200 directories; built once. */

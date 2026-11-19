@@ -8,10 +8,9 @@ import { dataDir } from '../scripts/lib/datadir.mjs';
 import { scanComponent } from '../scripts/lib/scanner.mjs';
 import { discover } from '../scripts/lib/inventory.mjs';
 import { fileMap } from '../scripts/lib/baseline.mjs';
+import { tmpFactory } from './helpers/tmp.mjs';
 
-const tmps = [];
-after(() => tmps.forEach(d => fs.rmSync(d, { recursive: true, force: true })));
-const tmp = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'ss-bl-')); tmps.push(d); return d; };
+const tmp = tmpFactory('ss-bl-');
 const res = (id, files = {}, config) => ({
   component: { id, kind: 'plugin', name: id, ...(config !== undefined ? { config } : {}) },
   files: Object.entries(files).map(([p, sha256]) => ({ path: p, sha256, kind: 'code', size: 1 })),

@@ -4,10 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { loadAllowlist, addAllowEntry, isFindingAllowed, isCommandAllowed, allowlistLoadError } from '../scripts/lib/allowlist.mjs';
+import { tmpFactory } from './helpers/tmp.mjs';
 
-const tmps = [];
-after(() => tmps.forEach(d => fs.rmSync(d, { recursive: true, force: true })));
-const tmp = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'ss-al-')); tmps.push(d); return d; };
+const tmp = tmpFactory('ss-al-');
 const key = { componentId: 'plugin:p', ruleId: 'R1', file: 'a.js', sha256: 'aaa' };
 
 test('missing allowlist is empty', () => {

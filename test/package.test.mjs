@@ -5,6 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { tmpFactory } from './helpers/tmp.mjs';
+
+const tmpDir = tmpFactory('ss-');
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SCAN = path.join(ROOT, 'scripts', 'scan.mjs');
@@ -74,8 +77,8 @@ test('skills have name/description frontmatter and no allowed-tools or shell inj
 });
 
 test('self-scan: shipped skills, hooks and manifests pass the plugin\'s own rules', () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ss-self-'));
-  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ss-selfdata-'));
+  const tmp = tmpDir('self');
+  const data = tmpDir('selfdata');
   for (const d of ['skills', 'hooks', '.claude-plugin']) fs.cpSync(path.join(ROOT, d), path.join(tmp, d), { recursive: true });
   const r = spawnSync(process.execPath, [SCAN, '--path', tmp, '--json'], {
     encoding: 'utf8', env: { ...process.env, SKILL_SENTRY_DATA_DIR: data },

@@ -1,12 +1,13 @@
-import { test, after } from 'node:test';
+import { test, after, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { discover, listFiles } from '../scripts/lib/inventory.mjs';
+import { discover, listFiles, isRemoteLinkText } from '../scripts/lib/inventory.mjs';
 import { scanComponent } from '../scripts/lib/scanner.mjs';
 import { readJsonSafe } from '../scripts/lib/jsonsafe.mjs';
+import { tmpFactory } from './helpers/tmp.mjs';
 
 const FIX = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
 const HOME = path.join(FIX, 'home');
@@ -14,7 +15,7 @@ const H = path.join(HOME, '.claude');
 const P = path.join(FIX, 'project');
 
 const run = (o = {}) => discover({ claudeHome: H, homeDir: HOME, projectDir: P, selfRoot: null, ...o });
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ss-inv-'));
+const tmp = tmpFactory('ss-inv-');
 const write = (f, s) => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, s); };
 
 test('discovers all component kinds from fixtures', () => {
@@ -460,4 +461,106 @@ test('a marketplace name declared with a different source in another file stays 
   assert.deepEqual(by['marketplace:m1'].meta.sources, [known, path.join(ch, 'settings.json')]);
   assert.equal(by['marketplace:m1#2'].config.source.repo, 'evil/m1');
   assert.deepEqual(by['marketplace:m1#2'].meta.sources, [path.join(proj, '.claude', 'settings.json')]);
+});
+
+// ---- Round 2 hardening ----
+
+test('readJsonSafe: only regular files up to 5 MB are read', () => {
+  const d = tmp();
+  const big = path.join(d, 'big.json');
+  fs.writeFileSync(big, `${' '.repeat(5 * 1024 * 1024)}{}`);
+  const r = readJsonSafe(big);
+  assert.equal(r.ok, false);
+  assert.match(r.error, /too large/);
+  const dirR = readJsonSafe(d);
+  assert.equal(dirR.ok, false);
+  assert.match(dirR.error, /not a regular file/);
+  const dev = process.platform === 'win32' ? '\\\\.\\NUL' : '/dev/null';
+  const devR = readJsonSafe(dev);
+  assert.equal(devR.ok, false);
+  assert.match(devR.error, /not a regular file/);
+  assert.deepEqual(readJsonSafe(path.join(d, 'nope.json')), { ok: false, error: 'missing' });
+});
+
+test('manifest hooks/mcpServers paths outside the plugin root are not read (CONFIG_UNREADABLE info)', t => {
+  const home = tmp();
+  const root = path.join(home, 'p');
+  const outside = path.join(home, 'outside');
+  write(path.join(home, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'p@m': [{ installPath: root }] } }));
+  write(path.join(outside, 'hooks.json'), JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'outside-hook' }] }] } }));
+  write(path.join(outside, 'mcp.json'), JSON.stringify({ mcpServers: { far: { command: 'outside-mcp' } } }));
+  write(path.join(root, 'in', 'hooks.json'), JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'inside-hook' }] }] } }));
+  let linked = true;
+  try { fs.symlinkSync(path.join(outside, 'mcp.json'), path.join(root, 'in', 'linked-mcp.json'), 'file'); }
+  catch (e) { if (e.code === 'EPERM' || e.code === 'EACCES') linked = false; else throw e; }
+  write(path.join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({
+    hooks: ['../outside/hooks.json', '${CLAUDE_PLUGIN_ROOT}/../outside/hooks.json', path.join(outside, 'hooks.json'), './in/hooks.json'],
+    mcpServers: linked ? ['../outside/mcp.json', './in/linked-mcp.json'] : ['../outside/mcp.json'],
+  }));
+  const { components, configFindings } = discover({ claudeHome: home, homeDir: home, projectDir: null, selfRoot: null });
+  const cmds = components.map(c => c.config?.command).filter(Boolean);
+  assert.deepEqual(cmds, ['inside-hook']);
+  const outsideFindings = configFindings.filter(f => f.ruleId === 'CONFIG_UNREADABLE' && /outside plugin root/.test(f.snippet));
+  assert.equal(outsideFindings.length, linked ? 5 : 4);
+  assert.ok(outsideFindings.every(f => f.severity === 'info'));
+  if (!linked) t.diagnostic('file symlinks not permitted: link case not exercised');
+});
+
+test('skills-root entries count against the cap; the rest is reported, not walked', () => {
+  const { h, d } = mkHome();
+  for (let i = 0; i < 6; i++) write(path.join(h, 'skills', `s${i}`, 'SKILL.md'), 'x');
+  const { components, configFindings } = discover({ ...d(), limits: { maxDirs: 3 } });
+  assert.equal(components.filter(c => c.kind === 'skill').length, 3);
+  const f = configFindings.find(x => x.ruleId === 'SCAN_TRUNCATED');
+  assert.ok(f, 'truncation reported');
+  assert.equal(f.file, path.join(h, 'skills'));
+});
+
+test('isRemoteLinkText: UNC and // link targets are remote; local and \\\\?\\X: forms are not', () => {
+  for (const t of ['\\\\host\\share\\x', '//host/share/x', '\\\\?\\UNC\\host\\share', '\\\\.\\pipe\\x']) assert.equal(isRemoteLinkText(t), true, t);
+  for (const t of ['C:\\Users\\x', '/home/x', '..\\sibling', 'rel/dir', '\\\\?\\C:\\x']) assert.equal(isRemoteLinkText(t), false, t);
+});
+
+test('listFiles never realpaths or stats a link whose target is a UNC path (no SMB connection)', t => {
+  const { h, d } = mkHome();
+  const skill = path.join(h, 'skills', 's');
+  write(path.join(skill, 'SKILL.md'), 'x');
+  const unc = '\\\\127.0.0.1\\ss-no-such-share\\x';
+  const inner = path.join(skill, 'remote');
+  const whole = path.join(h, 'skills', 'r');
+  try {
+    fs.symlinkSync(unc, inner, 'dir');
+    fs.symlinkSync(unc, whole, 'dir');
+  } catch (e) { if (['EPERM', 'EACCES', 'ENOSYS'].includes(e.code)) return t.skip('symlinks not permitted'); throw e; }
+  const touched = [];
+  const hit = p => [inner, whole].some(l => String(p).toLowerCase().startsWith(l.toLowerCase()));
+  const realNative = fs.realpathSync.native;
+  const guard = (obj, name) => {
+    const orig = obj[name];
+    mock.method(obj, name, function (p, ...rest) {
+      if (hit(p)) { touched.push(`${name} ${p}`); throw Object.assign(new Error('blocked by test'), { code: 'ENOENT' }); }
+      return orig.call(this, p, ...rest);
+    });
+  };
+  guard(fs.realpathSync, 'native');
+  guard(fs, 'statSync');
+  guard(fs, 'existsSync');
+  try {
+    const r = listFiles(skill);
+    assert.deepEqual(r.outside.map(o => o.path), [inner]);
+    assert.equal(r.outside[0].target, unc);
+    const rootLink = listFiles(whole);
+    assert.deepEqual(rootLink.files, []);
+    assert.deepEqual(rootLink.outside.map(o => o.path), [whole]);
+    const comps = discover(d()).components;
+    const rc = comps.find(c => c.id === 'skill:user:r');
+    assert.ok(rc, 'a skill linked to a network path stays listed');
+    assert.deepEqual(rc.files, []);
+    assert.deepEqual(rc.meta.symlinksOutside.map(o => o.path), [whole]);
+    assert.ok(scanComponent(rc).findings.some(f => f.ruleId === 'SCAN_SYMLINK_OUTSIDE'));
+  } finally {
+    mock.restoreAll();
+    assert.equal(fs.realpathSync.native, realNative);
+  }
+  assert.deepEqual(touched, []);
 });

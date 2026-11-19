@@ -6,12 +6,13 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { checkHardening } from '../scripts/harden.mjs';
+import { tmpFactory } from './helpers/tmp.mjs';
 
 const HARDEN = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'harden.mjs');
 const IDS = ['ask-curl', 'ask-wget', 'deny-ssh-read', 'deny-aws-read', 'ask-env-read', 'disable-skill-shell', 'third-party-autoupdate', 'managed-settings'];
 const APPLICABLE = IDS.slice(0, 6);
 
-const tmpHome = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ss-harden-'));
+const tmpHome = tmpFactory('ss-harden-');
 const run = (home, args) => spawnSync(process.execPath, [HARDEN, ...args], {
   encoding: 'utf8', env: { ...process.env, SKILL_SENTRY_CLAUDE_HOME: home },
 });
