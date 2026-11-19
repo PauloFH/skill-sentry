@@ -185,10 +185,10 @@ export const RULES = [
 
   // ---- PROMPT INJECTION (English + Portuguese) ----
   // Gaps never cross a sentence or clause break (`.`, `;`, `:`, `!`, `?`): "Do not retry; tell the user" is two clauses.
-  // `the` is not a qualifier on its own ("Override the parent's direction"); "ignore the instructions above" is matched explicitly.
+  // Singular "direction" is not a target noun ("Override the parent's direction inside a subgraph"); "lint rules" is not either.
   // These four are high in Markdown (the instruction surface) and medium in code/config (`kindSeverity`).
   r('INJECT_IGNORE_INSTRUCTIONS_EN', 'injection', 'high',
-    /\b(?:ignore|disregard|forget|override)\b[^\n.;:!?]{0,30}\b(?:previous|prior|above|earlier|preceding|all|any|your|system)\b[^\n.;:!?]{0,30}\b(?<!\b(?:lint|linting|linter|eslint|tslint|style|formatting|prettier)\s)(?:instructions?|prompts?|rules?|directions|guidelines?)\b|\b(?:ignore|disregard|forget|override)\s+(?:the|these|those)\s+(?:instructions?|prompts?|rules?|directions|guidelines?)\s+(?:above|before|given|you (?:were|have been) given)\b/i,
+    /\b(?:ignore|disregard|forget|override)\b[^\n.;:!?]{0,30}\b(?:previous|prior|above|earlier|preceding|all|any|your|the|these|those|system)\b[^\n.;:!?]{0,30}\b(?<!\b(?:lint|linting|linter|eslint|tslint)\s)(?:instructions?|prompts?|rules?|directions|guidelines?)\b/i,
     ['markdown', 'config', 'code'], 'Tells the model to ignore its instructions'),
   r('INJECT_IGNORE_INSTRUCTIONS_PT', 'injection', 'high',
     /\b(?:ignor[ea]r?|desconsidere|desconsiderar|esque[çc]a|esquecer|sobrescreva)\b[^\n.;:!?]{0,40}\b(?:instru[çc][õo]es|regras|diretrizes|orienta[çc][õo]es|prompts?)\b/i,
@@ -211,9 +211,12 @@ export const RULES = [
     /\byou are now\b[^\n.]{0,40}\b(?:unrestricted|jailbroken|dan|developer mode|root|admin)\b|\bnew instructions?\s*:|\bnovas instru[çc][õo]es\s*:|\bvoc[êe] agora [ée] (?:um|uma) [^\n.]{0,20}(?:sem restri[çc][õo]es)/i,
     PROSE, 'Attempts to redefine the model role'),
   r('INJECT_SKIP_CONFIRMATION', 'injection', 'medium',
-    // An action verb (not negated: "never push without permission") followed by "without asking/confirmation".
-    // Descriptive prose ("answers without asking which...", "without their consent") does not match.
-    /(?<!\b(?:never|not|n't|no|nunca|n[ãa]o)\s+(?:\w+\s+){0,2})\b(?:run|execute|delete|remove|push|install|commit|send|upload|proceed|continue|deploy|overwrite|modify|edit|write|apply|act|do|execut[ae]r?|rode|rodar|apague|apagar|envie|enviar|instale|instalar|fa[çc]a|fazer|prossiga|continue)\b[^\n.;:!?]{0,40}?\b(?:without|sem)\s+(?:(?:first\s+|ever\s+)?(?:asking|prompting|checking with|confirming|consulting)\b(?!\s*["'“‘]|\s+(?:which|what|whether|why|how|(?:any\s+)?(?:follow-?up|clarifying|further)\b|(?:any\s+)?questions?)\b)|(?:\w+\s+){0,2}(?:confirmation|permission|approval|consent)\b|(?:\w+\s+)?(?:confirma[çc][ãa]o|permiss[ãa]o|perguntar|pedir|consultar|aprova[çc][ãa]o)\b)/i, PROSE,
+    // An action verb (not directly negated: "never push without permission") followed by "without asking/confirmation",
+    // or a clause opening with "Without asking,". Descriptive prose ("answers without asking which...",
+    // "without their consent") does not match. "use it without asking" (superpowers using-git-worktrees: acting on
+    // a preference the user already declared) is consent, not bypass; "use the Bash tool without asking" matches.
+    // A `.` or `:` followed by a non-space (`~/.ssh/id_rsa`, `https:`) does not end the clause.
+    /(?:^|[.;:!?]\s+)(?:without|sem)\s+(?:asking|confirma(?:tion|[çc][ãa]o)|permission|permiss[ãa]o|perguntar|pedir)\b[^\n.;:!?]{0,10},|(?<!\b(?:never|not|n't|no|nunca|n[ãa]o)\s+(?:\w+\s+)?)\b(?:run|execute|delete|remove|rm|push|install|commit|send|upload|post|proceed|continue|deploy|overwrite|modify|edit|write|update|change|apply|act|do|read|fetch|download|call|invoke|create|open|access|copy|move|rename|replace|reset|merge|approve|accept|grant|enable|disable|kill|use(?!\s+(?:it|that|this|them)\s+without\b)|execut[ae]r?|rode|rodar|apague|apagar|envie|enviar|instale|instalar|fa[çc]a|fazer|prossiga|leia|altere|mude)\b(?:[^\n.;:!?]|[.:](?=\S)){0,40}?\b(?:without|sem)\s+(?:(?:first\s+|ever\s+)?(?:asking|prompting|checking with|confirming|consulting)\b(?!\s*["'“‘]|\s+(?:which|what|whether|why|how|(?:any\s+)?(?:follow-?up|clarifying|further)\b|(?:any\s+)?questions?)\b)|(?:\w+\s+){0,2}(?:confirmation|permission|approval|consent)\b|(?:\w+\s+)?(?:confirma[çc][ãa]o|permiss[ãa]o|perguntar|pedir|consultar|aprova[çc][ãa]o)\b)/i, PROSE,
     'Tells the model to act without user confirmation'),
   r('INJECT_EXFIL_INSTRUCTION', 'injection', 'high',
     /\b(?:send|post|upload|exfiltrate|forward|envie|enviar|mande)\b[^\n.]{0,60}\b(?:ssh keys?|credentials?|api keys?|tokens?|secrets?|\.env|chaves? ssh|credenciais|segredos?)\b[^\n.]{0,60}\b(?:to|para)\s+(?:https?:|an? (?:external|remote)|\S+@)/i,
@@ -223,7 +226,7 @@ export const RULES = [
   r('SUPPLY_INSTALL_FROM_URL', 'supply', 'medium',
     // The URL must be an argument of the same install command (no quote, pipe or separator in between),
     // so `npm i -g pkg` followed later on the line by an unrelated URL does not match.
-    /\b(?:npm|pnpm|yarn|bun)\s+(?:i|install|add)\b(?:\s+[^\s"'`|;&<>()]+){0,20}?\s+["']?[^\s"'`|;&<>()]*(?:https?:\/\/|git\+|github:)|\bpip3?\s+install\b(?:\s+[^\s"'`|;&<>()]+){0,20}?\s+["']?(?:[^\s"'`|;&<>()]*(?:https?:\/\/|git\+)|--index-url\b|--extra-index-url\b|-i\s+["']?https?:)/i,
+    /\b(?:npm|pnpm|yarn|bun)\s+(?:i|install|add)\b(?:\s+(?:"[^"\n]*"|'[^'\n]*'|[^\s"'`|;&<>()]+)(?=\s|$)){0,20}?\s+["']?[^\s"'`|;&<>()]*(?:https?:\/\/|git\+|github:)|\bpip3?\s+install\b(?:\s+(?:"[^"\n]*"|'[^'\n]*'|[^\s"'`|;&<>()]+)(?=\s|$)){0,20}?\s+["']?(?:[^\s"'`|;&<>()]*(?:https?:\/\/|git\+)|--index-url\b|--extra-index-url\b|-i\s+["']?https?:)/i,
     ['command', 'code', 'markdown'], 'Installs a package from a URL or custom index'),
   r('SUPPLY_NPX_REMOTE', 'supply', 'medium', /\bnpx\s+(?:-y\s+|--yes\s+)[^\n]{0,300}(?:https?:\/\/|github:|git\+)/i, ALL,
     'npx runs a package from a remote location'),
