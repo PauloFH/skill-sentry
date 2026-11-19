@@ -30,7 +30,7 @@ test('dataDir honours env and creates the directory', () => {
 
 test('first run: firstRun true and everything added', () => {
   const d = diffBaseline(null, [res('a'), res('b')]);
-  assert.deepEqual(d, { firstRun: true, added: ['a', 'b'], removed: [], changed: [] });
+  assert.deepEqual(d, { firstRun: true, added: ['a', 'b'], removed: [], changed: [], incomplete: [] });
   assert.equal(loadBaseline(tmp()), null);
 });
 
@@ -41,8 +41,8 @@ test('save/load round trip leaves no tmp file and diff is empty', () => {
   assert.deepEqual(fs.readdirSync(dir), ['baseline.json']);
   const b = loadBaseline(dir);
   assert.equal(b.version, 1);
-  assert.deepEqual(b.components.a.files, { 'x.js': 'h1' });
-  assert.deepEqual(diffBaseline(b, r), { firstRun: false, added: [], removed: [], changed: [] });
+  assert.deepEqual({ ...b.components.a.files }, { 'x.js': 'h1' });
+  assert.deepEqual(diffBaseline(b, r), { firstRun: false, added: [], removed: [], changed: [], incomplete: [] });
 });
 
 test('modified, added and removed files and components are reported', () => {
@@ -94,4 +94,52 @@ test('corrupt baseline: null (first run), error exposed, file quarantined on sav
   saveBaseline(dir, [res('a', { f: '1' })]);
   assert.equal(baselineLoadError(dir), null);
   assert.ok(fs.readdirSync(dir).some(f => f.startsWith('baseline.json.corrupt-')));
+});
+
+test('incomplete scan: no removals, id listed in incomplete', () => {
+  const dir = tmp();
+  saveBaseline(dir, [res('a', { 'x.js': 'h1', 'y.js': 'h2' })]);
+  const partial = { ...res('a', { 'x.js': 'h1' }), incomplete: true };
+  const d = diffBaseline(loadBaseline(dir), [partial]);
+  assert.deepEqual(d.changed, []);
+  assert.deepEqual(d.incomplete, ['a']);
+  const partial2 = { ...res('a', { 'x.js': 'NEW', 'z.js': 'n' }), incomplete: true };
+  const d2 = diffBaseline(loadBaseline(dir), [partial2]);
+  assert.deepEqual(d2.changed[0].files.sort(), ['x.js', 'z.js']);
+  assert.deepEqual(diffBaseline(loadBaseline(dir), [res('a', { 'x.js': 'h1', 'y.js': 'h2' })]).incomplete, []);
+  assert.deepEqual(diffBaseline(null, [partial]).incomplete, []);
+});
+
+test('saving an incomplete result keeps previously hashed files', () => {
+  const dir = tmp();
+  saveBaseline(dir, [res('a', { 'x.js': 'h1', 'y.js': 'h2' })]);
+  saveBaseline(dir, [{ ...res('a', { 'x.js': 'NEW' }), incomplete: true }]);
+  assert.deepEqual({ ...loadBaseline(dir).components.a.files }, { 'x.js': 'NEW', 'y.js': 'h2' });
+});
+
+test('prototype-named files: modification and deletion are detected', () => {
+  const dir = tmp();
+  // build a result with a real own "__proto__" path
+  const files = [['__proto__', 'p1'], ['constructor', 'c1'], ['toString', 't1']]
+    .map(([p, sha256]) => ({ path: p, sha256, kind: 'code', size: 1 }));
+  const mk = fs => ({ component: { id: 'a' }, files: fs, findings: [], incomplete: false });
+  saveBaseline(dir, [mk(files)]);
+  const b = loadBaseline(dir);
+  assert.equal(Object.hasOwn(b.components.a.files, '__proto__'), true);
+  assert.deepEqual(diffBaseline(b, [mk(files)]).changed, []);
+  const mod = files.map(f => ({ ...f, sha256: f.sha256 + 'X' }));
+  assert.deepEqual(diffBaseline(b, [mk(mod)]).changed[0].files.sort(), ['__proto__', 'constructor', 'toString']);
+  assert.deepEqual(diffBaseline(b, [mk([])]).changed[0].files.sort(), ['__proto__', 'constructor', 'toString']);
+});
+
+test('corrupt component entries: no throw, error reported', () => {
+  const dir = tmp();
+  fs.writeFileSync(path.join(dir, 'baseline.json'), JSON.stringify({
+    version: 1, createdAt: 't',
+    components: { x: null, y: { files: 5 }, z: { files: { 'a.js': 1 } }, ok: { files: { 'a.js': 'h' } } },
+  }));
+  const b = loadBaseline(dir);
+  assert.ok(baselineLoadError(dir));
+  assert.doesNotThrow(() => diffBaseline(b, [res('x', { f: '1' }), res('ok', { 'a.js': 'h' })]));
+  assert.deepEqual(Object.keys(b.components), ['ok']);
 });
