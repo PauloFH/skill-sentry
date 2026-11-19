@@ -6,6 +6,13 @@ import { normalizePath, truncate } from './text.mjs';
 const isObj = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const normDir = p => normalizePath(path.resolve(p)).replace(/\/+$/, '');
 
+/** JSON with object keys sorted at every level (deep-equality key that ignores key order). */
+function canonJson(v) {
+  const sort = x => (Array.isArray(x) ? x.map(sort)
+    : isObj(x) ? Object.fromEntries(Object.keys(x).sort().map(k => [k, sort(x[k])])) : x);
+  return JSON.stringify(sort(v) ?? null);
+}
+
 /** Canonical directory key: realpath when it exists (symlinks/junctions resolved), case-insensitive on win32. */
 function realDir(p) {
   let r = path.resolve(p);
@@ -127,19 +134,24 @@ export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits }) 
     }
   };
 
-  // One component per marketplace name: known_marketplaces.json and every settings file's
-  // extraKnownMarketplaces declare the same marketplace (not a shadowing collision). The first
-  // declaration supplies `config`; `meta.sources` lists every file that declares it.
-  const marketplaces = new Map();
+  // A marketplace declared under the same name AND the same `source` (deep-equal, key order ignored) in
+  // known_marketplaces.json and in settings files is one component; `meta.sources` lists every file.
+  // A different `source` under the same name stays a separate `#n` component (shadowing), so a
+  // divergent repository is never hidden behind the first declaration.
+  const marketplaces = new Map(); // name -> [{ key, comp }]
   const addMarketplace = (name, info, source) => {
-    const prev = marketplaces.get(name);
-    if (prev) {
-      if (!prev.meta.sources.includes(source)) prev.meta.sources.push(source);
+    const config = isObj(info) ? info : {};
+    const key = canonJson(config.source);
+    const list = marketplaces.get(name) ?? [];
+    const same = list.find(x => x.key === key);
+    if (same) {
+      if (!same.comp.meta.sources.includes(source)) same.comp.meta.sources.push(source);
       return;
     }
-    const c = { id: `marketplace:${name}`, kind: 'marketplace', name, scope: 'user', root: null, config: isObj(info) ? info : {}, meta: { sources: [source] } };
-    marketplaces.set(name, c);
-    add(c, source);
+    const comp = { id: `marketplace:${name}`, kind: 'marketplace', name, scope: 'user', root: null, config, meta: { sources: [source] } };
+    list.push({ key, comp });
+    marketplaces.set(name, list);
+    add(comp, source);
   };
 
   // When the project's .claude directory IS the user's (Claude Code started from the home directory),

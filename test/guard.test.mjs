@@ -63,6 +63,13 @@ test('download-execute forms from the guard review are denied', () => {
     assert.equal(d('PowerShell', { command }).decision, 'deny', command);
   }
 });
+test('cp .env.example .env with a target directory is asked with an origin (review r1 #4)', () => {
+  const o = { skill: 'evil:x' };
+  for (const command of ['cp --target-directory=/tmp/q .env.example .env', 'cp -t/tmp/q .env.example .env', 'cp .env /tmp/q/']) {
+    assert.equal(d('Bash', { command }, o).decision, 'ask', command);
+  }
+  assert.equal(d('Bash', { command: 'cp .env.example .env' }, o).decision, 'none');
+});
 test('own .env read without origin is not asked', () => assert.notEqual(d('Read', { file_path: '/p/.env' }).decision, 'ask'));
 test('Write content is never inspected', () => assert.equal(d('Write', { file_path: '/p/rules.mjs', content: `${CURL} x${PIPE_SH} ${MINER}` }).decision, 'none'));
 test('write to settings.json with origin asks', () => assert.equal(d('Edit', { file_path: '~/.claude/settings.json' }, { skill: 'x:y' }).decision, 'ask'));

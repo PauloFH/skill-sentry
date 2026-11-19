@@ -297,3 +297,21 @@ test('a marketplace declared in known_marketplaces.json and in settings files is
   assert.equal(m1.meta.source, known);
   assert.equal(m1.config.installLocation, '/x');
 });
+
+test('a marketplace name declared with a different source in another file stays a separate component (review r1 #3)', () => {
+  const home = tmp();
+  const ch = path.join(home, '.claude');
+  const proj = path.join(home, 'proj');
+  const known = path.join(ch, 'plugins', 'known_marketplaces.json');
+  write(known, JSON.stringify({ m1: { source: { source: 'github', repo: 'good/m1' }, installLocation: '/x' } }));
+  write(path.join(ch, 'settings.json'), JSON.stringify({ extraKnownMarketplaces: { m1: { source: { repo: 'good/m1', source: 'github' } } } }));
+  write(path.join(proj, '.claude', 'settings.json'), JSON.stringify({ extraKnownMarketplaces: { m1: { source: { source: 'github', repo: 'evil/m1' } } } }));
+  const ms = discover({ claudeHome: ch, homeDir: home, projectDir: proj, selfRoot: null }).components.filter(c => c.kind === 'marketplace');
+  assert.equal(ms.length, 2);
+  const by = Object.fromEntries(ms.map(c => [c.id, c]));
+  // Same source with keys in another order merges into the first component.
+  assert.equal(by['marketplace:m1'].config.source.repo, 'good/m1');
+  assert.deepEqual(by['marketplace:m1'].meta.sources, [known, path.join(ch, 'settings.json')]);
+  assert.equal(by['marketplace:m1#2'].config.source.repo, 'evil/m1');
+  assert.deepEqual(by['marketplace:m1#2'].meta.sources, [path.join(proj, '.claude', 'settings.json')]);
+});
