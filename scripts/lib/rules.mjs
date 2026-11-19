@@ -86,7 +86,7 @@ export const RULES = [
   r('SECRET_WALLET_REF', 'secret', 'high',
     /\bwallet\.dat\b|[/\\]\.(?:electrum|monero|bitcoin)\b|[/\\]exodus[/\\]|\bmetamask\b|keystore[/\\]utc--/i, ALL,
     'References cryptocurrency wallet files'),
-  r('SECRET_ENV_FILE_READ', 'secret', 'medium',
+  r('SECRET_ENV_FILE_READ', 'secret', 'high',
     /\b(?:cat|type|cp|scp|base64|tar|zip|get-content|gc)\b[^\n|;&]*(?:^|[\s/\\])\.env(?:\.(?!example|sample|template)[\w-]+)?(?=\s|$|["'|;&])/i,
     ['command'], 'Reads a .env file'),
   r('SECRET_ENV_DUMP_PIPE', 'secret', 'high',
@@ -214,7 +214,7 @@ const pr = (id, category, severity, pattern, description) => r(id, category, sev
 const PATH_RULES = [
   pr('SECRET_PATH_SSH', 'secret', 'high', /\/\.ssh(?:\/(?![^/]*\.pub$)|$)/i, 'SSH key directory'),
   pr('SECRET_PATH_AWS', 'secret', 'high', /\/\.aws\/(?:credentials|sso\/)/i, 'AWS credentials'),
-  pr('SECRET_PATH_ENV', 'secret', 'medium', /(?:^|\/)\.env(?:\.(?!example$|sample$|template$|dist$)[\w-]+)?$/i, 'Environment file'),
+  pr('SECRET_PATH_ENV', 'secret', 'high', /(?:^|\/)\.env(?:\.(?!example$|sample$|template$|dist$)[\w-]+)?$/i, 'Environment file'),
   pr('SECRET_PATH_NETRC', 'secret', 'high', /\/(?:\.netrc|_netrc|\.git-credentials)$/i, 'Stored git/netrc credentials'),
   pr('SECRET_PATH_TOKEN_FILES', 'secret', 'medium',
     /\/(?:\.npmrc|\.pypirc|\.docker\/config\.json|\.kube\/config|\.config\/gh\/hosts\.yml|\.gnupg\/[^/]+)$/i, 'Tool credential files'),

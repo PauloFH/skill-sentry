@@ -24,6 +24,10 @@ test('ssh key path posix and windows', () => {
   assert.ok(matchPath('C:\\Users\\a b\\.ssh\\id_rsa').some(m => m.category === 'secret'));
   assert.ok(matchPath('C:\\Users\\x\\Configurações Locais\\.ssh\\id_ed25519').some(m => m.category === 'secret'));
 });
+test('env file path is high', () => {
+  assert.ok(matchPath('/p/.env').some(m => m.category === 'secret' && m.severity === 'high'));
+  assert.deepEqual(matchPath('/p/.env.example'), []);
+});
 test('claude credentials path', () => assert.ok(matchPath('~/.claude/.credentials.json').some(m => m.category === 'secret')));
 test('persistence paths are high', () => {
   for (const p of ['~/.bashrc', 'C:\\Users\\a\\Documents\\WindowsPowerShell\\Microsoft.PowerShell_profile.ps1', '~/.claude/settings.json', '~/Library/LaunchAgents/x.plist', '~/.config/systemd/user/x.service']) {
