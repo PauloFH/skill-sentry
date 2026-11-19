@@ -10,7 +10,7 @@ const nullMap = () => Object.create(null);
 const has = (o, k) => Object.hasOwn(o, k);
 
 /** Map relPath -> sha256 for one scan result (config hashed as pseudo-file "<config>"). */
-function fileMap(result) {
+export function fileMap(result) {
   const files = nullMap();
   for (const f of result.files ?? []) files[f.path] = f.sha256;
   const cfg = result.component?.config;
