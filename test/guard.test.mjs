@@ -188,6 +188,42 @@ test('relative and non-canonical shell references to skill-sentry ask', () => {
     assert.equal(d('Bash', { command: c }).decision, 'none', c);
   }
 });
+test('skill-sentry segment boundary is any non-name character on both sides', () => {
+  for (const c of [
+    'cd ~/.claude && echo x >skill-sentry/allowlist.json',
+    'cd ~/.claude && echo x 1>skill-sentry/allowlist.json',
+    'cd ~/.claude && echo x >|skill-sentry/allowlist.json',
+    'cd ~/.claude && (echo x)>skill-sentry/allowlist.json',
+    'cd ~/.claude && cp a.json {skill-sentry,x}/allowlist.json',
+    'cd ~/.claude && ls skill-sentry,/x',
+    'cd ~/.claude && ls skill-sentry:x',
+  ]) {
+    const r = d('Bash', { command: c });
+    assert.equal(r.decision, 'ask', c);
+    assert.equal(r.ruleId, 'SELF_PROTECT', c);
+  }
+  for (const c of ['cd skill-sentry-tests && ls', 'git clone https://example.com/a/skill-sentry.git', 'npm i some-skill-sentry-fork']) {
+    assert.equal(d('Bash', { command: c }).decision, 'none', c);
+  }
+});
+test('non-local UNC paths are matched by string only (no network I/O)', () => {
+  const timed = fn => { const t0 = performance.now(); const r = fn(); return { r, ms: performance.now() - t0 }; };
+  let x = timed(() => d('Read', { file_path: '\\\\10.255.255.2\\share\\x' }));
+  assert.equal(x.r.decision, 'none');
+  assert.ok(x.ms < 500, `Read UNC took ${x.ms.toFixed(0)} ms`);
+  x = timed(() => d('Read', { file_path: '\\\\10.255.255.2\\share\\.ssh\\id_rsa' }, { skill: 'evil:x' }));
+  assert.equal(x.r.decision, 'ask');
+  assert.ok(x.ms < 500, `Read UNC secret took ${x.ms.toFixed(0)} ms`);
+  x = timed(() => d('mcp__plugin_evil_fs__read', {
+    a: '\\\\10.255.255.2\\s\\x', b: '\\\\?\\UNC\\10.255.255.3\\s\\y', c: '//10.255.255.4/s/z', p: '~/.ssh/id_rsa',
+  }, { mcpPlugin: 'evil' }));
+  assert.equal(x.r.decision, 'ask');
+  assert.equal(x.r.ruleId, 'SECRET_PATH_SSH');
+  assert.ok(x.ms < 500, `MCP decoys took ${x.ms.toFixed(0)} ms`);
+  x = timed(() => d('Write', { file_path: '\\\\10.255.255.2\\share\\notes.md', content: 'x' }));
+  assert.equal(x.r.decision, 'none');
+  assert.ok(x.ms < 500, `Write UNC took ${x.ms.toFixed(0)} ms`);
+});
 test('decide does not depend on the data dir existing or being a directory', () => {
   const file = path.join(tmp('blk'), 'skill-sentry');
   fs.writeFileSync(file, 'x');

@@ -100,13 +100,40 @@ function plainPath(p) {
   return s;
 }
 
-/** Absolute long form: resolved, admin shares mapped, symlinks and 8.3 names expanded where they exist. */
-function longPath(p, cwd) {
-  return realpathish(path.resolve(cwd || process.cwd(), plainPath(p)));
+const LOCAL_HOST_ONLY = new RegExp(`^${LOCAL_HOST}$`, 'i');
+
+/** Host of a UNC path (`\\host\`, `\\?\UNC\host\`, `//host/`); '' for other device paths; null if not UNC. */
+function uncHost(abs) {
+  const s = String(abs);
+  if (!/^[\\/]{2}/.test(s)) return null;
+  const dev = /^[\\/]{2}[?.][\\/](?:UNC[\\/]([^\\/]*))?/i.exec(s);
+  if (dev) return dev[1] ?? '';
+  return /^[\\/]{2}([^\\/]*)/.exec(s)[1];
 }
 
-function canon(p, cwd) {
-  let out = longPath(p, cwd).replace(/\\/g, '/');
+/**
+ * Whether the filesystem may be touched for `abs`. Never for UNC/device paths on a non-local host
+ * (an unreachable host blocks for ~20 s and would push the guard past its timeout). `io.left` caps
+ * the number of paths that get realpath/stat work in one decision.
+ */
+const MAX_IO_PATHS = 32;
+function mayTouch(abs, io) {
+  const host = uncHost(abs);
+  if (host !== null && !LOCAL_HOST_ONLY.test(host)) return false;
+  if (!io) return true;
+  if (io.left <= 0) return false;
+  io.left--;
+  return true;
+}
+
+/** Absolute long form: resolved, admin shares mapped, symlinks and 8.3 names expanded where allowed. */
+function longPath(p, cwd, io) {
+  const abs = path.resolve(cwd || process.cwd(), plainPath(p));
+  return mayTouch(abs, io) ? realpathish(abs) : abs;
+}
+
+function canon(p, cwd, io) {
+  let out = longPath(p, cwd, io).replace(/\\/g, '/');
   if (out.length > 1 && out.endsWith('/')) out = out.replace(/\/+$/, '');
   return process.platform === 'win32' ? out.toLowerCase() : out;
 }
@@ -121,8 +148,8 @@ const fileId = p => {
 };
 
 /** True if `abs` or one of its existing ancestors is the same file (dev+ino) as a protected root. */
-function underByIdentity(abs, rootIds) {
-  if (!rootIds.size) return false;
+function underByIdentity(abs, rootIds, io) {
+  if (!rootIds.size || !mayTouch(abs, io)) return false;
   let cur = abs;
   for (let n = 0; n < 64; n++) {
     const id = fileId(cur);
@@ -153,7 +180,8 @@ function normCommandText(cmd) {
 }
 
 // Bare `skill-sentry` path segment (relative forms after `cd ~/.claude`), not `some-skill-sentry-fork`.
-const SELF_SEGMENT = /(?:^|[\s'"/=(])skill-sentry(?=$|[\s'"/;&|>)])/i;
+// Boundary on both sides = start/end or any character outside [\w.-] (same notion as `mentions`).
+const SELF_SEGMENT = /(?:^|[^\w.-])skill-sentry(?=$|[^\w.-])/i;
 
 /**
  * De-obfuscated copy of a shell command, used only to ADD matches: drops cmd `^` escapes,
@@ -225,10 +253,10 @@ function commandMatches(target) {
 }
 
 /** Path rule matches on the path as given plus its long form (8.3 names, symlinks, admin shares). */
-function pathMatches(p, cwd, keep) {
+function pathMatches(p, cwd, keep, io) {
   const out = matchPath(p).filter(keep).map(m => ({ ...m, target: p }));
   let long = null;
-  try { long = longPath(p, cwd); } catch { /* unresolvable: raw form only */ }
+  try { long = longPath(p, cwd, io); } catch { /* unresolvable: raw form only */ }
   if (long && long !== p) {
     for (const m of matchPath(long)) {
       if (keep(m) && !out.some(x => x.ruleId === m.ruleId)) out.push({ ...m, snippet: snip(p), target: p });
@@ -248,8 +276,9 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
   const matches = [];
   for (const c of t.commands) matches.push(...commandMatches(c));
   for (const u of t.urls) matches.push(...commandMatches(u));
-  for (const p of t.readPaths) matches.push(...pathMatches(p, cwd, m => m.category === 'secret'));
-  for (const p of t.writePaths) matches.push(...pathMatches(p, cwd, WRITE_PROTECTED));
+  const io = { left: MAX_IO_PATHS }; // shared fs budget for this decision
+  for (const p of t.readPaths) matches.push(...pathMatches(p, cwd, m => m.category === 'secret', io));
+  for (const p of t.writePaths) matches.push(...pathMatches(p, cwd, WRITE_PROTECTED, io));
 
   const critical = matches.filter(m => m.severity === 'critical');
   if (critical.length) {
@@ -276,12 +305,12 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
   if (t.writePaths.length) {
     const protectedRoots = [dataDir, selfRoot].filter(str);
     const roots = protectedRoots.map(r => canon(r));
-    const rootIds = new Set(protectedRoots.map(r => fileId(path.resolve(r))).filter(Boolean));
+    const rootIds = new Set(protectedRoots.map(r => path.resolve(r)).filter(r => mayTouch(r)).map(fileId).filter(Boolean));
     for (const p of t.writePaths) {
-      const c = canon(p, cwd);
+      const c = canon(p, cwd, io);
       let raw = null;
       try { raw = path.resolve(cwd || process.cwd(), plainPath(p)); } catch { /* string compare only */ }
-      if (roots.some(r => isUnder(c, r)) || (raw && underByIdentity(raw, rootIds))) {
+      if (roots.some(r => isUnder(c, r)) || (raw && underByIdentity(raw, rootIds, io))) {
         return { decision: 'ask', ruleId: 'SELF_PROTECT_WRITE', severity: 'high', reason: 'write to skill-sentry data or install directory', snippet: snip(p) };
       }
     }
