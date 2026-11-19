@@ -1,5 +1,7 @@
 **English** | [Português](README.pt.md) | [Español](README.es.md) | [中文](README.zh.md)
 
+🌐 https://paulofh.github.io/skill-sentry/
+
 # skill-sentry
 
 A zero-dependency Claude Code plugin that audits the plugins, skills, hooks and MCP servers installed on your machine for malicious behavior, hardens your Claude Code settings, and guards risky tool calls at runtime.

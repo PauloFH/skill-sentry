@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title data-i18n="meta.title">skill-sentry — audit the plugins, skills and hooks in your Claude Code</title>
+<meta name="description" content="A zero-dependency Claude Code plugin that audits installed plugins, skills, hooks and MCP servers for malicious behavior, guards risky tool calls and hardens your settings." data-i18n-attr="content:meta.desc">
+<meta name="theme-color" content="#000000">
+<meta property="og:type" content="website">
+<meta property="og:title" content="skill-sentry — audit the plugins, skills and hooks in your Claude Code" data-i18n-attr="content:meta.title">
+<meta property="og:description" content="A zero-dependency Claude Code plugin that audits installed plugins, skills, hooks and MCP servers for malicious behavior, guards risky tool calls and hardens your settings." data-i18n-attr="content:meta.desc">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2318181b'/%3E%3Cpath d='M16 5 7 8.5v7c0 5.4 3.8 9.6 9 11 5.2-1.4 9-5.6 9-11v-7z' fill='none' stroke='%2360a5fa' stroke-width='2.4' stroke-linejoin='round'/%3E%3Cpath d='m12 16 3 3 5.5-6' fill='none' stroke='%2393c5fd' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/site.css">
+<script src="assets/site.js"></script>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <linearGradient id="g-blue" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3b82f6"/><stop offset="1" stop-color="#93c5fd"/></linearGradient>
+  </defs>
+  <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4.5 6v6c0 4.6 3.2 8.2 7.5 9.4 4.3-1.2 7.5-4.8 7.5-9.4V6z"/><path d="m9 12 2.2 2.2L15.5 10"/></symbol>
+  <symbol id="i-github" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4.5A1.5 1.5 0 0 1 3 13.5v-9A1.5 1.5 0 0 1 4.5 3h9A1.5 1.5 0 0 1 15 4.5V5"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="11" width="15" height="10" rx="2"/><path d="M8 11V7.5a4 4 0 0 1 8 0V11"/></symbol>
+  <symbol id="i-zap" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></symbol>
+  <symbol id="i-server" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></symbol>
+  <symbol id="i-activity" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 7 5 5-5 5"/><path d="M12 18h7"/></symbol>
+  <symbol id="i-code" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 7-5 5 5 5"/><path d="m16 7 5 5-5 5"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 20 3"/><path d="m16.5 6.5 3 3"/><path d="m14 9 2 2"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01"/><path d="M11 12h1v5h1"/></symbol>
+</svg>
+
+<a class="skip" href="#main" data-i18n="nav.skip">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="#hero">
+      <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="url(#g-blue)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4.5 6v6c0 4.6 3.2 8.2 7.5 9.4 4.3-1.2 7.5-4.8 7.5-9.4V6z"/><path d="m9 12 2.2 2.2L15.5 10"/></svg>
+      <span>skill-sentry</span>
+    </a>
+    <nav class="nav" aria-label="Sections" data-i18n-attr="aria-label:a11y.nav">
+      <a href="#why" data-i18n="nav.why">Why</a>
+      <a href="#what" data-i18n="nav.what">Features</a>
+      <a href="#how" data-i18n="nav.how">How it works</a>
+      <a href="#limits" data-i18n="nav.limits">Limits</a>
+      <a href="#install" data-i18n="nav.install">Install</a>
+    </nav>
+    <div class="header-tools">
+      <a class="icon-link" href="https://github.com/PauloFH/skill-sentry" aria-label="skill-sentry on GitHub" title="skill-sentry on GitHub" data-i18n-attr="aria-label:a11y.github,title:a11y.github">
+        <svg aria-hidden="true"><use href="#i-github"/></svg>
+      </a>
+      <div class="lang" role="group" aria-label="Language" data-i18n-attr="aria-label:a11y.lang" hidden>
+        <button type="button" data-lang="en" aria-pressed="true" lang="en">EN</button>
+        <button type="button" data-lang="pt" aria-pressed="false" lang="pt-BR">PT</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- 1. Hero -->
+<section id="hero" class="hero">
+  <div class="wrap">
+    <div class="hero-copy">
+      <p class="eyebrow"><span class="dot" aria-hidden="true"></span><span data-i18n="hero.eyebrow">Security plugin for Claude Code</span></p>
+      <h1>
+        <span class="line" data-i18n="hero.title">Your plugins run with your privileges.</span>
+        <span class="line line-2"><span data-i18n="hero.title2">Watch them with</span> <span class="badge-tilt"><span class="badge"><span class="grad-text">&lt;skill-sentry/&gt;</span></span></span></span>
+      </h1>
+      <p class="hero-lead" data-i18n="hero.lead">It audits the plugins, skills, hooks and MCP servers you install, guards risky tool calls as they happen, and hardens your Claude Code settings.</p>
+      <p class="hero-tagline" data-i18n="hero.tagline">Local and readable, with zero dependencies. No network calls, no telemetry.</p>
+      <div class="hero-ctas">
+        <a class="btn btn-primary" href="#install"><svg aria-hidden="true"><use href="#i-download"/></svg><span data-i18n="hero.ctaInstall">Install</span></a>
+        <a class="btn btn-secondary" href="https://github.com/PauloFH/skill-sentry"><svg aria-hidden="true"><use href="#i-github"/></svg><span data-i18n="hero.ctaGithub">View on GitHub</span></a>
+      </div>
+      <ul class="facts">
+        <li><svg aria-hidden="true"><use href="#i-check"/></svg><span data-i18n="hero.f1">234 automated tests</span></li>
+        <li><svg aria-hidden="true"><use href="#i-check"/></svg><span data-i18n="hero.f2">Zero npm dependencies</span></li>
+        <li><svg aria-hidden="true"><use href="#i-check"/></svg><span data-i18n="hero.f3">Runs 100% locally</span></li>
+        <li><svg aria-hidden="true"><use href="#i-check"/></svg><span data-i18n="hero.f4">MIT license</span></li>
+      </ul>
+    </div>
+
+    <figure class="hero-card">
+      <div class="window" role="img" aria-label="Example: the guard asks for confirmation before a plugin's command archives the SSH key folder." data-i18n-attr="aria-label:a11y.card">
+        <div class="window-bar" aria-hidden="true"><span class="dots"><i></i><i></i><i></i></span><span>Claude Code</span><span class="tag">PreToolUse · ask</span></div>
+        <div class="window-body" aria-hidden="true">
+          <p><span class="t-blue">●</span> <span class="t-bold">Bash</span>(tar czf /tmp/k.tgz ~/.ssh)</p>
+          <div class="guard-msg">
+            <span class="t-amber">skill-sentry:</span> needs confirmation by rule <span class="t-bold">SECRET_SSH_DIR_READ</span> (high): "tar czf /tmp/k.tgz ~/.ssh"; likely source: <span class="t-blue">plugin:example-plugin@example-market</span>; component verdict: <span class="t-amber">suspicious</span> (score 55), 3 findings. Run /skill-sentry:audit for a full report.
+          </div>
+          <div class="prompt-choices">
+            <span class="t-bold">Do you want to proceed?</span>
+            <span class="t-dim">  1. Yes</span>
+            <span class="sel">❯ 2. No</span>
+          </div>
+        </div>
+      </div>
+      <figcaption data-i18n="hero.caption">Illustrative: what the guard shows when a plugin's command reaches for your SSH keys. The plugin name is made up.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- 2. Why it matters -->
+<section id="why" class="section alt">
+  <div class="wrap">
+    <p class="kicker reveal" data-i18n="why.kicker">Why it matters</p>
+    <h2 class="reveal" data-i18n="why.title">Extensions are code. Some of it is hostile.</h2>
+    <p class="lead reveal" data-i18n="why.lead">A plugin or skill is not just text Claude reads. It is software that runs on your machine, as you, right next to your SSH keys, cloud credentials and API tokens. When researchers examined the public skills ecosystem, this is what they found:</p>
+
+    <div class="stats">
+      <div class="stat reveal rise">
+        <span class="stat-num grad-text" data-i18n="why.s1n">26.1%</span>
+        <p data-i18n="why.s1">of 31,132 public skills had at least one vulnerability.</p>
+      </div>
+      <div class="stat reveal rise" style="--d:.08s">
+        <span class="stat-num grad-text" data-i18n="why.s2n">5.2%</span>
+        <p data-i18n="why.s2">showed high-severity patterns that strongly suggest malicious intent.</p>
+      </div>
+      <div class="stat reveal rise" style="--d:.16s">
+        <span class="stat-num grad-text" data-i18n="why.s3n">2.12×</span>
+        <p data-i18n="why.s3">more likely to be vulnerable when a skill bundles executable scripts.</p>
+      </div>
+    </div>
+    <p class="source" data-i18n="why.source">Source: the “Agent Skills in the Wild” study, January 2026.</p>
+
+    <div class="incident reveal">
+      <span class="when" data-i18n="why.incWhen">August 2026</span>
+      <div>
+        <h3 data-i18n="why.incTitle">An npm worm came with a Claude Code hook.</h3>
+        <p data-i18n="why.incBody">The keyv npm worm shipped a <code>.claude/settings.json</code> with a <code>SessionStart</code> hook: a command that runs whenever a Claude Code session starts in that project. Your agent's configuration is part of the attack surface now.</p>
+      </div>
+    </div>
+
+    <h3 class="surface-title reveal" data-i18n="why.runTitle">What an extension can run on your machine</h3>
+    <ul class="surface">
+      <li class="reveal rise"><span class="ico"><svg aria-hidden="true"><use href="#i-zap"/></svg></span><div><h3 data-i18n="why.r1t">Hooks</h3><p data-i18n="why.r1">Shell commands when a session starts and before or after every tool call.</p></div></li>
+      <li class="reveal rise" style="--d:.06s"><span class="ico"><svg aria-hidden="true"><use href="#i-server"/></svg></span><div><h3 data-i18n="why.r2t">MCP servers</h3><p data-i18n="why.r2">Long-running processes launched under your user account.</p></div></li>
+      <li class="reveal rise" style="--d:.12s"><span class="ico"><svg aria-hidden="true"><use href="#i-activity"/></svg></span><div><h3 data-i18n="why.r3t">Monitors</h3><p data-i18n="why.r3">Background processes a plugin keeps running while you work.</p></div></li>
+      <li class="reveal rise"><span class="ico"><svg aria-hidden="true"><use href="#i-terminal"/></svg></span><div><h3 data-i18n="why.r4t"><code>bin/</code> on your PATH</h3><p data-i18n="why.r4">Executables a plugin adds to the PATH of Claude's shell.</p></div></li>
+      <li class="reveal rise" style="--d:.06s"><span class="ico"><svg aria-hidden="true"><use href="#i-code"/></svg></span><div><h3 data-i18n="why.r5t"><code>!`cmd`</code> lines</h3><p data-i18n="why.r5">Inline shell in a skill, executed as soon as the skill is invoked.</p></div></li>
+      <li class="reveal rise" style="--d:.12s"><span class="ico"><svg aria-hidden="true"><use href="#i-key"/></svg></span><div><h3 data-i18n="why.r6t">Self-granted <code>allowed-tools</code></h3><p data-i18n="why.r6">Frontmatter that lets a skill use tools without asking you first.</p></div></li>
+    </ul>
+    <p class="surface-foot reveal"><svg aria-hidden="true"><use href="#i-search"/></svg><span data-i18n="why.runFoot">skill-sentry inventories and scans every one of these.</span></p>
+  </div>
+</section>
+
+<!-- 3. What it does -->
+<section id="what" class="section">
+  <div class="wrap">
+    <p class="kicker reveal" data-i18n="what.kicker">What it does</p>
+    <h2 class="reveal" data-i18n="what.title">Three layers. One plugin.</h2>
+    <p class="lead reveal" data-i18n="what.lead">Audit what is already installed, guard what happens next, and close the doors you don't need open.</p>
+
+    <div class="cards">
+      <article class="card reveal rise">
+        <div class="card-head"><span class="ico"><svg aria-hidden="true"><use href="#i-search"/></svg></span><h3 data-i18n="what.aT">Audit</h3></div>
+        <code class="cmd">/skill-sentry:audit</code>
+        <p data-i18n="what.aD">A static scanner reads every installed plugin, skill, hook and MCP server config, scores each component and explains what it found.</p>
+        <ul class="checks">
+          <li data-i18n="what.a1">12 finding categories, from credential theft and exfiltration to persistence and prompt injection</li>
+          <li data-i18n="what.a2">Vet a folder <em>before</em> you install it, with <code>--path</code></li>
+          <li data-i18n="what.a3">A baseline shows what changed since your last audit</li>
+          <li data-i18n="what.a4">Claude can add its own opinion, but never lowers the scanner's verdict</li>
+        </ul>
+      </article>
+      <article class="card reveal rise" style="--d:.08s">
+        <div class="card-head"><span class="ico"><svg aria-hidden="true"><use href="#i-eye"/></svg></span><h3 data-i18n="what.gT">Guard</h3></div>
+        <code class="cmd">PreToolUse hook</code>
+        <p data-i18n="what.gD">Inspects tool calls as they happen and blocks, or asks you, before the dangerous ones run.</p>
+        <ul class="checks">
+          <li data-i18n="what.g1">Watches Bash, PowerShell, file tools, WebFetch and MCP calls</li>
+          <li data-i18n="what.g2">Knows when a skill or plugin is the likely origin of a call</li>
+          <li data-i18n="what.g3">Asks before anything writes to its own files</li>
+          <li data-i18n="what.g4">Fails open: if the guard errors, the call proceeds and the error is logged</li>
+        </ul>
+      </article>
+      <article class="card reveal rise" style="--d:.16s">
+        <div class="card-head"><span class="ico"><svg aria-hidden="true"><use href="#i-lock"/></svg></span><h3 data-i18n="what.hT">Harden</h3></div>
+        <code class="cmd">/skill-sentry:harden</code>
+        <p data-i18n="what.hD">Reviews your <code>settings.json</code> and applies only the tightening steps you approve, one at a time.</p>
+        <ul class="checks">
+          <li data-i18n="what.h1">Deny reading <code>~/.ssh</code> and <code>~/.aws</code></li>
+          <li data-i18n="what.h2">Ask before <code>curl</code>, <code>wget</code> and <code>.env</code> reads</li>
+          <li data-i18n="what.h3">Optionally turn off inline shell in skills</li>
+          <li data-i18n="what.h4">Timestamped backup before any change</li>
+        </ul>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- 4. How it works -->
+<section id="how" class="section alt">
+  <div class="wrap">
+    <p class="kicker reveal" data-i18n="how.kicker">How it works</p>
+    <h2 class="reveal" data-i18n="how.title">Every risky call gets a decision.</h2>
+    <p class="lead reveal" data-i18n="how.lead">The guard checks each tool call against the scanner's rules, typically in about 50 ms, and answers with one of three decisions.</p>
+
+    <div class="how-grid">
+      <div class="reveal">
+        <table class="decisions">
+          <thead>
+            <tr><th scope="col" data-i18n="how.thDecision">Decision</th><th scope="col" data-i18n="how.thWhen">When</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row"><span class="pill pill-deny">deny</span><span class="pill-sub" data-i18n="how.denySub">blocked</span></th>
+              <td data-i18n="how.deny">A critical rule matches: download-and-execute pipes, reverse shells, crypto-miner launches, disk or home-directory wipes. Always blocked unless you allowlisted that exact command.</td>
+            </tr>
+            <tr>
+              <th scope="row"><span class="pill pill-ask">ask</span><span class="pill-sub" data-i18n="how.askSub">you confirm</span></th>
+              <td data-i18n="how.ask">A high-risk rule matches and a skill or plugin is the likely origin. Also always for writes to skill-sentry's own files, and for unusual Windows path forms such as device paths, UNC paths, 8.3 short names and NTFS streams.</td>
+            </tr>
+            <tr>
+              <th scope="row"><span class="pill pill-log">log</span><span class="pill-sub" data-i18n="how.logSub">recorded</span></th>
+              <td data-i18n="how.log">A high-risk rule matches, but no skill or plugin is behind it: you typed it yourself. Written to <code>guard.log</code>, without interrupting you.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="fails-open"><svg aria-hidden="true"><use href="#i-info"/></svg><span data-i18n="how.failsOpen">Everything else passes untouched. Data stays in <code>~/.claude/skill-sentry/</code>.</span></p>
+      </div>
+
+      <figure class="window reveal from-right" style="margin:0">
+        <div class="window-bar"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span data-i18n="how.termLabel">Illustrative audit. Component names are made up.</span></div>
+        <div class="window-body">
+          <p><span class="t-blue">&gt;</span> <span class="t-bold">/skill-sentry:audit</span></p>
+          <p><span class="t-blue">●</span> <span class="t-bold">Bash</span>(node ".../scripts/scan.mjs" --json)<br><span class="t-dim">  ⎿ </span>skill-sentry: 24 components (malicious 0, suspicious 1, review 2, ok 21)</p>
+          <p><span class="t-blue">●</span> <span data-i18n="how.t1">24 components scanned: 21 ok, 2 review, 1 suspicious. New since the baseline:</span> <span class="t-blue">plugin:example-plugin@example-market</span>.</p>
+          <div class="t-table">
+            <div class="t-row t-head"><span data-i18n="how.tCol1">Component</span><span data-i18n="how.tCol2">Verdict</span><span data-i18n="how.tCol3">Claude assessment</span></div>
+            <div class="t-row"><span class="t-blue">plugin:example-plugin@example-market</span><span class="t-amber">suspicious</span><span data-i18n="how.tA1">Agree: its SessionStart hook archives ~/.ssh and uploads the file. Remove it.</span></div>
+            <div class="t-row"><span class="t-blue">skill:user:release-notes</span><span class="t-dim">review</span><span data-i18n="how.tA2">Likely false positive: it only reads .env.example.</span></div>
+          </div>
+          <p style="margin-top:12px"><span class="t-blue">●</span> <span data-i18n="how.t2">Want me to accept this state as the new baseline? I'll only do it after your yes.</span></p>
+        </div>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- 5. Tested for real -->
+<section id="tested" class="section">
+  <div class="wrap">
+    <p class="kicker reveal" data-i18n="tested.kicker">Tested for real</p>
+    <h2 class="reveal" data-i18n="tested.title">Run against a real setup, not just fixtures.</h2>
+    <div class="numbers reveal rise">
+      <div class="number"><b>68</b><p data-i18n="tested.s1">components scanned on a real Windows 11 setup</p></div>
+      <div class="number"><b class="grad-text">1</b><p data-i18n="tested.s2">flagged for a closer look; the official Anthropic plugins scored ok or review</p></div>
+      <div class="number"><b>234</b><p data-i18n="tested.s3">automated tests, with zero npm dependencies</p></div>
+      <div class="number"><b>~50<small> ms</small></b><p data-i18n="tested.s4">for a typical guard decision</p></div>
+    </div>
+    <p class="note reveal" data-i18n="tested.note">Numbers from the author's own machine. Your setup will be different, which is exactly why you run it.</p>
+  </div>
+</section>
+
+<!-- 6. Honest limits -->
+<section id="limits" class="section alt">
+  <div class="wrap">
+    <p class="kicker reveal" data-i18n="limits.kicker">Honest limits</p>
+    <h2 class="reveal" data-i18n="limits.title">A second pair of eyes, not a shield.</h2>
+    <p class="lead reveal" data-i18n="limits.lead">A security tool that overpromises is a risk of its own. Read this before you trust skill-sentry.</p>
+    <div class="limits-grid">
+      <ol class="limit-list">
+        <li class="reveal" data-i18n="limits.l1"><strong>Not an antivirus, not a sandbox.</strong> It doesn't isolate anything and can't undo damage.</li>
+        <li class="reveal" data-i18n="limits.l2"><strong>Static analysis only.</strong> The scanner reads files with pattern rules and never runs them. Sufficiently creative code can evade pattern rules.</li>
+        <li class="reveal" data-i18n="limits.l3"><strong>Blind to other plugins' hooks while they run.</strong> It reads their configuration and scripts, not their live behavior.</li>
+        <li class="reveal" data-i18n="limits.l4"><strong>Can't inspect code fetched at runtime,</strong> like a package launched with a floating version tag or a script downloaded and then run. It can only flag that this happens.</li>
+        <li class="reveal" data-i18n="limits.l5"><strong>The guard is best-effort.</strong> Sufficiently obfuscated shell can bypass it. For Write and Edit it checks the target path, never the content.</li>
+        <li class="reveal" data-i18n="limits.l6"><strong>A clean report is not proof of safety.</strong> A bad report is a reason to look closer.</li>
+      </ol>
+      <aside class="mitigate reveal from-right">
+        <h3 data-i18n="limits.mTitle">Worth doing regardless</h3>
+        <ul class="checks">
+          <li data-i18n="limits.m1">Pin plugin versions</li>
+          <li data-i18n="limits.m2">Avoid auto-update for third-party marketplaces</li>
+          <li data-i18n="limits.m3">Read what you install</li>
+          <li data-i18n="limits.m4">Apply the settings from <code>/skill-sentry:harden</code></li>
+        </ul>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<!-- 7. Install -->
+<section id="install" class="cta">
+  <div class="wrap">
+    <div class="reveal">
+      <h2 class="cta-title"><span data-i18n="install.l1">Audit what you've already installed.</span><span class="accent" data-i18n="install.l2">Two commands in Claude Code.</span></h2>
+      <p class="cta-note" data-i18n="install.note">This repository is both the plugin and its own marketplace. Requires Node 18 or newer.</p>
+    </div>
+    <div class="install-box reveal from-right">
+      <div class="cmd-line">
+        <code id="cmd-1">/plugin marketplace add PauloFH/skill-sentry</code>
+        <button type="button" class="copy-btn" data-copy="cmd-1" aria-label="Copy command" title="Copy command" data-i18n-attr="aria-label:install.copyOne,title:install.copyOne"><svg class="i-copy" aria-hidden="true"><use href="#i-copy"/></svg><svg class="i-check" aria-hidden="true"><use href="#i-check"/></svg></button>
+      </div>
+      <div class="cmd-line">
+        <code id="cmd-2">/plugin install skill-sentry@skill-sentry</code>
+        <button type="button" class="copy-btn" data-copy="cmd-2" aria-label="Copy command" title="Copy command" data-i18n-attr="aria-label:install.copyOne,title:install.copyOne"><svg class="i-copy" aria-hidden="true"><use href="#i-copy"/></svg><svg class="i-check" aria-hidden="true"><use href="#i-check"/></svg></button>
+      </div>
+      <div class="install-actions">
+        <button type="button" class="btn btn-solid" data-copy="cmd-1 cmd-2"><svg aria-hidden="true"><use href="#i-copy"/></svg><span data-i18n="install.copyAll">Copy both commands</span></button>
+        <p class="copy-status" id="copy-status" role="status" aria-live="polite"></p>
+      </div>
+      <p class="install-then" data-i18n="install.then">Then run <code>/skill-sentry:audit</code> for your first report.</p>
+    </div>
+    <div hidden>
+      <span id="t-copied" data-i18n="ui.copied">Copied to clipboard</span>
+      <span id="t-selected" data-i18n="ui.selected">Selected. Press Ctrl+C to copy.</span>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- 8. Footer -->
+<footer id="footer" class="site-footer">
+  <div class="wrap">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a class="brand" href="#hero">
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="url(#g-blue)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4.5 6v6c0 4.6 3.2 8.2 7.5 9.4 4.3-1.2 7.5-4.8 7.5-9.4V6z"/><path d="m9 12 2.2 2.2L15.5 10"/></svg>
+          <span>skill-sentry</span>
+        </a>
+        <p data-i18n="footer.tagline">A second look at what you let into Claude Code.</p>
+        <p class="by"><span data-i18n="footer.by">Built by</span> <a href="https://paulofh.github.io/">Paulo Holanda</a></p>
+      </div>
+      <div>
+        <h2 data-i18n="footer.project">Project</h2>
+        <ul>
+          <li><a href="https://github.com/PauloFH/skill-sentry" data-i18n="footer.source">Source code on GitHub</a></li>
+          <li><a href="https://github.com/PauloFH/skill-sentry/issues" data-i18n="footer.issues">Report an issue</a></li>
+          <li><a href="https://github.com/PauloFH/skill-sentry/blob/main/LICENSE" data-i18n="footer.license">MIT license</a></li>
+        </ul>
+      </div>
+      <div>
+        <h2 data-i18n="footer.credits">Credits</h2>
+        <ul>
+          <li><a href="https://www.cybedefend.com/blog/are-claude-code-skills-safe" data-i18n="footer.c1">CybeDefend: “Are Claude Code skills safe?”</a></li>
+          <li data-i18n="footer.c2">The “Agent Skills in the Wild” study (January 2026)</li>
+          <li data-i18n="footer.c3">NVIDIA SkillSpector, a complementary scanner for a second opinion</li>
+        </ul>
+      </div>
+    </div>
+    <div class="privacy">
+      <svg aria-hidden="true"><use href="#i-shield"/></svg>
+      <p data-i18n="footer.privacy">This page loads no third-party resources: no external scripts, fonts, trackers or cookies. It only remembers your language choice, in your own browser.</p>
+    </div>
+    <div class="footer-bottom">
+      <span>© 2026 Paulo Holanda · MIT</span>
+      <a href="#hero" data-i18n="footer.top">Back to top ↑</a>
+    </div>
+  </div>
+</footer>
+
+<script type="application/json" id="i18n">
+{
+  "pt": {
+    "meta.title": "skill-sentry — audite os plugins, skills e hooks do seu Claude Code",
+    "meta.desc": "Um plugin do Claude Code sem dependências que audita plugins, skills, hooks e servidores MCP instalados em busca de comportamento malicioso, vigia chamadas de ferramentas arriscadas e reforça as suas configurações.",
+    "nav.skip": "Pular para o conteúdo",
+    "a11y.nav": "Seções",
+    "nav.why": "Por quê",
+    "nav.what": "Recursos",
+    "nav.how": "Como funciona",
+    "nav.limits": "Limites",
+    "nav.install": "Instalar",
+    "a11y.github": "skill-sentry no GitHub",
+    "a11y.lang": "Idioma",
+
+    "hero.eyebrow": "Plugin de segurança para o Claude Code",
+    "hero.title": "Seus plugins rodam com os seus privilégios.",
+    "hero.title2": "Fique de olho neles com",
+    "hero.lead": "Ele audita os plugins, skills, hooks e servidores MCP que você instala, vigia chamadas de ferramentas arriscadas no momento em que acontecem e reforça as configurações do seu Claude Code.",
+    "hero.tagline": "Local e legível, sem nenhuma dependência. Sem chamadas de rede, sem telemetria.",
+    "hero.ctaInstall": "Instalar",
+    "hero.ctaGithub": "Ver no GitHub",
+    "hero.f1": "234 testes automatizados",
+    "hero.f2": "Zero dependências npm",
+    "hero.f3": "Roda 100% local",
+    "hero.f4": "Licença MIT",
+    "a11y.card": "Exemplo: a guarda pede confirmação antes que um comando de um plugin compacte a pasta de chaves SSH.",
+    "hero.caption": "Ilustrativo: o que a guarda mostra quando um comando de um plugin tenta pegar as suas chaves SSH. O nome do plugin é inventado.",
+
+    "why.kicker": "Por que importa",
+    "why.title": "Extensões são código. Parte dele é hostil.",
+    "why.lead": "Um plugin ou uma skill não é só um texto que o Claude lê. É software que roda na sua máquina, como você, bem ao lado das suas chaves SSH, credenciais de nuvem e tokens de API. Quando pesquisadores analisaram o ecossistema público de skills, encontraram isto:",
+    "why.s1n": "26,1%",
+    "why.s1": "de 31.132 skills públicas tinham pelo menos uma vulnerabilidade.",
+    "why.s2n": "5,2%",
+    "why.s2": "mostravam padrões de alta gravidade que sugerem fortemente intenção maliciosa.",
+    "why.s3n": "2,12×",
+    "why.s3": "mais chance de ser vulnerável quando a skill traz scripts executáveis.",
+    "why.source": "Fonte: estudo “Agent Skills in the Wild”, janeiro de 2026.",
+    "why.incWhen": "Agosto de 2026",
+    "why.incTitle": "Um worm do npm veio com um hook do Claude Code.",
+    "why.incBody": "O worm do keyv no npm trazia um <code>.claude/settings.json</code> com um hook <code>SessionStart</code>: um comando que roda toda vez que uma sessão do Claude Code começa naquele projeto. A configuração do seu agente agora faz parte da superfície de ataque.",
+    "why.runTitle": "O que uma extensão pode executar na sua máquina",
+    "why.r1t": "Hooks",
+    "why.r1": "Comandos de shell quando a sessão começa e antes ou depois de cada chamada de ferramenta.",
+    "why.r2t": "Servidores MCP",
+    "why.r2": "Processos de longa duração iniciados com a sua conta de usuário.",
+    "why.r3t": "Monitores",
+    "why.r3": "Processos em segundo plano que um plugin mantém rodando enquanto você trabalha.",
+    "why.r4t": "<code>bin/</code> no seu PATH",
+    "why.r4": "Executáveis que um plugin adiciona ao PATH do shell do Claude.",
+    "why.r5t": "Linhas <code>!`cmd`</code>",
+    "why.r5": "Shell embutido numa skill, executado assim que a skill é invocada.",
+    "why.r6t": "<code>allowed-tools</code> autoconcedido",
+    "why.r6": "Frontmatter que deixa uma skill usar ferramentas sem pedir a sua permissão antes.",
+    "why.runFoot": "O skill-sentry inventaria e analisa cada um deles.",
+
+    "what.kicker": "O que faz",
+    "what.title": "Três camadas. Um plugin.",
+    "what.lead": "Audite o que já está instalado, vigie o que acontece a seguir e feche as portas que não precisam ficar abertas.",
+    "what.aT": "Auditar",
+    "what.aD": "Um scanner estático lê cada plugin, skill, hook e configuração de servidor MCP instalado, pontua cada componente e explica o que encontrou.",
+    "what.a1": "12 categorias de achados, de roubo de credenciais e exfiltração a persistência e prompt injection",
+    "what.a2": "Analise uma pasta <em>antes</em> de instalar, com <code>--path</code>",
+    "what.a3": "Uma baseline mostra o que mudou desde a última auditoria",
+    "what.a4": "O Claude pode dar a opinião dele, mas nunca rebaixa o veredito do scanner",
+    "what.gT": "Guarda",
+    "what.gD": "Inspeciona as chamadas de ferramentas no momento em que acontecem e bloqueia, ou pergunta a você, antes que as perigosas rodem.",
+    "what.g1": "Vigia Bash, PowerShell, ferramentas de arquivo, WebFetch e chamadas MCP",
+    "what.g2": "Sabe quando uma skill ou um plugin é a provável origem da chamada",
+    "what.g3": "Pergunta antes de qualquer escrita nos arquivos dele",
+    "what.g4": "Se a guarda der erro, a chamada segue e o erro fica registrado: sua sessão nunca quebra",
+    "what.hT": "Reforçar",
+    "what.hD": "Revisa o seu <code>settings.json</code> e aplica somente os ajustes que você aprovar, um por um.",
+    "what.h1": "Bloqueia a leitura de <code>~/.ssh</code> e <code>~/.aws</code>",
+    "what.h2": "Pergunta antes de <code>curl</code>, <code>wget</code> e leitura de <code>.env</code>",
+    "what.h3": "Opcionalmente desliga o shell embutido nas skills",
+    "what.h4": "Backup com data e hora antes de qualquer mudança",
+
+    "how.kicker": "Como funciona",
+    "how.title": "Toda chamada arriscada recebe uma decisão.",
+    "how.lead": "A guarda confere cada chamada de ferramenta com as regras do scanner, normalmente em cerca de 50 ms, e responde com uma de três decisões.",
+    "how.thDecision": "Decisão",
+    "how.thWhen": "Quando",
+    "how.denySub": "bloqueia",
+    "how.deny": "Uma regra crítica dispara: pipes que baixam e executam código, shells reversos, início de mineradores de criptomoeda, apagamento de disco ou da pasta home. Sempre bloqueado, a menos que você tenha liberado exatamente aquele comando na allowlist.",
+    "how.askSub": "você confirma",
+    "how.ask": "Uma regra de alto risco dispara e uma skill ou um plugin é a provável origem. Também sempre que algo tenta escrever nos arquivos do próprio skill-sentry, ou usa formas incomuns de caminho do Windows, como caminhos de dispositivo, caminhos UNC, nomes curtos 8.3 e fluxos NTFS.",
+    "how.logSub": "registra",
+    "how.log": "Uma regra de alto risco dispara, mas nenhuma skill ou plugin está por trás: foi você quem digitou. Fica registrado no <code>guard.log</code>, sem interromper você.",
+    "how.failsOpen": "O resto passa sem interferência. Os dados ficam em <code>~/.claude/skill-sentry/</code>.",
+    "how.termLabel": "Auditoria ilustrativa. Os nomes dos componentes são inventados.",
+    "how.t1": "24 componentes analisados: 21 ok, 2 review, 1 suspicious. Novo desde a baseline:",
+    "how.tCol1": "Componente",
+    "how.tCol2": "Veredito",
+    "how.tCol3": "Avaliação do Claude",
+    "how.tA1": "Concordo: o hook SessionStart dele compacta o ~/.ssh e envia o arquivo. Remova.",
+    "how.tA2": "Provável falso positivo: só lê o .env.example.",
+    "how.t2": "Quer que eu aceite este estado como a nova baseline? Só faço isso depois do seu sim.",
+
+    "tested.kicker": "Testado de verdade",
+    "tested.title": "Rodado numa instalação real, não só em fixtures.",
+    "tested.s1": "componentes analisados numa instalação real do Windows 11",
+    "tested.s2": "sinalizado para um olhar mais atento; os plugins oficiais da Anthropic ficaram em ok ou review",
+    "tested.s3": "testes automatizados, com zero dependências npm",
+    "tested.s4": "por decisão típica da guarda",
+    "tested.note": "Números da máquina do próprio autor. A sua instalação vai ser diferente, e é justamente por isso que vale rodar.",
+
+    "limits.kicker": "Limites honestos",
+    "limits.title": "Um segundo par de olhos, não um escudo.",
+    "limits.lead": "Ferramenta de segurança que promete demais é um risco por si só. Leia isto antes de confiar no skill-sentry.",
+    "limits.l1": "<strong>Não é antivírus nem sandbox.</strong> Não isola nada e não desfaz estragos.",
+    "limits.l2": "<strong>Somente análise estática.</strong> O scanner lê arquivos com regras de padrões e nunca os executa. Código suficientemente criativo consegue escapar de regras de padrões.",
+    "limits.l3": "<strong>Não enxerga os hooks de outros plugins enquanto rodam.</strong> Lê a configuração e os scripts deles, não o comportamento ao vivo.",
+    "limits.l4": "<strong>Não inspeciona código obtido em tempo de execução,</strong> como um pacote iniciado com tag de versão flutuante ou um script baixado e depois executado. Só consegue sinalizar que isso acontece.",
+    "limits.l5": "<strong>A guarda é de melhor esforço.</strong> Shell suficientemente ofuscado consegue contorná-la. Em Write e Edit ela olha o caminho de destino, nunca o conteúdo.",
+    "limits.l6": "<strong>Relatório limpo não prova segurança.</strong> Relatório ruim é motivo para olhar com mais atenção.",
+    "limits.mTitle": "Vale fazer de qualquer forma",
+    "limits.m1": "Fixe as versões dos plugins",
+    "limits.m2": "Evite atualização automática de marketplaces de terceiros",
+    "limits.m3": "Leia o que você instala",
+    "limits.m4": "Aplique as configurações do <code>/skill-sentry:harden</code>",
+
+    "install.l1": "Audite o que você já instalou.",
+    "install.l2": "São dois comandos no Claude Code.",
+    "install.note": "Este repositório é ao mesmo tempo o plugin e o seu próprio marketplace. Requer Node 18 ou superior.",
+    "install.copyOne": "Copiar comando",
+    "install.copyAll": "Copiar os dois comandos",
+    "install.then": "Depois rode <code>/skill-sentry:audit</code> para ver o seu primeiro relatório.",
+    "ui.copied": "Copiado para a área de transferência",
+    "ui.selected": "Selecionado. Tecle Ctrl+C para copiar.",
+
+    "footer.tagline": "Uma segunda olhada no que você deixa entrar no Claude Code.",
+    "footer.by": "Feito por",
+    "footer.project": "Projeto",
+    "footer.source": "Código-fonte no GitHub",
+    "footer.issues": "Reportar um problema",
+    "footer.license": "Licença MIT",
+    "footer.credits": "Créditos",
+    "footer.c1": "CybeDefend: “Are Claude Code skills safe?”",
+    "footer.c2": "O estudo “Agent Skills in the Wild” (janeiro de 2026)",
+    "footer.c3": "NVIDIA SkillSpector, um scanner complementar para uma segunda opinião",
+    "footer.privacy": "Esta página não carrega nenhum recurso de terceiros: nada de scripts, fontes, rastreadores ou cookies externos. Ela só lembra o idioma escolhido, no seu próprio navegador.",
+    "footer.top": "Voltar ao topo ↑"
+  }
+}
+</script>
+</body>
+</html>

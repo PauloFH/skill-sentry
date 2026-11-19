@@ -1,5 +1,7 @@
 [English](README.md) | [Português](README.pt.md) | [Español](README.es.md) | **中文**
 
+🌐 https://paulofh.github.io/skill-sentry/
+
 # skill-sentry
 
 一个零依赖的 Claude Code 插件：审计你机器上已安装的插件、skill、hook 和 MCP 服务器是否存在恶意行为，加固 Claude Code 设置，并在运行时守护有风险的工具调用。
