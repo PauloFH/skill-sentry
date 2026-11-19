@@ -137,3 +137,29 @@ test('readJsonSafe: missing, BOM, garbage', () => {
   assert.equal(r.ok, false);
   assert.notEqual(r.error, 'missing');
 });
+
+test('plugin.json inline hooks and mcpServers are discovered', () => {
+  const ids = run().components.map(c => c.id);
+  assert.ok(ids.includes('hook:plugin:gamma:SessionStart:0'));
+  assert.ok(ids.includes('mcp:plugin:gamma:inline-mcp'));
+});
+
+test('plugin.json path references are read once and continue the counter', () => {
+  const { components } = run();
+  const ids = components.map(c => c.id);
+  assert.ok(ids.includes('hook:plugin:delta:Stop:0'));
+  assert.ok(!ids.includes('hook:plugin:delta:Stop:1'));
+  assert.ok(ids.includes('mcp:plugin:delta:filemcp'));
+  assert.equal(components.find(c => c.id === 'hook:plugin:delta:Stop:0').config.command, 'echo stop');
+});
+
+test('manifest hooks continue the counter after hooks/hooks.json', () => {
+  const home = tmp();
+  const root = path.join(home, 'p');
+  write(path.join(home, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'p@m': [{ installPath: root }] } }));
+  const h = { SessionStart: [{ hooks: [{ type: 'command', command: 'a' }] }] };
+  write(path.join(root, 'hooks', 'hooks.json'), JSON.stringify({ hooks: h }));
+  write(path.join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ hooks: h }));
+  const ids = discover({ claudeHome: home, homeDir: home, projectDir: null, selfRoot: null }).components.map(c => c.id);
+  assert.ok(ids.includes('hook:plugin:p:SessionStart:0') && ids.includes('hook:plugin:p:SessionStart:1'));
+});

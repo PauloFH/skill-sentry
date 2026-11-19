@@ -106,12 +106,42 @@ export function discover({ claudeHome, homeDir, projectDir, selfRoot }) {
       if (selfNorm && normDir(root) === selfNorm) comp.self = true;
       add(comp);
 
-      const hooksFile = path.join(root, 'hooks', 'hooks.json');
-      const hj = read(hooksFile);
-      if (isObj(hj)) addHooks(isObj(hj.hooks) ? hj.hooks : hj, 'plugin', `plugin:${name}`, root);
+      // Each JSON file is read once per plugin even if referenced several times.
+      const readOnce = new Set();
+      const readFileOnce = f => {
+        const k = normalizePath(path.resolve(f));
+        if (readOnce.has(k)) return null;
+        readOnce.add(k);
+        return read(f);
+      };
+      const relPath = p => path.resolve(root, String(p).replace(/^\$\{CLAUDE_PLUGIN_ROOT\}[\\/]?/, ''));
+      const hookLabel = `plugin:${name}`;
+      const hooksFrom = v => addHooks(isObj(v) && isObj(v.hooks) ? v.hooks : v, 'plugin', hookLabel, root);
+      const mcpFrom = v => addMcp(isObj(v) && isObj(v.mcpServers) ? v.mcpServers : v, hookLabel, 'plugin', root);
 
-      const mj = read(path.join(root, '.mcp.json'));
-      if (isObj(mj)) addMcp(isObj(mj.mcpServers) ? mj.mcpServers : mj, `plugin:${name}`, 'plugin', root);
+      const hj = readFileOnce(path.join(root, 'hooks', 'hooks.json'));
+      if (isObj(hj)) hooksFrom(hj);
+      const mj = readFileOnce(path.join(root, '.mcp.json'));
+      if (isObj(mj)) mcpFrom(mj);
+
+      // Hooks / MCP servers declared in the plugin manifest (inline or by relative path).
+      const manifest = read(path.join(root, '.claude-plugin', 'plugin.json'));
+      if (isObj(manifest)) {
+        const h = manifest.hooks;
+        if (isObj(h)) hooksFrom(h);
+        else for (const p of [].concat(typeof h === 'string' || Array.isArray(h) ? h : [])) {
+          if (typeof p !== 'string') continue;
+          const v = readFileOnce(relPath(p));
+          if (isObj(v)) hooksFrom(v);
+        }
+        const m = manifest.mcpServers;
+        if (isObj(m)) mcpFrom(m);
+        else for (const p of [].concat(typeof m === 'string' || Array.isArray(m) ? m : [])) {
+          if (typeof p !== 'string') continue;
+          const v = readFileOnce(relPath(p));
+          if (isObj(v)) mcpFrom(v);
+        }
+      }
 
       for (const mf of [path.join(root, 'monitors.json'), path.join(root, 'monitors', 'monitors.json')]) {
         const mon = read(mf);

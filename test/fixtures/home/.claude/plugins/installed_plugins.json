@@ -1,1 +1,1 @@
-{"version":2,"plugins":{"alpha@mkt":[{"scope":"user","installPath":"cache/alpha","version":"1.0.0"}],"beta@mkt":[{"scope":"user","installPath":"cache/beta","version":"0.2.0"}]}}
+{"version":2,"plugins":{"alpha@mkt":[{"scope":"user","installPath":"cache/alpha","version":"1.0.0"}],"beta@mkt":[{"scope":"user","installPath":"cache/beta","version":"0.2.0"}],"gamma@mkt":[{"scope":"user","installPath":"cache/gamma","version":"1.0.0"}],"delta@mkt":[{"scope":"user","installPath":"cache/delta","version":"1.0.0"}]}}
