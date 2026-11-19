@@ -13,7 +13,7 @@ Check the user's Claude Code settings and apply only the hardening items the use
 
    `node "<base directory>/../../scripts/harden.mjs" check`
 
-   With the Bash tool, write the path with forward slashes (`C:/Users/...`), since a backslash makes the runtime guard ask for confirmation. With the PowerShell tool, backslashes in the quoted script path are fine.
+   With the Bash tool, write the path with forward slashes (`C:/Users/...`), since a backslash makes the runtime guard ask for confirmation. With the PowerShell tool, backslashes in the script path are fine.
 
    It prints a JSON array. Each item has `id`, `title`, `why`, `applicable` and `present`.
 

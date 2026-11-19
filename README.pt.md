@@ -103,7 +103,7 @@ A guarda é um hook PreToolUse instalado com o plugin. Ela observa chamadas de B
 
 Se a própria guarda falhar, ela falha aberta: grava uma linha em `guard.log` e deixa a chamada seguir, em vez de quebrar a sua sessão.
 
-Execuções somente leitura dos scripts do próprio skill-sentry (`scan.mjs` só com `--json`, `--path`, `--component`, `--diff-only`, `--claude-home` ou `--project`, e `harden.mjs check`) não pedem confirmação. Os passos que alteram os dados dele ou as suas configurações (`--update-baseline`, `--allow` e `harden.mjs apply`) mostram um pedido de confirmação de propósito: aprove-o para a ação com que você já concordou.
+A auditoria padrão (`scan.mjs` só com `--json` e/ou `--diff-only`) e o `harden.mjs check` rodam sem pedir confirmação. Auditorias com `--path` ou `--component`, atualizações da baseline (`--update-baseline`), entradas na allowlist (`--allow`) e o `harden.mjs apply` mostram um pedido de confirmação de propósito: aprove-o para a ação com que você já concordou. Na ferramenta Bash, escreva o caminho do script com barras normais (`C:/Users/...`).
 
 ### Allowlist
 

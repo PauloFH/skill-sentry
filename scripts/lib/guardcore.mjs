@@ -284,66 +284,31 @@ function rootForms(r) {
   return [...new Set([lowerOnWin(slashes(path.resolve(r))), canonRoot(r)])].filter(f => f.length > 3);
 }
 
-// ---- Ruling L2/L3: read-only invocations of our own scripts ----
+// ---- Ruling M: read-only invocations of our own scripts ----
 
-// Ruling L3: a positive allow-list, not a deny-list. Only these ASCII characters (space is the only
-// whitespace) may appear; `\` is accepted only as a path separator inside the quoted script path under
-// PowerShell (under Bash it escapes and merges words). Everything else (non-ASCII, tabs, NEL, NBSP,
-// U+2028, shell metacharacters) means "not read-only", so the SELF_PROTECT prompt applies.
-const SAFE_COMMAND = /^[A-Za-z0-9 ._:/=+,@~'"\\-]*$/;
-const SCAN_FLAGS = new Set(['--json', '--diff-only']);
-const SCAN_VALUE_FLAGS = new Set(['--path', '--component', '--claude-home', '--project']);
+// Only fixed token lists are exempt from SELF_PROTECT; no shell argument is parsed beyond them
+// (PowerShell's grammar - arrays from `,`, splatting, dropped empty strings - kept defeating that):
+//   node <scanPath> [--json | --diff-only]...      node <hardenPath> check
+// `<path>` is bare or wrapped in one pair of matching quotes, absolute (`X:\`, `X:/` or `/`), and made
+// only of `[A-Za-z0-9 ._:/\~-]` (space only when quoted, `\` only under PowerShell). Anything else,
+// including every value-taking flag, keeps the prompt.
+const SELF_INVOCATION = /^node(?:\.exe)? +(?:"([^"]*)"|'([^']*)'|([^ "']+))((?: +[^ ]+)*) *$/i;
+const SELF_PATH = /^[A-Za-z0-9 ._:/\\~-]+$/;
 
-/** Space-separated words, each fully bare, "double-quoted" or 'single-quoted'; null on anything else. */
-function plainWords(cmd) {
-  const words = [];
-  const re = / *(?:"([^"]*)"|'([^']*)'|([^ "']+))(?= |$)/y;
-  let i = 0;
-  const s = cmd.replace(/ +$/, '');
-  while (i < s.length) {
-    re.lastIndex = i;
-    const m = re.exec(s);
-    if (!m) return null;
-    words.push({ v: m[1] ?? m[2] ?? m[3], quoted: m[3] === undefined });
-    i = re.lastIndex;
-  }
-  return words;
-}
-
-/**
- * `node <selfRoot>/scripts/scan.mjs <read-only flags>` or `node <selfRoot>/scripts/harden.mjs check`,
- * exactly, made only of allow-listed characters. Mutating forms (--allow, --update-baseline, apply)
- * do not qualify: they keep the SELF_PROTECT prompt, which doubles as the user's consent.
- */
+/** Exact read-only self invocation (Ruling M); mutating or parameterized forms return false. */
 export function isReadOnlySelfInvocation(cmd, selfRoot, toolName = 'Bash') {
-  if (!str(cmd) || !str(selfRoot) || !SAFE_COMMAND.test(cmd)) return false;
-  const ps = toolName === 'PowerShell';
-  if (!ps && cmd.includes('\\')) return false;
-  const words = plainWords(cmd);
-  if (!words || words.length < 2) return false;
-  for (const [i, { v, quoted }] of words.entries()) {
-    // A quote left inside a value re-tokenizes under PowerShell 5.1 (embedded quotes are passed
-    // unescaped to node); a bare `@name` is PowerShell splatting; `\` only in the quoted script path.
-    if (/["']/.test(v) || (!quoted && v.startsWith('@'))) return false;
-    if (v.includes('\\') && !(ps && i === 1 && quoted)) return false;
-  }
-  const w = words.map(x => x.v);
-  if (!/^node(?:\.exe)?$/i.test(w[0])) return false;
-  const script = w[1];
-  if (!path.isAbsolute(script) || isUnusualPath(script)) return false;
+  if (!str(cmd) || !str(selfRoot)) return false;
+  const m = SELF_INVOCATION.exec(cmd);
+  if (!m) return false;
+  const script = m[1] ?? m[2] ?? m[3];
+  if (!SELF_PATH.test(script) || (m[3] !== undefined && script.includes(' '))) return false;
+  if (script.includes('\\') && toolName !== 'PowerShell') return false;
+  if (!/^(?:[A-Za-z]:[\\/]|\/(?![\\/]))/.test(script) || isUnusualPath(script)) return false;
   const target = lowerOnWin(slashes(path.resolve(script)));
   const is = name => rootForms(selfRoot).some(f => target === `${f}/scripts/${lowerOnWin(name)}`);
-  const args = w.slice(2);
+  const args = m[4].split(' ').filter(Boolean);
   if (is('harden.mjs')) return args.length === 1 && args[0] === 'check';
-  if (!is('scan.mjs')) return false;
-  for (let i = 0; i < args.length; i++) {
-    if (SCAN_FLAGS.has(args[i])) continue;
-    if (!SCAN_VALUE_FLAGS.has(args[i])) return false;
-    const v = args[++i];
-    // Same rule as scan.mjs: a value never starts with `-` nor hides a flag after whitespace.
-    if (v === undefined || v.startsWith('-') || /\s-/.test(v)) return false;
-  }
-  return true;
+  return is('scan.mjs') && args.every(a => a === '--json' || a === '--diff-only');
 }
 
 // ---- decision ----

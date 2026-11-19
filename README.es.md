@@ -103,7 +103,7 @@ La guardia es un hook PreToolUse instalado con el plugin. Vigila las llamadas a 
 
 Si la propia guardia falla, falla en abierto: escribe una línea en `guard.log` y deja pasar la llamada en lugar de romper tu sesión.
 
-Las ejecuciones de solo lectura de los scripts del propio skill-sentry (`scan.mjs` solo con `--json`, `--path`, `--component`, `--diff-only`, `--claude-home` o `--project`, y `harden.mjs check`) no piden confirmación. Los pasos que cambian sus datos o tu configuración (`--update-baseline`, `--allow` y `harden.mjs apply`) muestran una solicitud de confirmación a propósito: apruébala para la acción que ya aceptaste.
+La auditoría predeterminada (`scan.mjs` solo con `--json` y/o `--diff-only`) y `harden.mjs check` se ejecutan sin pedir confirmación. Las auditorías con `--path` o `--component`, las actualizaciones de la línea base (`--update-baseline`), las entradas en la lista de permitidos (`--allow`) y `harden.mjs apply` muestran una solicitud de confirmación a propósito: apruébala para la acción que ya aceptaste. Con la herramienta Bash, escribe la ruta del script con barras normales (`C:/Users/...`).
 
 ### Allowlist
 

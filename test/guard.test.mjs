@@ -215,12 +215,12 @@ test('Ruling L2: exact read-only invocations of our own scan.mjs / harden.mjs pa
   const fwd = s => s.replace(/\\/g, '/');
   // Ruling L3: under Bash every `\` disqualifies (it escapes and merges words), so Bash forms use
   // forward slashes; under PowerShell a `\` is accepted inside the quoted script path only.
+  // Ruling M: only fixed token lists (`--json`/`--diff-only` flags, `harden check`); no value flags.
   const forms = p => [
     `node "${p(viaSkill)}" --json`,
-    `node '${fwd(viaSkill)}' --json --diff-only`,
-    `node ${fwd(scan)} --json --component plugin:alpha@mkt`,
-    `node "${p(scan)}" --json --path "C:/Users/x/Configuracoes Locais/my skill"`,
-    `node "${p(scan)}" --claude-home '/tmp/h' --project "/tmp/p" --json`,
+    `node '${p(viaSkill)}' --json --diff-only`,
+    `node ${fwd(scan)} --json`,
+    `node "${p(scan)}"`,
     `node "${p(harden)}" check`,
   ];
   const readOnly = { Bash: forms(fwd), PowerShell: forms(s => s) };
@@ -282,7 +282,6 @@ test('Ruling L3: read-only self invocation is a positive ASCII allow-list (word-
       `node "${scanWin}" --project 'x y" "${UB}'`,
       `node "${scanWin}" --project @Error --json`, // splatting shifts value slots
       `node "${scanWin}" --path "C:\\x"`, // backslash outside the script path
-      `node ${scanWin} --json`, // backslash in an unquoted script path
     ],
   };
   for (const tool of ['Bash', 'PowerShell']) {
@@ -304,6 +303,59 @@ test('Ruling L3: read-only self invocation is a positive ASCII allow-list (word-
       assert.equal(r.ruleId, 'SELF_PROTECT', `${tool}: ${JSON.stringify(command)}`);
     }
   }
+});
+
+test('Ruling M: only fixed token lists bypass SELF_PROTECT (PowerShell array/comma and empty-arg forms ask)', () => {
+  const S = fs.realpathSync.native(SELF);
+  const scanWin = path.join(S, 'scripts', 'scan.mjs');
+  const scanFwd = scanWin.replace(/\\/g, '/');
+  const viaSkillWin = path.join(S, 'skills', 'audit', '..', '..', 'scripts', 'scan.mjs');
+  const hardenWin = path.join(S, 'scripts', 'harden.mjs');
+  const UB = '--update-baseline';
+  const asks = {
+    PowerShell: [
+      // a bare word starting with `,` is an array expression: node gets ["x", "--update-baseline"]
+      `node '${scanWin}' --json --project ,x,${UB}`,
+      `node '${scanWin}' --json --component ,x,${UB}`,
+      `node '${scanWin}' --json --path ,x,${UB}`,
+      `node '${scanWin}' --json --project ,x,--allow,mcp:user:a,RULE,cfg.json`,
+      `node ,'${scanWin}',${UB}`,
+      // PowerShell drops empty string arguments, shifting value slots
+      `node '${scanWin}' --project "" --path x`,
+      `node '${scanWin}' --json ""`,
+      `node '${scanWin}' --json ''`,
+      `.\\node '${scanWin}' --json`,
+      `& node '${scanWin}' --json`,
+    ],
+    Bash: [`env X=1 node '${scanFwd}' --json`, `node '${scanFwd}' --json ""`],
+  };
+  for (const tool of ['Bash', 'PowerShell']) {
+    const own = tool === 'Bash' ? scanFwd : scanWin;
+    asks[tool].push(
+      `node "${own}" --project x`,
+      `node "${own}" --component plugin:a@m`,
+      `node "${own}" --path /tmp/x`,
+      `node "${own}" --claude-home /tmp/h --json`,
+      `node "${own}" --json ${UB}`,
+      `node "${own}" --json --json=x`,
+      `node "${own}"x --json`,
+      `node "${own}' --json`,
+      `node ${own.replace(/scripts/, 'scr ipts')} --json`,
+      `node "${tool === 'Bash' ? hardenWin.replace(/\\/g, '/') : hardenWin}" apply ask-curl`,
+    );
+    for (const command of asks[tool]) {
+      const r = d(tool, { command });
+      assert.equal(r.decision, 'ask', `${tool}: ${command}`);
+      assert.equal(r.ruleId, 'SELF_PROTECT', `${tool}: ${command}`);
+    }
+  }
+  for (const command of [
+    `node "${scanWin}" --json`,
+    `node "${scanWin}" --json --diff-only`,
+    `node '${viaSkillWin}' --json`,
+    `node "${hardenWin}" check`,
+    `NODE.EXE ${scanWin} --diff-only --json`,
+  ]) assert.equal(d('PowerShell', { command }).decision, 'none', `PowerShell: ${command}`);
 });
 
 test('relative and non-canonical shell references to skill-sentry ask', () => {
