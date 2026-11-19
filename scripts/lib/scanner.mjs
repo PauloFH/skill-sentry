@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { listFiles, isSensitiveLinkTarget } from './inventory.mjs';
+import { listFiles, isSensitiveLinkTarget, rawConfigOf } from './inventory.mjs';
 import { matchText, matchCommand, findInvisible } from './rules.mjs';
 import { analyzeSkillMarkdown } from './skillmd.mjs';
-import { classifyFile, truncate, escapeInvisible } from './text.mjs';
+import { classifyFile, truncate, escapeInvisible, redactSecrets, redactArgs } from './text.mjs';
 
 /**
  * @typedef {import('./rules.mjs').Match & { file: string }} Finding
@@ -60,23 +60,30 @@ function unpinnedRuntime(cmd) {
   return false;
 }
 
+/**
+ * Rules run on the unredacted config (a payload placed after `--token` must still match); every
+ * snippet taken from it is redacted, so credentials never reach the report or Claude.
+ */
 function scanConfig(c, findings) {
-  const cfg = c.config;
+  const cfg = rawConfigOf(c.config);
   if (!cfg || typeof cfg !== 'object') return;
+  const push = m => findings.push({ ...m, snippet: redactSecrets(m.snippet), file: CONFIG_FILE });
   const args = Array.isArray(cfg.args) ? cfg.args.map(String) : [];
   const commands = [];
-  if (typeof cfg.command === 'string') commands.push([cfg.command, ...args].join(' '));
-  if (typeof cfg.headersHelper === 'string') commands.push(cfg.headersHelper);
-  for (const cmd of commands) {
-    for (const m of matchCommand(cmd)) findings.push({ ...m, file: CONFIG_FILE });
-    if (unpinnedRuntime(cmd)) findings.push(finding('SUPPLY_UNPINNED_RUNTIME', 'supply', 'medium', CONFIG_FILE, cmd));
+  if (typeof cfg.command === 'string') commands.push([cfg.command, ...args]);
+  if (typeof cfg.headersHelper === 'string') commands.push([cfg.headersHelper]);
+  for (const argv of commands) {
+    const cmd = argv.join(' ');
+    const shown = [argv[0], ...redactArgs(argv.slice(1))].map(redactSecrets).join(' ');
+    for (const m of matchCommand(cmd)) push(m);
+    if (unpinnedRuntime(cmd)) findings.push(finding('SUPPLY_UNPINNED_RUNTIME', 'supply', 'medium', CONFIG_FILE, shown));
   }
   if (typeof cfg.url === 'string') {
-    findings.push(finding('SUPPLY_REMOTE_MCP', 'supply', 'info', CONFIG_FILE, cfg.url));
-    for (const m of matchCommand(cfg.url)) findings.push({ ...m, file: CONFIG_FILE });
+    findings.push(finding('SUPPLY_REMOTE_MCP', 'supply', 'info', CONFIG_FILE, redactSecrets(cfg.url)));
+    for (const m of matchCommand(cfg.url)) push(m);
   }
   if (typeof cfg.prompt === 'string') {
-    for (const m of matchText(cfg.prompt, 'markdown')) findings.push({ ...m, file: CONFIG_FILE });
+    for (const m of matchText(cfg.prompt, 'markdown')) push(m);
   }
 }
 

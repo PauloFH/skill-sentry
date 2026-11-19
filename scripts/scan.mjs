@@ -11,6 +11,7 @@ import { loadBaseline, baselineLoadError, saveBaseline, diffBaseline, fileMap } 
 import { loadAllowlist, allowlistLoadError, addAllowEntry } from './lib/allowlist.mjs';
 import { dataDir } from './lib/datadir.mjs';
 import { buildReport, renderMarkdown } from './lib/report.mjs';
+import { untrusted } from './lib/text.mjs';
 
 // Ruling D: selfRoot is the directory containing scripts/.
 const selfRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -84,8 +85,11 @@ if (opts.path) {
   for (const f of inv.configFindings) problems.push(`${f.ruleId}: ${f.file}: ${f.snippet}`);
   components = inv.components;
   if (opts.component) {
-    components = components.filter(c => c.id === opts.component);
-    if (!components.length) problems.push(`component not found: ${opts.component}`);
+    // Accept the id as the report shows it (escaped) as well as the raw id.
+    const want = opts.component;
+    const exact = components.filter(c => c.id === want);
+    components = exact.length ? exact : components.filter(c => untrusted(c.id) === want);
+    if (!components.length) problems.push(`component not found: ${want}`);
   }
 }
 
@@ -93,22 +97,25 @@ let results = components.map(c => scanComponent(c, { deadline }));
 
 if (opts.allow) {
   // Only finding-type entries are created here; command-type (critical) entries are never created by this flag.
-  const [componentId, ruleId, file] = opts.allow;
-  const found = results.find(r => r.component.id === componentId);
+  // The report shows ids and paths escaped (untrusted()); both that form and the raw one are accepted,
+  // and the entry stores the raw value so it matches later scans.
+  const [idArg, ruleId, fileArg] = opts.allow;
+  const found = results.find(r => r.component.id === idArg) ?? results.find(r => untrusted(r.component.id) === idArg);
   if (!found) {
-    process.stderr.write(`component not found: ${componentId}
-`);
+    process.stderr.write(`component not found: ${untrusted(idArg)}\n`);
     process.exit(2);
   }
-  const sha256 = fileMap(found)[file];
-  if (!sha256) {
-    process.stderr.write(`file not found in component ${componentId}: ${file}
-`);
+  const componentId = found.component.id;
+  const files = fileMap(found);
+  const file = Object.hasOwn(files, fileArg) ? fileArg : Object.keys(files).find(f => untrusted(f) === fileArg);
+  if (file === undefined) {
+    process.stderr.write(`file not found in component ${untrusted(componentId)}: ${untrusted(fileArg)}\n`);
     process.exit(2);
   }
-  const entry = { type: 'finding', componentId, ruleId, file, sha256, reason: opts.reason ?? 'user approved', addedAt: new Date().toISOString() };
+  const entry = { type: 'finding', componentId, ruleId, file, sha256: files[file], reason: opts.reason ?? 'user approved', addedAt: new Date().toISOString() };
   addAllowEntry(dir, entry);
-  await new Promise(resolve => process.stdout.write(JSON.stringify(entry, null, 2) + '\n', resolve));
+  const shown = { ...entry, componentId: untrusted(componentId), file: untrusted(file), ruleId: untrusted(ruleId), reason: untrusted(entry.reason) };
+  await new Promise(resolve => process.stdout.write(JSON.stringify(shown, null, 2) + '\n', resolve));
   process.exit(0);
 }
 

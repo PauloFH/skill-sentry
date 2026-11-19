@@ -624,6 +624,13 @@ test('formatReason without origin', () => {
   assert.ok(s.includes('\\u200B'));
   assert.ok(!s.includes('/skill-sentry:audit'));
 });
+test('formatReason escapes quotes, C0 controls and ESC in the snippet and origin', () => {
+  const s = formatReason({ decision: 'ask', ruleId: 'X', severity: 'high', snippet: 'a"b\x1b[31mc\nd\x07e\x7f' }, 'evil"\x1b]0;x\x07', null);
+  assert.ok(s.includes('a\\x22b\\x1B[31mc\\x0Ad\\x07e\\x7F'), s);
+  assert.ok(s.includes('likely source: evil\\x22\\x1B]0;x\\x07'), s);
+  assert.ok(!/[\x00-\x1f\x7f]/.test(s), 'no raw control characters');
+  assert.equal((s.match(/"/g) || []).length, 2, 'only the delimiting quotes remain');
+});
 test('scanSummary wording', () => {
   assert.equal(scanSummary({ verdict: 'suspicious', score: 45, count: 3, incomplete: false }), 'component verdict: suspicious (score 45), 3 findings');
   assert.equal(scanSummary({ verdict: 'ok', score: 0, count: 1, incomplete: false }), 'component verdict: ok (score 0), 1 finding');

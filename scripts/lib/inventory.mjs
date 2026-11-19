@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { readJsonSafe } from './jsonsafe.mjs';
-import { normalizePath, truncate } from './text.mjs';
+import { normalizePath, truncate, redactSecrets, redactArgs } from './text.mjs';
 
 const isObj = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const normDir = p => normalizePath(path.resolve(p)).replace(/\/+$/, '');
@@ -95,13 +95,31 @@ export function listFiles(dir, limits, { deadline } = {}) {
   return { files, truncated, skipped, timedOut, outside };
 }
 
-/** Copy of a raw config entry with the VALUES of env/headers replaced by "<redacted>" (keys kept). */
+// Stored config -> unredacted copy, for the scanner's rules only (never serialized: a WeakMap entry
+// survives `{ ...component }` copies and is invisible to JSON.stringify).
+const RAW_CONFIG = new WeakMap();
+
+/** Unredacted config of a discovered component (falls back to the stored config). */
+export function rawConfigOf(config) {
+  return (config && RAW_CONFIG.get(config)) ?? config;
+}
+
+/**
+ * Copy of a raw config entry safe to store and show: VALUES of env/headers/oauth replaced by
+ * "<redacted>" (keys kept); credentials inside url, command, headersHelper and args redacted.
+ */
 function redactRaw(raw, extra = {}) {
   const out = { ...extra };
   if (isObj(raw)) for (const [k, v] of Object.entries(raw)) out[k] = v;
-  for (const k of ['env', 'headers']) {
+  const rawCopy = { ...out };
+  for (const k of ['env', 'headers', 'oauth']) {
     if (isObj(out[k])) out[k] = Object.fromEntries(Object.keys(out[k]).map(key => [key, '<redacted>']));
   }
+  for (const k of ['url', 'command', 'headersHelper']) {
+    if (typeof out[k] === 'string') out[k] = redactSecrets(out[k]);
+  }
+  if (Array.isArray(out.args)) out.args = redactArgs(out.args.map(String));
+  RAW_CONFIG.set(out, rawCopy);
   return out;
 }
 
@@ -283,7 +301,7 @@ export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits, de
       if (!isObj(s)) continue;
       addHooks(s.hooks, scope, scope, null, sFile);
       if (isObj(s.statusLine)) {
-        add({ id: `statusline:${scope}`, kind: 'statusline', name: 'statusLine', scope, root: null, config: s.statusLine, meta: {} }, sFile);
+        add({ id: `statusline:${scope}`, kind: 'statusline', name: 'statusLine', scope, root: null, config: redactRaw(s.statusLine), meta: {} }, sFile);
       }
       if (isObj(s.extraKnownMarketplaces)) {
         for (const [name, info] of Object.entries(s.extraKnownMarketplaces)) addMarketplace(name, info, sFile);

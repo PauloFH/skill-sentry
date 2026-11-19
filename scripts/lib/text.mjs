@@ -33,6 +33,44 @@ export function truncate(s, n = 200) {
   return s.length > n ? s.slice(0, n) + '…' : s;
 }
 
+/** Attacker-influenced text (ids, names, paths, snippets) as shown to Claude: escaped, then capped. */
+export const untrusted = s => truncate(escapeInvisible(s ?? ''), 200);
+
+const R = '<redacted>';
+// Flags whose value is a credential: --token, --api-key, --apikey, --key, --secret, --password, --auth,
+// --bearer, also with a prefix (--access-token, --client-secret); and -p followed by a value.
+const SECRET_FLAG = /(^|\s)(--(?:[\w-]*-)?(?:token|api-?key|key|secret|password|passwd|auth|bearer)|-p)(=|\s+)("[^"]*"|'[^']*'|\S+)/gi;
+const SECRET_ASSIGN = /(^|\s)([A-Za-z_][\w.-]*)=("[^"]*"|'[^']*'|\S+)/g;
+const SECRET_NAME = /token|secret|key|pass|auth/i;
+const URL_RE = /[a-z][\w+.-]*:\/\/[^\s"'<>]+/gi;
+
+/**
+ * Hide credentials in config text before it is stored or shown: URL `user:password@` and query values,
+ * values after credential flags, `KEY=value` when KEY names a secret, and `Bearer`/`Basic` tokens.
+ */
+export function redactSecrets(str) {
+  let s = String(str ?? '');
+  s = s.replace(URL_RE, url => url
+    .replace(/^([a-z][\w+.-]*:\/\/)[^/?#@\s]*@/i, `$1${R}@`)
+    .replace(/\?([^#]*)/, (_, q) => '?' + q.split('&').map(kv => (kv.includes('=') ? kv.slice(0, kv.indexOf('=') + 1) + R : kv)).join('&')));
+  s = s.replace(SECRET_FLAG, (_, pre, flag, sep) => `${pre}${flag}${sep}${R}`);
+  s = s.replace(SECRET_ASSIGN, (m, pre, key) => (SECRET_NAME.test(key) ? `${pre}${key}=${R}` : m));
+  s = s.replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/g, `$1 ${R}`);
+  return s;
+}
+
+/** redactSecrets over an argv array: also hides the element that follows a bare credential flag. */
+export function redactArgs(args) {
+  const out = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = String(args[i]);
+    const prev = i > 0 ? String(args[i - 1]) : '';
+    const flagBefore = /^(--(?:[\w-]*-)?(?:token|api-?key|key|secret|password|passwd|auth|bearer)|-p)$/i.test(prev);
+    out.push(flagBefore ? R : redactSecrets(a));
+  }
+  return out;
+}
+
 const CODE = new Set(['js', 'mjs', 'cjs', 'ts', 'py', 'sh', 'ps1', 'bat', 'cmd']);
 const CONFIG = new Set(['json', 'yaml', 'yml', 'toml']);
 const BINARY = new Set(['exe', 'dll', 'so', 'dylib', 'node', 'bin']);

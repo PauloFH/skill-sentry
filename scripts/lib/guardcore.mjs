@@ -421,9 +421,12 @@ export function scanSummary({ incomplete, verdict, score, count }) {
  * @param {string|null} summary
  */
 export function formatReason(d, originLabel, summary) {
+  // Quotes, C0 controls (ESC included) and DEL become \xNN: the quoted snippet cannot be closed early
+  // and no terminal escape sequence reaches the prompt.
+  const show = s => snip(s).replace(/[\x00-\x1f\x7f"]/g, ch => '\\x' + ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'));
   const verb = d.decision === 'deny' ? 'blocked' : 'needs confirmation';
-  const parts = [`skill-sentry: ${verb} by rule ${d.ruleId} (${d.severity}): "${snip(d.snippet)}"`];
-  parts.push(originLabel ? `likely source: ${snip(originLabel)}` : 'no skill/plugin attributed');
+  const parts = [`skill-sentry: ${verb} by rule ${d.ruleId} (${d.severity}): "${show(d.snippet)}"`];
+  parts.push(originLabel ? `likely source: ${show(originLabel)}` : 'no skill/plugin attributed');
   if (summary) parts.push(summary);
   let s = parts.join('; ') + '.';
   if (originLabel) s += ' Run /skill-sentry:audit for a full report.';
