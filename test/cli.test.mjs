@@ -123,6 +123,26 @@ test('unknown flag exits 2 with usage on stderr', () => {
   assert.match(r.stderr, /usage/i);
 });
 
+test('Ruling L3: a value flag whose value starts with - or hides a flag after whitespace exits 2 and leaves the baseline alone', () => {
+  const e = setup();
+  const sentinel = '{"sentinel":true}';
+  const file = path.join(e.data, 'baseline.json');
+  fs.writeFileSync(file, sentinel);
+  for (const bad of [
+    ['--project', 'x --update-baseline'],
+    ['--project', 'x\t--update-baseline'],
+    ['--claude-home', '-x'],
+    ['--path', `${e.project} --json`],
+    ['--component', '-'],
+  ]) {
+    const args = bad[0] === '--claude-home' ? ['--json', ...bad] : ['--json', '--claude-home', e.claudeHome, ...bad];
+    const r = run(e, args);
+    assert.equal(r.status, 2, JSON.stringify(bad));
+    assert.match(r.stderr, /usage/i);
+    assert.equal(fs.readFileSync(file, 'utf8'), sentinel, JSON.stringify(bad));
+  }
+});
+
 test('buildReport: allowlisted findings flagged and unscored; snippets escaped idempotently', () => {
   const result = {
     component: { id: 'skill:x', kind: 'skill', name: 'x', scope: 'user', root: null },

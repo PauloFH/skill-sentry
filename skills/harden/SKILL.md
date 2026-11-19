@@ -13,6 +13,8 @@ Check the user's Claude Code settings and apply only the hardening items the use
 
    `node "<base directory>/../../scripts/harden.mjs" check`
 
+   With the Bash tool, write the path with forward slashes (`C:/Users/...`), since a backslash makes the runtime guard ask for confirmation. With the PowerShell tool, backslashes in the quoted script path are fine.
+
    It prints a JSON array. Each item has `id`, `title`, `why`, `applicable` and `present`.
 
 2. Explain each item with `applicable: true` and `present: false` in plain language: what the setting does and why it reduces risk. For `disable-skill-shell`, state clearly the trade-off in its `why` text: it also turns off the shell lines that official plugins use to gather context.

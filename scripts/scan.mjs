@@ -35,7 +35,9 @@ function parseArgs(argv) {
     }
     else if (Object.hasOwn(withValue, a)) {
       const v = argv[++i];
-      if (v === undefined || v.startsWith('--')) return { error: `missing value for ${a}` };
+      if (v === undefined) return { error: `missing value for ${a}` };
+      // Ruling L3 (defense in depth): a value never starts with `-` nor hides a flag after whitespace.
+      if (v.startsWith('-') || /\s-/.test(v)) return { error: `invalid value for ${a}: ${untrusted(v)}` };
       o[withValue[a]] = v;
     } else return { error: `unknown argument: ${a}` };
   }

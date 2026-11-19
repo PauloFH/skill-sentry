@@ -212,17 +212,23 @@ test('Ruling L2: exact read-only invocations of our own scan.mjs / harden.mjs pa
   const viaSkill = path.join(S, 'skills', 'audit', '..', '..', 'scripts', 'scan.mjs');
   const harden = path.join(S, 'skills', 'harden', '..', '..', 'scripts', 'harden.mjs');
   const fwd = s => s.replace(/\\/g, '/');
-  const readOnly = [
-    `node "${viaSkill}" --json`,
+  // Ruling L3: under Bash every `\` disqualifies (it escapes and merges words), so Bash forms use
+  // forward slashes; under PowerShell a `\` is accepted inside the quoted script path only.
+  const forms = p => [
+    `node "${p(viaSkill)}" --json`,
     `node '${fwd(viaSkill)}' --json --diff-only`,
     `node ${fwd(scan)} --json --component plugin:alpha@mkt`,
-    `node "${scan}" --json --path "C:\\Users\\x\\Configurações Locais\\my skill"`,
-    `node "${scan}" --claude-home '/tmp/h' --project "/tmp/p" --json`,
-    `node "${harden}" check`,
+    `node "${p(scan)}" --json --path "C:/Users/x/Configuracoes Locais/my skill"`,
+    `node "${p(scan)}" --claude-home '/tmp/h' --project "/tmp/p" --json`,
+    `node "${p(harden)}" check`,
   ];
-  if (process.platform === 'win32') readOnly.push(`node.exe "${viaSkill.toUpperCase()}" --json`);
+  const readOnly = { Bash: forms(fwd), PowerShell: forms(s => s) };
+  if (process.platform === 'win32') {
+    readOnly.Bash.push(`node.exe "${fwd(viaSkill).toUpperCase()}" --json`);
+    readOnly.PowerShell.push(`node.exe "${viaSkill.toUpperCase()}" --json`);
+  }
   for (const tool of ['Bash', 'PowerShell']) {
-    for (const command of readOnly) assert.equal(d(tool, { command }).decision, 'none', `${tool}: ${command}`);
+    for (const command of readOnly[tool]) assert.equal(d(tool, { command }).decision, 'none', `${tool}: ${command}`);
   }
   const asks = [
     `node "${viaSkill}" --allow 'plugin:a@m' 'R1' 'SKILL.md'`,
@@ -252,6 +258,50 @@ test('Ruling L2: exact read-only invocations of our own scan.mjs / harden.mjs pa
     const r = d('Bash', { command });
     assert.equal(r.decision, 'ask', command);
     assert.equal(r.ruleId, 'SELF_PROTECT', command);
+  }
+});
+
+test('Ruling L3: read-only self invocation is a positive ASCII allow-list (word-merge and re-split bypasses ask)', () => {
+  const S = fs.realpathSync.native(SELF);
+  const scanWin = path.join(S, 'scripts', 'scan.mjs');
+  const scanFwd = scanWin.replace(/\\/g, '/');
+  const UB = '--update-baseline';
+  const asks = {
+    Bash: [
+      // bash merges `x\ --project` into one word and unescapes `\--update-baseline` into a flag
+      `node ${scanFwd} --json --project x\\ --project \\${UB}`,
+      `node "${scanWin}" --json`, // any backslash under Bash
+      `node "${scanFwd}" --path "C:\\x"`,
+    ],
+    PowerShell: [
+      // PowerShell 5.1 splits on U+0085 (NEL); JS \s does not
+      `node "${scanWin}" --project x\u0085${UB}`,
+      // PowerShell 5.1 passes embedded double quotes unescaped: node re-splits the value
+      `node "${scanWin}" --project 'x y" ${UB}'`,
+      `node "${scanWin}" --project 'x y" "${UB}'`,
+      `node "${scanWin}" --project @Error --json`, // splatting shifts value slots
+      `node "${scanWin}" --path "C:\\x"`, // backslash outside the script path
+      `node ${scanWin} --json`, // backslash in an unquoted script path
+    ],
+  };
+  for (const tool of ['Bash', 'PowerShell']) {
+    const own = tool === 'Bash' ? scanFwd : scanWin;
+    asks[tool].push(
+      `node "${own}" --project x\u0085${UB}`,
+      `node "${own}" --project x\u00A0${UB}`,
+      `node "${own}" --project x\u2028${UB}`,
+      `node "${own}" --project x\t${UB}`,
+      `node "${own}"\t--json`,
+      `node "${own}" --json --path "C:/Users/x/Configurações Locais"`,
+      `node "${own}" --project -x`,
+      `node "${own}" --project "x ${UB}"`,
+      `node "${own}" --project 'x"y'`,
+    );
+    for (const command of asks[tool]) {
+      const r = d(tool, { command });
+      assert.equal(r.decision, 'ask', `${tool}: ${JSON.stringify(command)}`);
+      assert.equal(r.ruleId, 'SELF_PROTECT', `${tool}: ${JSON.stringify(command)}`);
+    }
   }
 });
 
