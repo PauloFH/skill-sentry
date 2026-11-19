@@ -101,6 +101,8 @@ Claude 列出每条建议，解释其重要性，只有在你对该项明确回�
 
 如果守卫自身出错，它会以放行方式失败：向 `guard.log` 写入一行，并让调用继续，而不是破坏你的会话。
 
+对 skill-sentry 自身脚本的只读运行（只带 `--json`、`--path`、`--component`、`--diff-only`、`--claude-home` 或 `--project` 的 `scan.mjs`，以及 `harden.mjs check`）不会弹出确认。会修改其数据或你的设置的步骤（`--update-baseline`、`--allow` 和 `harden.mjs apply`）按设计会弹出确认：对你已经同意的操作批准即可。
+
 ### 白名单
 
 如果某个发现是已知的误报，可以逐条放行：

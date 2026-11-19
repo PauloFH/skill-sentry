@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { matchCommand, matchPath } from './rules.mjs';
-import { escapeInvisible, truncate } from './text.mjs';
+import { escapeInvisible, truncate, INVISIBLE_CLASS } from './text.mjs';
 import { isCommandAllowed } from './allowlist.mjs';
 
 // Path strings collected from MCP arguments; one more fails safe (PATH_UNRESOLVED).
@@ -284,6 +284,55 @@ function rootForms(r) {
   return [...new Set([lowerOnWin(slashes(path.resolve(r))), canonRoot(r)])].filter(f => f.length > 3);
 }
 
+// ---- Ruling L2: read-only invocations of our own scripts ----
+
+// Anything a shell could interpret beyond plain words: separators, redirects, substitution, globbing,
+// escapes, comments, expansion; control and invisible characters.
+const SHELL_META = new RegExp(`[;&|<>\`$()\\r\\n{}%!*?\\[\\]#^\\x00-\\x1f\\x7f${INVISIBLE_CLASS}]`, 'u');
+const SCAN_FLAGS = new Set(['--json', '--diff-only']);
+const SCAN_VALUE_FLAGS = new Set(['--path', '--component', '--claude-home', '--project']);
+
+/** Whitespace-separated words, each fully bare, "double-quoted" or 'single-quoted'; null on anything else. */
+function plainWords(cmd) {
+  const words = [];
+  const re = /\s*(?:"([^"]*)"|'([^']*)'|([^\s"']+))(?=\s|$)/y;
+  let i = 0;
+  const s = cmd.trimEnd();
+  while (i < s.length) {
+    re.lastIndex = i;
+    const m = re.exec(s);
+    if (!m) return null;
+    words.push(m[1] ?? m[2] ?? m[3]);
+    i = re.lastIndex;
+  }
+  return words;
+}
+
+/**
+ * `node <selfRoot>/scripts/scan.mjs <read-only flags>` or `node <selfRoot>/scripts/harden.mjs check`,
+ * exactly, with no shell metacharacters. Mutating forms (--allow, --update-baseline, apply) do not
+ * qualify: they keep the SELF_PROTECT prompt, which doubles as the user's consent.
+ */
+export function isReadOnlySelfInvocation(cmd, selfRoot) {
+  if (!str(cmd) || !str(selfRoot) || SHELL_META.test(cmd)) return false;
+  const w = plainWords(cmd);
+  if (!w || w.length < 2 || !/^node(?:\.exe)?$/i.test(w[0])) return false;
+  const script = w[1];
+  if (!path.isAbsolute(script) || isUnusualPath(script)) return false;
+  const target = lowerOnWin(slashes(path.resolve(script)));
+  const is = name => rootForms(selfRoot).some(f => target === `${f}/scripts/${lowerOnWin(name)}`);
+  const args = w.slice(2);
+  if (is('harden.mjs')) return args.length === 1 && args[0] === 'check';
+  if (!is('scan.mjs')) return false;
+  for (let i = 0; i < args.length; i++) {
+    if (SCAN_FLAGS.has(args[i])) continue;
+    if (!SCAN_VALUE_FLAGS.has(args[i])) return false;
+    const v = args[++i];
+    if (v === undefined || v.startsWith('--')) return false;
+  }
+  return true;
+}
+
 // ---- decision ----
 
 const resolveLazy = v => (typeof v === 'function' ? v() : v);
@@ -368,6 +417,7 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
   if (t.commands.length) {
     const needles = [...[dataDir, selfRoot].filter(str).flatMap(rootForms), lowerOnWin('.claude/skill-sentry')];
     for (const c of t.commands) {
+      if (isReadOnlySelfInvocation(c, selfRoot)) continue; // Ruling L2
       const texts = [normCommandText(c), normCommandText(deobfuscate(c))];
       if (texts.some(text => SELF_SEGMENT.test(text) || needles.some(n => mentions(text, n)))) {
         return { decision: 'ask', ruleId: 'SELF_PROTECT', severity: 'high', reason: 'shell command touches skill-sentry data or install directory', snippet: snip(c) };

@@ -25,6 +25,8 @@ Check the user's Claude Code settings and apply only the hardening items the use
 
    Several approved ids can be passed in one call. The helper merges only the requested ids, keeps every other setting, and never duplicates a rule.
 
+   `apply` changes settings through skill-sentry's own script, so the runtime guard shows a confirmation prompt for it. That prompt is expected: the user approves it for the items they already agreed to. The read-only `check` runs without a prompt.
+
 5. After applying, tell the user the backup path the helper printed. The backup is a copy of the previous `settings.json` and can be restored by copying it back.
 
 6. Answer in the language the user is writing in.

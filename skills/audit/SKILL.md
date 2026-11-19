@@ -23,15 +23,15 @@ Run the skill-sentry scanner, then explain the result to the user. The scanner i
    - A short summary: how many components, how many per verdict, and what changed since the baseline (added, changed, removed components).
    - Every entry of `problems` (unreadable configs, allowlist or baseline trouble, components not found) listed on its own.
    - A table for each component whose verdict is not `ok`, with the columns component, scannerVerdict, Claude assessment.
-   - Every component with `incomplete: true`, and every id in `summary.diff.incomplete`, listed by name: the scan stopped before reading all of its files, so its verdict is not a clean result. Suggest re-running the audit for that component with `--component <id>`.
+   - Every component with `incomplete: true`, and every id in `summary.diff.incomplete`, listed by name: the scan stopped before reading all of its files, so its verdict is not a clean result. Suggest re-running the audit for that component with `--component '<id>'` (quoted as described in step 5).
    - For each relevant finding: what it is, why it matters, and the recommended action (remove the component, pin a version, or add an allowlist entry when it is a known false positive).
 
 5. Offer the following follow-ups. Do each one only after the user gives an explicit yes for that specific action, and ask again for the next one:
    - Accept the current state as the new baseline by re-running the scanner with `--update-baseline`.
    - Allowlist a finding, one finding at a time: `node "<base directory>/../../scripts/scan.mjs" --allow '<componentId>' '<ruleId>' '<file>'`, with the values copied from the report exactly as shown. This records the sha256 of the file as it is now, so the entry stops applying as soon as the file changes. Add `--reason '<text>'` to record why.
      Component ids and file paths come from the scanned files, so quote every value: wrap each one in single quotes. With the Bash tool, write an embedded single quote as `'\''`. With the PowerShell tool, double it (`''`). Never build the command when a value contains a line break; tell the user instead.
-
-   The baseline update and the allowlist entry change skill-sentry's own data, so the runtime guard shows a confirmation prompt for them. That prompt is expected: the user approves it once for the action they already agreed to.
    - When `meta.skillspectorAvailable` is true in the report, run a second opinion with `skillspector scan <dir> --no-llm` on the directory the user names.
+
+   The baseline update and the allowlist entry change skill-sentry's own data, so the runtime guard shows a confirmation prompt for them. That prompt is expected: the user approves it once for the action they already agreed to. The read-only scan in step 1 runs without a prompt.
 
 6. Answer in the language the user is writing in.

@@ -101,6 +101,8 @@ The guard is a PreToolUse hook installed with the plugin. It watches Bash, Power
 
 If the guard itself fails, it fails open: it writes a line to `guard.log` and lets the call proceed rather than breaking your session.
 
+Read-only runs of skill-sentry's own scripts (`scan.mjs` with only `--json`, `--path`, `--component`, `--diff-only`, `--claude-home` or `--project`, and `harden.mjs check`) are not prompted. The steps that change its data or your settings (`--update-baseline`, `--allow` and `harden.mjs apply`) show a confirmation prompt by design: approve it for the action you already agreed to.
+
 ### Allowlist
 
 If a finding is a known false positive, allow it one finding at a time:

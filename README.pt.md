@@ -101,6 +101,8 @@ A guarda é um hook PreToolUse instalado com o plugin. Ela observa chamadas de B
 
 Se a própria guarda falhar, ela falha aberta: grava uma linha em `guard.log` e deixa a chamada seguir, em vez de quebrar a sua sessão.
 
+Execuções somente leitura dos scripts do próprio skill-sentry (`scan.mjs` só com `--json`, `--path`, `--component`, `--diff-only`, `--claude-home` ou `--project`, e `harden.mjs check`) não pedem confirmação. Os passos que alteram os dados dele ou as suas configurações (`--update-baseline`, `--allow` e `harden.mjs apply`) mostram um pedido de confirmação de propósito: aprove-o para a ação com que você já concordou.
+
 ### Allowlist
 
 Se um achado for um falso positivo conhecido, libere-o um achado por vez:
