@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { extractTargets, decide, formatReason, scanSummary, originToComponentId } from '../scripts/lib/guardcore.mjs';
+import { extractTargets, decide, formatReason, scanSummary, originToComponentId, isUnusualPath } from '../scripts/lib/guardcore.mjs';
 import { findOrigin } from '../scripts/lib/origin.mjs';
 import { discover } from '../scripts/lib/inventory.mjs';
 
@@ -280,6 +280,115 @@ test('Ruling K: everyday paths stay none', () => {
   assert.equal(timedD('Glob', { pattern: 'src/**/*.{js,ts}' }).decision, 'none');
   assert.equal(timedD('mcp__plugin_x_srv__fetch', { url: 'https://example.com/a/b', note: 'see a/b for this.' }, { mcpPlugin: 'x' }).decision, 'none');
   assert.equal(timedD('Bash', { command: 'git status' }).decision, 'none');
+});
+
+// ---------------------------------------------------------------- fix round 4
+// `C://Users/...` is a filesystem path (Node resolves it to `C:\Users\...`), never a URL.
+const driveSlashes = p => p.replace(/^([A-Za-z]):\\/, '$1://').replace(/\\/g, '/');
+function junctionFixture(t) {
+  if (process.platform !== 'win32') { t.skip('win32 only'); return null; }
+  const root = tmp('jn');
+  const claude = path.join(root, 'home', '.claude');
+  const data = path.join(claude, 'skill-sentry');
+  const ssh = path.join(root, 'home', '.ssh');
+  const work = path.join(root, 'work');
+  for (const dir of [data, ssh, work]) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(data, 'allowlist.json'), '{}');
+  fs.writeFileSync(path.join(ssh, 'id_rsa'), 'x');
+  try {
+    fs.symlinkSync(data, path.join(work, 'j1'), 'junction');
+    fs.symlinkSync(claude, path.join(work, 'j2'), 'junction');
+    fs.symlinkSync(ssh, path.join(work, 'keys'), 'junction');
+  } catch { t.skip('cannot create junctions'); return null; }
+  const D = (toolName, toolInput, origin = null) => decide({ toolName, toolInput, origin, allowlist: EMPTY, selfRoot: SELF, dataDir: data });
+  return { work, D };
+}
+test('round 4: C:// drive spelling still resolves junctions to the data dir', t => {
+  const f = junctionFixture(t);
+  if (!f) return;
+  for (const rel of ['j1\\allowlist.json', 'j1\\sub\\new.json', 'j2\\skill-sentry\\allowlist.json']) {
+    const plain = path.join(f.work, rel);
+    for (const p of [plain, driveSlashes(plain)]) {
+      const r = f.D('Write', { file_path: p, content: 'x' });
+      assert.equal(r.decision, 'ask', p);
+      assert.equal(r.ruleId, 'SELF_PROTECT_WRITE', p);
+    }
+  }
+});
+test('round 4: C:// drive spelling still resolves junctions to an ssh dir', t => {
+  const f = junctionFixture(t);
+  if (!f) return;
+  const p = driveSlashes(path.join(f.work, 'keys', 'id_rsa'));
+  const r = f.D('Read', { file_path: p }, { skill: 'evil:x' });
+  assert.equal(r.decision, 'ask', p);
+  assert.equal(r.ruleId, 'SECRET_PATH_SSH', p);
+});
+test('round 4: an MCP C:// spelling does not poison the resolver cache for the plain spelling', t => {
+  const f = junctionFixture(t);
+  if (!f) return;
+  const plain = path.join(f.work, 'j1', 'allowlist.json');
+  const r = f.D('mcp__fs__write_file', { a: driveSlashes(plain), b: plain, content: 'x' });
+  assert.equal(r.decision, 'ask');
+  assert.equal(r.ruleId, 'SELF_PROTECT_WRITE');
+});
+test('round 4: one-letter schemes are drive letters, real URLs stay URLs with no I/O', () => {
+  assert.equal(isUnusualPath('C://Users/x/skill-sentry./allowlist.json'), true);
+  assert.equal(isUnusualPath('https://example.com/a./b'), false);
+  const rp = fs.realpathSync.native;
+  const st = fs.statSync;
+  let touched = 0;
+  fs.realpathSync.native = (p, ...a) => { if (String(p).includes('example.com')) touched++; return rp(p, ...a); };
+  fs.statSync = (p, ...a) => { if (String(p).includes('example.com')) touched++; return st(p, ...a); };
+  try {
+    assert.equal(d('mcp__plugin_x_srv__fetch', { url: 'https://example.com/x' }, { mcpPlugin: 'x' }).decision, 'none');
+    assert.equal(d('mcp__plugin_x_srv__write_file', { url: 'https://example.com/x' }, { mcpPlugin: 'x' }).decision, 'none');
+  } finally {
+    fs.realpathSync.native = rp;
+    fs.statSync = st;
+  }
+  assert.equal(touched, 0);
+});
+test('round 4: benign plugin MCP payloads are not flagged as truncated', () => {
+  const o = { mcpPlugin: 'x' };
+  const values = Array.from({ length: 150 }, (_, i) => [`2024/01/${(i % 28) + 1}`, 'text/html', `https://example.com/r/${i}`, i]);
+  assert.equal(timedD('mcp__plugin_x_sheets__update_values', { spreadsheetId: 'abc', range: 'A1:D150', values }, o).decision, 'none');
+  const urls = Array.from({ length: 130 }, (_, i) => `https://example.com/item/${i}`);
+  assert.equal(timedD('mcp__plugin_x_web__fetch_many', { urls }, o).decision, 'none');
+  const requests = [
+    { insertText: { location: { segmentId: '', index: 1 }, text: 'x' } },
+    { updateTextStyle: { range: { startIndex: 1, endIndex: 2 }, textStyle: { bold: true, foregroundColor: { color: { rgbColor: { red: 1, green: 0, blue: 0 } } } }, fields: 'bold,foregroundColor' } },
+    { updateParagraphStyle: { range: { startIndex: 1, endIndex: 2 }, paragraphStyle: { shading: { backgroundColor: { color: { rgbColor: { blue: 1 } } } } }, fields: 'shading' } },
+  ];
+  assert.equal(timedD('mcp__plugin_x_docs__batch_update', { documentId: 'abc', requests }, o).decision, 'none');
+});
+test('round 4: path strings below the old depth limit are still inspected', () => {
+  const allow = DATA + '/allowlist.json';
+  const nest = (n, leaf) => { let v = leaf; for (let i = 0; i < n; i++) v = { [`k${i}`]: v }; return v; };
+  for (const n of [5, 6, 12, 3000]) {
+    for (const o of [null, { mcpPlugin: 'x' }]) {
+      const r = timedD('mcp__fs__write_file', nest(n, allow), o);
+      assert.equal(r.decision, 'ask', `depth ${n}`);
+      assert.equal(r.ruleId, 'SELF_PROTECT_WRITE', `depth ${n}`);
+    }
+  }
+});
+test('round 4: more real path strings than the cap still fail safe', () => {
+  const paths = Array.from({ length: 130 }, (_, i) => (i % 2 ? `C:\\Users\\x\\proj\\f${i}.txt` : `/home/x/proj/f${i}.txt`));
+  const r = timedD('mcp__plugin_x_fs__read_files', { paths }, { mcpPlugin: 'x' });
+  assert.equal(r.decision, 'ask');
+  assert.equal(r.ruleId, 'PATH_UNRESOLVED');
+  assert.equal(timedD('mcp__plugin_x_fs__read_files', { paths }).decision, 'log');
+});
+test('round 4: secret paths hidden behind many URLs are still matched', () => {
+  const urls = Object.fromEntries(Array.from({ length: 130 }, (_, i) => [`u${i}`, `https://example.com/item/${i}`]));
+  // Repeated cells count once; a MIME-shaped string that a path rule matches is still matched.
+  assert.equal(timedD('mcp__plugin_x_s__update', { v: Array.from({ length: 150 }, () => 'N/A') }, { mcpPlugin: 'x' }).decision, 'none');
+  assert.equal(timedD('mcp__plugin_x_s__read', { ...urls, a: 'text/.env' }, { mcpPlugin: 'x' }).ruleId, 'SECRET_PATH_ENV');
+  for (const p of ['file:///C:/Users/x/.ssh/id_rsa', 'docs/.ssh/id_rsa', '~/.ssh/id_rsa']) {
+    const r = timedD('mcp__plugin_x_s__read', { ...urls, a: p }, { mcpPlugin: 'x' });
+    assert.equal(r.decision, 'ask', p);
+    assert.equal(r.ruleId, 'SECRET_PATH_SSH', p);
+  }
 });
 test('decide does not depend on the data dir existing or being a directory', () => {
   const file = path.join(tmp('blk'), 'skill-sentry');

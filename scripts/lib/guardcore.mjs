@@ -7,8 +7,10 @@ import { matchCommand, matchPath } from './rules.mjs';
 import { escapeInvisible, truncate } from './text.mjs';
 import { isCommandAllowed } from './allowlist.mjs';
 
+// Path strings collected from MCP arguments; one more fails safe (PATH_UNRESOLVED).
 const MAX_MCP_STRINGS = 128;
-const MAX_MCP_DEPTH = 5;
+// Values visited in MCP arguments (iterative walk, any depth); one more fails safe.
+const MAX_MCP_NODES = 50_000;
 // MCP argument keys that carry content, never a path (content is never inspected, §6.2).
 const MCP_CONTENT_KEYS = new Set(['content', 'contents', 'text', 'body', 'data', 'new_string', 'old_string', 'new_source', 'message', 'prompt']);
 const MCP_WRITE_TOOL = /write|edit|create|move|copy|append|rename|delete|remove|upload|save|put/i;
@@ -16,19 +18,37 @@ const MCP_WRITE_TOOL = /write|edit|create|move|copy|append|rename|delete|remove|
 const str = v => typeof v === 'string' && v.length > 0;
 const pathLike = s => str(s) && s.length <= 4096 && !/[\r\n]/.test(s) && (s.includes('/') || s.includes('\\') || s.startsWith('~'));
 
-/** Collect path-like strings; `state.truncated` is set when the cap or depth limit hid anything. */
-function collectPathStrings(value, out, state, depth = 0, key = '') {
-  if (MCP_CONTENT_KEYS.has(key)) return;
-  if (depth > MAX_MCP_DEPTH) { if (value && typeof value === 'object') state.truncated = true; return; }
-  if (typeof value === 'string') {
-    if (!pathLike(value)) return;
-    if (out.length >= MAX_MCP_STRINGS) { state.truncated = true; return; }
-    out.push(value);
-    return;
-  }
-  if (Array.isArray(value)) { for (const v of value) collectPathStrings(v, out, state, depth + 1, ''); return; }
-  if (value && typeof value === 'object') {
-    for (const [k, v] of Object.entries(value)) collectPathStrings(v, out, state, depth + 1, k.toLowerCase());
+// A scheme has 2+ characters: `C://Users/x` is a drive path (Node resolves it to `C:\Users\x`), not a URL.
+const URL_LIKE = /^[a-z][\w+.-]+:\/\//i;
+const MIME_TYPE = /^(?:application|audio|font|image|message|model|multipart|text|video)\/[a-z0-9][\w.+-]*$/i;
+const SLASH_DATE = /^\d{1,4}\/\d{1,2}\/\d{1,4}$/;
+/** URLs, MIME types and slash dates: never local paths, so they get no I/O and no slot in the cap. */
+const nonPathString = s => URL_LIKE.test(s) || MIME_TYPE.test(s) || SLASH_DATE.test(s);
+
+/**
+ * Collect path-like strings in encounter order, at any depth (iterative, so deep nesting cannot
+ * overflow the stack). Non-path strings are kept only if a path rule matches them as written
+ * (`file:///…/.ssh/id_rsa`). `state.truncated` is set when the string cap or node budget hid anything.
+ */
+function collectPathStrings(root, out, state) {
+  const stack = [[root, '']];
+  const seen = new Set();
+  let nodes = 1;
+  while (stack.length) {
+    const [value, key] = stack.pop();
+    if (MCP_CONTENT_KEYS.has(key)) continue;
+    if (typeof value === 'string') {
+      if (seen.has(value) || !pathLike(value) || (nonPathString(value) && !matchPath(value).length)) continue;
+      if (out.length >= MAX_MCP_STRINGS) { state.truncated = true; return; }
+      seen.add(value);
+      out.push(value);
+      continue;
+    }
+    if (!value || typeof value !== 'object') continue;
+    const kids = Array.isArray(value) ? value.map(v => [v, '']) : Object.entries(value).map(([k, v]) => [v, k.toLowerCase()]);
+    nodes += kids.length;
+    if (nodes > MAX_MCP_NODES) { state.truncated = true; return; }
+    for (let n = kids.length - 1; n >= 0; n--) stack.push(kids[n]);
   }
 }
 
@@ -112,7 +132,6 @@ function plainPath(p) {
 const DEVICE_OR_UNC = /^[\\/]{2}/;                                     // \\?\, \\.\, \\host\, //host/
 const SHORT_NAME_SEGMENT = /(?:^|\/)[^/]{1,6}~\d+(?:\.[^/]{0,3})?(?:\/|$)/i; // 8.3 alias (CLAUDE~1, SETTIN~1.JSO)
 const NTFS_STREAM = /::\$|:\$data/i;
-const URL_LIKE = /^[a-z][\w+.-]*:\/\//i;
 // Path-shaped: absolute, home-relative or explicitly relative (MCP prose like "see a/b." is not).
 const PATH_SHAPED = /^(?:[\\/]|~|\.{1,2}[\\/]|[a-z]:)/i;
 
@@ -151,35 +170,40 @@ const fileId = p => {
 };
 
 /**
- * Per-decision path resolver: classifies each path, dedupes by absolute form, and spends at most one
- * realpath (plus one parent stat for writes) per distinct ordinary path, within MAX_IO_PATHS.
+ * Per-decision path resolver. Spelling-dependent facts (unusual form, URL) are computed per call from
+ * the raw string; only I/O results (`long`, parent id) are cached, keyed by the normalized absolute
+ * path, so a skipped spelling never hides the resolution of another spelling of the same file. At most
+ * one realpath (plus one parent stat for writes) per distinct ordinary path, within MAX_IO_PATHS.
  */
 function makeResolver(cwd, mcp) {
-  const cache = new Map();
+  const io = new Map();
   const state = { left: MAX_IO_PATHS, unresolved: false };
   const get = p => {
     const raw = String(p);
     let abs = raw;
     try { abs = path.resolve(cwd || process.cwd(), plainPath(raw)); } catch { /* keep raw */ }
-    if (cache.has(abs)) return cache.get(abs);
     const checkForm = !mcp || PATH_SHAPED.test(raw);
     const unusual = checkForm && (isUnusualPath(raw) || isUnusualPath(abs));
-    let long = null;
-    if (!unusual && !URL_LIKE.test(raw)) {
-      if (state.left > 0) {
-        state.left--;
-        try { long = realpathish(abs); } catch { long = null; }
-      } else {
-        state.unresolved = true;
-      }
+    if (unusual || (mcp && nonPathString(raw))) return { abs, long: null, unusual, io: null };
+    const key = normForCompare(abs);
+    let e = io.get(key);
+    if (!e) {
+      if (state.left <= 0) { state.unresolved = true; return { abs, long: null, unusual, io: null }; }
+      state.left--;
+      let long = null;
+      try { long = realpathish(abs); } catch { long = null; }
+      e = { long, parentId: undefined };
+      io.set(key, e);
     }
-    const r = { abs, long, unusual, parentId: undefined };
-    cache.set(abs, r);
-    return r;
+    // A resolved form that is itself unusual (mapped drive -> UNC, volume without a letter) fails safe too.
+    // Unchecked MCP strings keep their raw tail, so only the resolved prefix (device/UNC) counts for them.
+    const longUnusual = e.long !== null && (checkForm ? isUnusualPath(e.long) : DEVICE_OR_UNC.test(e.long));
+    return { abs, long: e.long, unusual: longUnusual, io: e };
   };
   const parentId = r => {
-    if (r.parentId === undefined) r.parentId = r.long ? fileId(path.dirname(r.long)) : null;
-    return r.parentId;
+    if (!r.io) return null;
+    if (r.io.parentId === undefined) r.io.parentId = r.long ? fileId(path.dirname(r.long)) : null;
+    return r.io.parentId;
   };
   return { get, parentId, state };
 }
