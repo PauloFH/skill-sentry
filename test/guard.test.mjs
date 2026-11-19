@@ -208,8 +208,10 @@ test('skill-sentry segment boundary is any non-name character on both sides', ()
 });
 test('non-local UNC paths are matched by string only (no network I/O)', () => {
   const timed = fn => { const t0 = performance.now(); const r = fn(); return { r, ms: performance.now() - t0 }; };
+  // Ruling K: any UNC path is an unusual form -> PATH_UNUSUAL_READ (log without origin, ask with one).
   let x = timed(() => d('Read', { file_path: '\\\\10.255.255.2\\share\\x' }));
-  assert.equal(x.r.decision, 'none');
+  assert.equal(x.r.decision, 'log');
+  assert.equal(x.r.ruleId, 'PATH_UNUSUAL_READ');
   assert.ok(x.ms < 500, `Read UNC took ${x.ms.toFixed(0)} ms`);
   x = timed(() => d('Read', { file_path: '\\\\10.255.255.2\\share\\.ssh\\id_rsa' }, { skill: 'evil:x' }));
   assert.equal(x.r.decision, 'ask');
@@ -221,8 +223,63 @@ test('non-local UNC paths are matched by string only (no network I/O)', () => {
   assert.equal(x.r.ruleId, 'SECRET_PATH_SSH');
   assert.ok(x.ms < 500, `MCP decoys took ${x.ms.toFixed(0)} ms`);
   x = timed(() => d('Write', { file_path: '\\\\10.255.255.2\\share\\notes.md', content: 'x' }));
-  assert.equal(x.r.decision, 'none');
+  assert.equal(x.r.decision, 'ask');
+  assert.equal(x.r.ruleId, 'PATH_UNUSUAL_WRITE');
   assert.ok(x.ms < 500, `Write UNC took ${x.ms.toFixed(0)} ms`);
+});
+const timedD = (...a) => { const t0 = performance.now(); const r = d(...a); const ms = performance.now() - t0; assert.ok(ms < 500, `${a[0]} took ${ms.toFixed(0)} ms`); return r; };
+test('Ruling K: device, UNC, IP and ipv6-literal write targets ask regardless of origin', () => {
+  for (const p of [
+    '\\\\?\\Volume{00000000-0000-0000-0000-000000000000}\\Users\\x\\.claude\\skill-sentry\\allowlist.json',
+    '\\\\.\\Volume{00000000-0000-0000-0000-000000000000}\\Users\\x\\notes.md',
+    '\\\\?\\GLOBALROOT\\Device\\HarddiskVolume2\\x',
+    '\\\\192.168.1.50\\C$\\x\\allowlist.json',
+    '\\\\0--1.ipv6-literal.net\\C$\\x',
+    '\\\\?\\C:\\Users\\x\\notes.md',
+    '//server/share/x.md',
+    'C:\\Users\\x\\allowlist.json::$DATA',
+    'C:\\Users\\x\\skill-sentry.\\allowlist.json',
+    'C:\\Users\\x\\skill-sentry \\allowlist.json',
+  ]) {
+    const r = timedD('Write', { file_path: p, content: 'x' });
+    assert.equal(r.decision, 'ask', p);
+    assert.ok(['PATH_UNUSUAL_WRITE', 'SELF_PROTECT_WRITE'].includes(r.ruleId), p);
+  }
+});
+test('Ruling K: 8.3 short-name forms fail safe without I/O', () => {
+  const e = timedD('Edit', { file_path: 'C:\\Users\\x\\CLAUDE~1\\SETTIN~1.JSO', old_string: 'a', new_string: 'b' });
+  assert.equal(e.decision, 'ask');
+  assert.equal(e.ruleId, 'PATH_UNUSUAL_WRITE');
+  assert.equal(timedD('Read', { file_path: 'C:\\Users\\x\\SSH~1\\ID_ED2~1' }, { skill: 'evil:x' }).decision, 'ask');
+  const r = timedD('Read', { file_path: 'C:\\Users\\x\\SSH~1\\ID_ED2~1' });
+  assert.equal(r.decision, 'log');
+  assert.equal(r.ruleId, 'PATH_UNUSUAL_READ');
+});
+test('Ruling K: padding MCP arguments cannot exhaust the checks', () => {
+  const pads = n => Object.fromEntries(Array.from({ length: n }, (_, i) => [`p${i}`, `C:\\Users\\x\\proj\\pad${i}\\file${i}.txt`]));
+  const w = timedD('mcp__fs__write_file', { ...pads(40), target: 'C:\\Users\\x\\CLAUDE~1\\SKILL-~1\\ALLOWL~1.JSO' });
+  assert.equal(w.decision, 'ask');
+  const r = timedD('mcp__fs__read_file', { ...pads(64), target: 'C:\\Users\\x\\SSH~1\\ID_ED2~1' }, { skill: 'evil:x' });
+  assert.equal(r.decision, 'ask');
+  // Beyond the collection cap the call is not silently treated as clean.
+  const many = timedD('mcp__fs__read_file', { ...pads(300), target: '~/.ssh/id_rsa' }, { skill: 'evil:x' });
+  assert.equal(many.decision, 'ask');
+  assert.equal(timedD('mcp__fs__read_file', { ...pads(300), target: '~/.ssh/id_rsa' }).decision, 'log');
+});
+test('Ruling K: trailing dots after skill-sentry in shell text ask', () => {
+  for (const c of ['cd ~/.claude && del skill-sentry.\\allowlist.json', 'cd ~/.claude && del skill-sentry..\\x', 'cd ~/.claude && rm "skill-sentry. /x"']) {
+    const r = d('Bash', { command: c });
+    assert.equal(r.decision, 'ask', c);
+    assert.equal(r.ruleId, 'SELF_PROTECT', c);
+  }
+});
+test('Ruling K: everyday paths stay none', () => {
+  assert.equal(timedD('Write', { file_path: 'C:\\Users\\x\\proj\\src\\index.js', content: 'x' }).decision, 'none');
+  assert.equal(timedD('Read', { file_path: '/home/x/proj/README.md' }).decision, 'none');
+  assert.equal(timedD('Read', { file_path: './src/../README.md' }).decision, 'none');
+  assert.equal(timedD('Glob', { pattern: 'src/**/*.{js,ts}' }).decision, 'none');
+  assert.equal(timedD('mcp__plugin_x_srv__fetch', { url: 'https://example.com/a/b', note: 'see a/b for this.' }, { mcpPlugin: 'x' }).decision, 'none');
+  assert.equal(timedD('Bash', { command: 'git status' }).decision, 'none');
 });
 test('decide does not depend on the data dir existing or being a directory', () => {
   const file = path.join(tmp('blk'), 'skill-sentry');

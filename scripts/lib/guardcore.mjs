@@ -7,7 +7,7 @@ import { matchCommand, matchPath } from './rules.mjs';
 import { escapeInvisible, truncate } from './text.mjs';
 import { isCommandAllowed } from './allowlist.mjs';
 
-const MAX_MCP_STRINGS = 64;
+const MAX_MCP_STRINGS = 128;
 const MAX_MCP_DEPTH = 5;
 // MCP argument keys that carry content, never a path (content is never inspected, §6.2).
 const MCP_CONTENT_KEYS = new Set(['content', 'contents', 'text', 'body', 'data', 'new_string', 'old_string', 'new_source', 'message', 'prompt']);
@@ -16,12 +16,19 @@ const MCP_WRITE_TOOL = /write|edit|create|move|copy|append|rename|delete|remove|
 const str = v => typeof v === 'string' && v.length > 0;
 const pathLike = s => str(s) && s.length <= 4096 && !/[\r\n]/.test(s) && (s.includes('/') || s.includes('\\') || s.startsWith('~'));
 
-function collectPathStrings(value, out, depth = 0, key = '') {
-  if (out.length >= MAX_MCP_STRINGS || depth > MAX_MCP_DEPTH || MCP_CONTENT_KEYS.has(key)) return;
-  if (typeof value === 'string') { if (pathLike(value)) out.push(value); return; }
-  if (Array.isArray(value)) { for (const v of value) collectPathStrings(v, out, depth + 1, ''); return; }
+/** Collect path-like strings; `state.truncated` is set when the cap or depth limit hid anything. */
+function collectPathStrings(value, out, state, depth = 0, key = '') {
+  if (MCP_CONTENT_KEYS.has(key)) return;
+  if (depth > MAX_MCP_DEPTH) { if (value && typeof value === 'object') state.truncated = true; return; }
+  if (typeof value === 'string') {
+    if (!pathLike(value)) return;
+    if (out.length >= MAX_MCP_STRINGS) { state.truncated = true; return; }
+    out.push(value);
+    return;
+  }
+  if (Array.isArray(value)) { for (const v of value) collectPathStrings(v, out, state, depth + 1, ''); return; }
   if (value && typeof value === 'object') {
-    for (const [k, v] of Object.entries(value)) collectPathStrings(v, out, depth + 1, k.toLowerCase());
+    for (const [k, v] of Object.entries(value)) collectPathStrings(v, out, state, depth + 1, k.toLowerCase());
   }
 }
 
@@ -30,7 +37,13 @@ function collectPathStrings(value, out, depth = 0, key = '') {
  * @returns {{ commands: string[], readPaths: string[], writePaths: string[], urls: string[] }}
  */
 export function extractTargets(toolName, toolInput) {
+  return extractTargetsEx(toolName, toolInput).targets;
+}
+
+/** extractTargets plus `mcp` (targets came from MCP arguments) and `truncated` (some were not collected). */
+function extractTargetsEx(toolName, toolInput) {
   const t = { commands: [], readPaths: [], writePaths: [], urls: [] };
+  const state = { truncated: false, mcp: false };
   const i = toolInput && typeof toolInput === 'object' ? toolInput : {};
   switch (toolName) {
     case 'Bash':
@@ -61,11 +74,12 @@ export function extractTargets(toolName, toolInput) {
       break;
     default:
       if (typeof toolName === 'string' && toolName.startsWith('mcp__')) {
-        collectPathStrings(i, t.readPaths);
+        state.mcp = true;
+        collectPathStrings(i, t.readPaths, state);
         if (MCP_WRITE_TOOL.test(toolName.slice(toolName.lastIndexOf('__') + 2))) t.writePaths.push(...t.readPaths);
       }
   }
-  return t;
+  return { targets: t, ...state };
 }
 
 // ---- self-protection: canonical, case-insensitive (win32) comparison ----
@@ -86,59 +100,48 @@ function realpathish(abs) {
   return abs;
 }
 
-const reEscape = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-// Hosts that make a UNC admin share (`\\host\C$\...`) point back at a local drive.
-const LOCAL_HOST = `(?:localhost|127\\.0\\.0\\.1|\\[?::1\\]?${os.hostname() ? '|' + reEscape(os.hostname()) : ''})`;
-const ADMIN_SHARE_PREFIX = new RegExp(`^[\\\\/]{2}(?:[?.][\\\\/]UNC[\\\\/])?${LOCAL_HOST}[\\\\/]([a-z])\\$(?=[\\\\/]|$)`, 'i');
-const DEVICE_PREFIX = /^[\\/]{2}[?.][\\/](?=[a-z]:)/i;
-const ADMIN_SHARE_IN_TEXT = new RegExp(`//(?:[?.]/unc/)?${LOCAL_HOST}/([a-z])\\$(?=/|$|[\\s'"])`, 'gi');
-
-/** `\\localhost\C$\x`, `\\?\UNC\localhost\C$\x`, `\\?\C:\x` -> `C:\x`; `~` expanded. */
+/** `~` expanded; nothing else (aliases are handled by the unusual-form classification). */
 function plainPath(p) {
-  let s = String(p).replace(ADMIN_SHARE_PREFIX, '$1:').replace(DEVICE_PREFIX, '');
+  let s = String(p);
   if (s === '~' || s.startsWith('~/') || s.startsWith('~\\')) s = os.homedir() + s.slice(1);
   return s;
 }
 
-const LOCAL_HOST_ONLY = new RegExp(`^${LOCAL_HOST}$`, 'i');
+// ---- Ruling K: unusual path forms (classified by string only, never touched on disk) ----
 
-/** Host of a UNC path (`\\host\`, `\\?\UNC\host\`, `//host/`); '' for other device paths; null if not UNC. */
-function uncHost(abs) {
-  const s = String(abs);
-  if (!/^[\\/]{2}/.test(s)) return null;
-  const dev = /^[\\/]{2}[?.][\\/](?:UNC[\\/]([^\\/]*))?/i.exec(s);
-  if (dev) return dev[1] ?? '';
-  return /^[\\/]{2}([^\\/]*)/.exec(s)[1];
-}
+const DEVICE_OR_UNC = /^[\\/]{2}/;                                     // \\?\, \\.\, \\host\, //host/
+const SHORT_NAME_SEGMENT = /(?:^|\/)[^/]{1,6}~\d+(?:\.[^/]{0,3})?(?:\/|$)/i; // 8.3 alias (CLAUDE~1, SETTIN~1.JSO)
+const NTFS_STREAM = /::\$|:\$data/i;
+const URL_LIKE = /^[a-z][\w+.-]*:\/\//i;
+// Path-shaped: absolute, home-relative or explicitly relative (MCP prose like "see a/b." is not).
+const PATH_SHAPED = /^(?:[\\/]|~|\.{1,2}[\\/]|[a-z]:)/i;
 
 /**
- * Whether the filesystem may be touched for `abs`. Never for UNC/device paths on a non-local host
- * (an unreachable host blocks for ~20 s and would push the guard past its timeout). `io.left` caps
- * the number of paths that get realpath/stat work in one decision.
+ * Device paths, UNC paths of any host, 8.3 short-name segments, NTFS stream suffixes, and components
+ * ending in `.` or space (Win32 strips them) can alias protected files in ways string and realpath
+ * comparison cannot follow without network or device I/O.
  */
-const MAX_IO_PATHS = 32;
-function mayTouch(abs, io) {
-  const host = uncHost(abs);
-  if (host !== null && !LOCAL_HOST_ONLY.test(host)) return false;
-  if (!io) return true;
-  if (io.left <= 0) return false;
-  io.left--;
-  return true;
+export function isUnusualPath(p) {
+  const s = String(p);
+  if (URL_LIKE.test(s)) return false;
+  const fwd = s.replace(/\\/g, '/');
+  if (DEVICE_OR_UNC.test(s) || SHORT_NAME_SEGMENT.test(fwd) || NTFS_STREAM.test(s)) return true;
+  return fwd.split('/').some(c => c !== '.' && c !== '..' && /[. ]$/.test(c));
 }
 
-/** Absolute long form: resolved, admin shares mapped, symlinks and 8.3 names expanded where allowed. */
-function longPath(p, cwd, io) {
-  const abs = path.resolve(cwd || process.cwd(), plainPath(p));
-  return mayTouch(abs, io) ? realpathish(abs) : abs;
-}
+// Distinct ordinary paths that get realpath + stat in one decision (covers MAX_MCP_STRINGS read+write).
+const MAX_IO_PATHS = MAX_MCP_STRINGS * 2;
 
-function canon(p, cwd, io) {
-  let out = longPath(p, cwd, io).replace(/\\/g, '/');
+const normForCompare = s => {
+  let out = String(s).replace(/\\/g, '/');
   if (out.length > 1 && out.endsWith('/')) out = out.replace(/\/+$/, '');
   return process.platform === 'win32' ? out.toLowerCase() : out;
-}
+};
 
-const isUnder = (p, root) => p === root || p.startsWith(root.endsWith('/') ? root : root + '/');
+/** Canonical form of a protected root (trusted configuration, resolved without the budget). */
+function canonRoot(r) {
+  return normForCompare(realpathish(path.resolve(r)));
+}
 
 const fileId = p => {
   try {
@@ -147,19 +150,46 @@ const fileId = p => {
   } catch { return null; }
 };
 
-/** True if `abs` or one of its existing ancestors is the same file (dev+ino) as a protected root. */
-function underByIdentity(abs, rootIds, io) {
-  if (!rootIds.size || !mayTouch(abs, io)) return false;
-  let cur = abs;
-  for (let n = 0; n < 64; n++) {
-    const id = fileId(cur);
-    if (id && rootIds.has(id)) return true;
-    const parent = path.dirname(cur);
-    if (parent === cur) return false;
-    cur = parent;
-  }
-  return false;
+/**
+ * Per-decision path resolver: classifies each path, dedupes by absolute form, and spends at most one
+ * realpath (plus one parent stat for writes) per distinct ordinary path, within MAX_IO_PATHS.
+ */
+function makeResolver(cwd, mcp) {
+  const cache = new Map();
+  const state = { left: MAX_IO_PATHS, unresolved: false };
+  const get = p => {
+    const raw = String(p);
+    let abs = raw;
+    try { abs = path.resolve(cwd || process.cwd(), plainPath(raw)); } catch { /* keep raw */ }
+    if (cache.has(abs)) return cache.get(abs);
+    const checkForm = !mcp || PATH_SHAPED.test(raw);
+    const unusual = checkForm && (isUnusualPath(raw) || isUnusualPath(abs));
+    let long = null;
+    if (!unusual && !URL_LIKE.test(raw)) {
+      if (state.left > 0) {
+        state.left--;
+        try { long = realpathish(abs); } catch { long = null; }
+      } else {
+        state.unresolved = true;
+      }
+    }
+    const r = { abs, long, unusual, parentId: undefined };
+    cache.set(abs, r);
+    return r;
+  };
+  const parentId = r => {
+    if (r.parentId === undefined) r.parentId = r.long ? fileId(path.dirname(r.long)) : null;
+    return r.parentId;
+  };
+  return { get, parentId, state };
 }
+
+const isUnder = (p, root) => p === root || p.startsWith(root.endsWith('/') ? root : root + '/');
+
+const reEscape = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// Hosts that make a UNC admin share (`\\host\C$\...`) point back at a local drive (shell text only).
+const LOCAL_HOST = `(?:localhost|127\\.0\\.0\\.1|\\[?::1\\]?${os.hostname() ? '|' + reEscape(os.hostname()) : ''})`;
+const ADMIN_SHARE_IN_TEXT = new RegExp(`//(?:[?.]/unc/)?${LOCAL_HOST}/([a-z])\\$(?=/|$|[\\s'"])`, 'gi');
 
 const lowerOnWin = s => (process.platform === 'win32' ? s.toLowerCase() : s);
 const slashes = s => String(s).replace(/\\/g, '/').replace(/\/+$/, '');
@@ -181,7 +211,8 @@ function normCommandText(cmd) {
 
 // Bare `skill-sentry` path segment (relative forms after `cd ~/.claude`), not `some-skill-sentry-fork`.
 // Boundary on both sides = start/end or any character outside [\w.-] (same notion as `mentions`).
-const SELF_SEGMENT = /(?:^|[^\w.-])skill-sentry(?=$|[^\w.-])/i;
+// Trailing dots/spaces are accepted (Ruling K): Win32 strips them, so `skill-sentry.\x` is the same dir.
+const SELF_SEGMENT = /(?:^|[^\w.-])skill-sentry[. ]*(?=$|[^\w.-])/i;
 
 /**
  * De-obfuscated copy of a shell command, used only to ADD matches: drops cmd `^` escapes,
@@ -209,7 +240,7 @@ function mentions(text, needle) {
 
 /** Normalized text forms of a protected root: as given (resolved) and canonical (realpath). */
 function rootForms(r) {
-  return [...new Set([lowerOnWin(slashes(path.resolve(r))), canon(r)])].filter(f => f.length > 3);
+  return [...new Set([lowerOnWin(slashes(path.resolve(r))), canonRoot(r)])].filter(f => f.length > 3);
 }
 
 // ---- decision ----
@@ -252,11 +283,10 @@ function commandMatches(target) {
   return out;
 }
 
-/** Path rule matches on the path as given plus its long form (8.3 names, symlinks, admin shares). */
-function pathMatches(p, cwd, keep, io) {
+/** Path rule matches on the path as given plus its resolved long form (symlinks, junctions, subst). */
+function pathMatches(p, keep, R) {
   const out = matchPath(p).filter(keep).map(m => ({ ...m, target: p }));
-  let long = null;
-  try { long = longPath(p, cwd, io); } catch { /* unresolvable: raw form only */ }
+  const { long } = R.get(p);
   if (long && long !== p) {
     for (const m of matchPath(long)) {
       if (keep(m) && !out.some(x => x.ruleId === m.ruleId)) out.push({ ...m, snippet: snip(p), target: p });
@@ -265,6 +295,8 @@ function pathMatches(p, cwd, keep, io) {
   return out;
 }
 
+const synthetic = (ruleId, p) => ({ ruleId, category: 'path', severity: 'high', snippet: snip(p), target: p });
+
 /**
  * Decide what to do with one tool call.
  * `origin` and `allowlist` may be values or zero-arg functions; functions are only called when the
@@ -272,13 +304,13 @@ function pathMatches(p, cwd, keep, io) {
  * @returns {{ decision: 'deny'|'ask'|'log'|'none', ruleId?: string, severity?: string, reason?: string, snippet?: string }}
  */
 export function decide({ toolName, toolInput, origin = null, allowlist = null, selfRoot, dataDir, cwd }) {
-  const t = extractTargets(toolName, toolInput);
+  const { targets: t, mcp, truncated } = extractTargetsEx(toolName, toolInput);
   const matches = [];
   for (const c of t.commands) matches.push(...commandMatches(c));
   for (const u of t.urls) matches.push(...commandMatches(u));
-  const io = { left: MAX_IO_PATHS }; // shared fs budget for this decision
-  for (const p of t.readPaths) matches.push(...pathMatches(p, cwd, m => m.category === 'secret', io));
-  for (const p of t.writePaths) matches.push(...pathMatches(p, cwd, WRITE_PROTECTED, io));
+  const R = makeResolver(cwd, mcp);
+  for (const p of t.readPaths) matches.push(...pathMatches(p, m => m.category === 'secret', R));
+  for (const p of t.writePaths) matches.push(...pathMatches(p, WRITE_PROTECTED, R));
 
   const critical = matches.filter(m => m.severity === 'critical');
   if (critical.length) {
@@ -304,16 +336,27 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
 
   if (t.writePaths.length) {
     const protectedRoots = [dataDir, selfRoot].filter(str);
-    const roots = protectedRoots.map(r => canon(r));
-    const rootIds = new Set(protectedRoots.map(r => path.resolve(r)).filter(r => mayTouch(r)).map(fileId).filter(Boolean));
+    const roots = protectedRoots.map(canonRoot);
+    const rootIds = new Set(protectedRoots.map(r => fileId(path.resolve(r))).filter(Boolean));
     for (const p of t.writePaths) {
-      const c = canon(p, cwd, io);
-      let raw = null;
-      try { raw = path.resolve(cwd || process.cwd(), plainPath(p)); } catch { /* string compare only */ }
-      if (roots.some(r => isUnder(c, r)) || (raw && underByIdentity(raw, rootIds, io))) {
+      const r = R.get(p);
+      const c = normForCompare(r.long ?? r.abs);
+      if (roots.some(root => isUnder(c, root)) || (r.long && rootIds.size && rootIds.has(R.parentId(r)))) {
         return { decision: 'ask', ruleId: 'SELF_PROTECT_WRITE', severity: 'high', reason: 'write to skill-sentry data or install directory', snippet: snip(p) };
       }
     }
+    // Ruling K: unusual write forms always ask (they may alias a protected file).
+    const odd = t.writePaths.find(p => R.get(p).unusual);
+    if (odd !== undefined) {
+      return { decision: 'ask', ruleId: 'PATH_UNUSUAL_WRITE', severity: 'high', reason: 'write target uses an unusual path form', snippet: snip(odd) };
+    }
+  }
+
+  // Ruling K: unusual read forms, and paths left unchecked (budget or collection cap), count as high.
+  const oddRead = t.readPaths.find(p => R.get(p).unusual);
+  if (oddRead !== undefined) matches.push(synthetic('PATH_UNUSUAL_READ', oddRead));
+  if (R.state.unresolved || truncated) {
+    matches.push({ ...synthetic('PATH_UNRESOLVED', ''), snippet: truncated ? 'tool arguments not fully inspected' : 'path budget exhausted' });
   }
 
   const high = matches.find(m => m.severity === 'high');
