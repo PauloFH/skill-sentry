@@ -106,8 +106,9 @@ export const RULES = [
     'References cryptocurrency wallet files'),
   r('SECRET_ENV_FILE_READ', 'secret', 'high',
     // `cp .env.example .env` (creating .env from a template) writes the file, it does not read it. The exemption needs
-    // exactly two operands and only plain flags: no `-t`/`--target-directory` (which would copy the real .env elsewhere).
-    /\b(?:cat|type|cp(?!\s+(?:(?:-(?![a-z]*t)[a-z]+|--(?!target)[a-z][a-z-]*)\s+)*["']?[^\s"'|;&]*\.env\.(?:example|sample|template|dist)["']?\s+["']?[^\s"'|;&]*\.env["']?\s*(?:$|[|;&]))|scp|base64|tar|zip|get-content|gc)\b[^\n|;&]{0,300}(?:^|[\s/\\])\.env(?:\.(?!example|sample|template)[\w-]+)?(?=\s|$|["'|;&])/i,
+    // exactly two operands and only plain flags: no `-t`/`--target-directory` (which would copy the real .env elsewhere),
+    // and the template operand never starts with `-` (`cp -t/tmp/q.env.example .env` is an option, not a template).
+    /\b(?:cat|type|cp(?!\s+(?:(?:-(?![a-z]*t)[a-z]+|--(?!target)[a-z][a-z-]*)\s+)*["']?(?!-)[^\s"'|;&]*\.env\.(?:example|sample|template|dist)["']?\s+["']?[^\s"'|;&]*\.env["']?\s*(?:$|[|;&]))|scp|base64|tar|zip|get-content|gc)\b[^\n|;&]{0,300}(?:^|[\s/\\])\.env(?:\.(?!example|sample|template)[\w-]+)?(?=\s|$|["'|;&])/i,
     ['command'], 'Reads a .env file'),
   r('SECRET_ENV_DUMP_PIPE', 'secret', 'high',
     /JSON\.stringify\(\s*process\.env\b|\bdict\(\s*os\.environ\s*\)|\b(?:printenv|env)\b\s*\|\s*(?:curl|nc|base64)\b|\bget-childitem\s+env:[^\n]{0,300}\|\s*(?:iwr|irm|invoke-)/i,
@@ -219,11 +220,14 @@ export const RULES = [
     //   "never push without permission"                 negation + one verb right before (superpowers spec)
     //   "use it without asking"                         acting on a declared preference (superpowers using-git-worktrees:67)
     //   "existing declared preference without asking"   same (using-git-worktrees:45)
-    //   "was auto-creating worktrees without consent"   past progressive narration (superpowers RELEASE-NOTES:445)
-    //   "without their permission" / "without Jesse's"  someone else's consent (CODE_OF_CONDUCT:34, specs) — not "the user's"
-    //   "without asking which/what/follow-up/questions", a quoted question, "without asking in 24 of 24 runs"
+    //   "was auto-creating worktrees without consent"   past progressive narration, no clause punctuation in between
+    //                                                   (superpowers RELEASE-NOTES:445)
+    //   "without their permission" / "without Jesse's"  a named third party's consent (CODE_OF_CONDUCT:34, specs) — not
+    //                                                   user's/anyone's/someone's/Claude's/agent's
+    //   "without asking which/what/follow-up/questions", whitespace + an OPENING quote ("without asking "what's
+    //   missing?""; a closing quote after the phrase still matches), "without asking in 24 of 24 runs"
     //                                                   (OMC agents/critic.md, explore.md; superpowers RELEASE-NOTES:70, specs)
-    /(?<!\b(?:never|not|n't|nunca|n[ãa]o)\s+[\w-]+\s+|\buse\s+(?:it|that|this|them)\s+|\b(?:was|were)\s+[\w-]+ing\b[^\n.]{0,60}|\b(?:declared|existing|stated|specified)\s+preferences?\s+)\b(?:without|sem)\b(?!\s+(?:their|his|her|someone['’]s)\b|\s+(?!(?:user|human|owner|person)['’]s\b)[a-z]+['’]s\b)[^\n.]{0,20}\b(?:asking|prompting|confirmation|confirma[çc][ãa]o|permiss[ãa]o|permission|approval|consent)\b(?!\s*["'“‘]|\s+(?:which|what|whether|why|how|in\s+\d|(?:any\s+)?(?:follow-?up|clarifying|further)\b|(?:any\s+)?questions?\b))|(?<!\b(?:n[ãa]o|nunca)\s+(?:[^\s.;:!?]+\s+){0,4})\bsem\s+perguntar\b/i, PROSE,
+    /(?<!\b(?:never|not|n't|nunca|n[ãa]o)\s+[\w-]+\s+|\buse\s+(?:it|that|this|them)\s+|\b(?:was|were)\s+[\w-]+ing\b[^\n.,;:!?]{0,60}|\b(?:declared|existing|stated|specified)\s+preferences?\s+)\b(?:without|sem)\b(?!\s+(?:their|his|her)\b|\s+(?!(?:user|human|owner|person|anyone|anybody|everyone|everybody|someone|somebody|claude|agent|assistant)['’]s\b)[a-z]+['’]s\b)[^\n.]{0,20}\b(?:asking|prompting|confirmation|confirma[çc][ãa]o|permiss[ãa]o|permission|approval|consent)\b(?!\s+["“‘]|\s+(?:which|what|whether|why|how|in\s+\d|(?:any\s+)?(?:follow-?up|clarifying|further)\b|(?:any\s+)?questions?\b))|(?<!\b(?:n[ãa]o|nunca)\s+(?:[^\s.;:!?]+\s+){0,4})\bsem\s+perguntar\b/i, PROSE,
     'Tells the model to act without user confirmation'),
   r('INJECT_EXFIL_INSTRUCTION', 'injection', 'high',
     /\b(?:send|post|upload|exfiltrate|forward|envie|enviar|mande)\b[^\n.]{0,60}\b(?:ssh keys?|credentials?|api keys?|tokens?|secrets?|\.env|chaves? ssh|credenciais|segredos?)\b[^\n.]{0,60}\b(?:to|para)\s+(?:https?:|an? (?:external|remote)|\S+@)/i,
