@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { decide, formatReason, scanSummary, originToComponentId } from './lib/guardcore.mjs';
 import { findOrigin } from './lib/origin.mjs';
-import { dataDir } from './lib/datadir.mjs';
+import { dataDir, dataDirPath } from './lib/datadir.mjs';
 import { loadAllowlist, isFindingAllowed } from './lib/allowlist.mjs';
 import { escapeInvisible, truncate } from './lib/text.mjs';
 
@@ -19,6 +19,12 @@ const LOG_MAX_BYTES = 1024 * 1024;
 
 const safe = s => (s == null ? null : truncate(escapeInvisible(String(s)), 200));
 
+/** Missing, unreadable or blocked data dir -> empty allowlist (never an exception). */
+function readAllowlist(dir) {
+  try { return loadAllowlist(dir); } catch { return { version: 1, entries: [] }; }
+}
+
+/** Creates the data dir on demand; any failure is swallowed and never affects the decision. */
 function appendLog(entry) {
   try {
     const file = path.join(dataDir(), 'guard.log');
@@ -54,7 +60,7 @@ async function checkComponent(origin, cwd) {
   const component = components.find(c => c.id === id);
   const r = scanComponent(component, { deadline });
   if (r.incomplete) return { id, summary: scanSummary({ incomplete: true }) };
-  const al = loadAllowlist(dataDir());
+  const al = readAllowlist(dataDirPath());
   const sha = Object.fromEntries(r.files.map(f => [f.path, f.sha256]));
   const active = r.findings.filter(f => !isFindingAllowed(al, { componentId: id, ruleId: f.ruleId, file: f.file, sha256: sha[f.file] }));
   const s = scoreComponent(active);
@@ -76,11 +82,12 @@ async function main() {
   if (!input || typeof input !== 'object' || Array.isArray(input) || typeof input.tool_name !== 'string') return;
 
   const toolName = input.tool_name;
-  const dir = dataDir();
+  // Path only: the decision must not depend on the data dir existing or being creatable (Ruling J).
+  const dir = dataDirPath();
   let originMemo;
   const origin = () => (originMemo === undefined ? (originMemo = findOrigin(input.transcript_path, undefined, toolName)) : originMemo);
   // Lazy: the allowlist file is read only when a critical match is about to be denied.
-  const allowlist = () => loadAllowlist(dir);
+  const allowlist = () => readAllowlist(dir);
 
   const d = decide({ toolName, toolInput: input.tool_input, origin, allowlist, selfRoot, dataDir: dir, cwd: input.cwd });
   if (d.decision === 'none') return;

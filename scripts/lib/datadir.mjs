@@ -3,9 +3,14 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
+/** Data directory path (env SKILL_SENTRY_DATA_DIR or ~/.claude/skill-sentry), without touching the disk. */
+export function dataDirPath() {
+  return process.env.SKILL_SENTRY_DATA_DIR || path.join(os.homedir(), '.claude', 'skill-sentry');
+}
+
 /** Data directory: env SKILL_SENTRY_DATA_DIR or ~/.claude/skill-sentry. Created on demand. */
 export function dataDir() {
-  const dir = process.env.SKILL_SENTRY_DATA_DIR || path.join(os.homedir(), '.claude', 'skill-sentry');
+  const dir = dataDirPath();
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
