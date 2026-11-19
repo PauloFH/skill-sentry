@@ -410,7 +410,7 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
 
 /** One-line component check summary for the guard reason. */
 export function scanSummary({ incomplete, verdict, score, count }) {
-  if (incomplete) return 'component check incomplete';
+  if (incomplete) return 'component check skipped (time budget)';
   return `component verdict: ${verdict} (score ${score}), ${count} finding${count === 1 ? '' : 's'}`;
 }
 

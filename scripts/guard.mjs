@@ -2,32 +2,26 @@
 // skill-sentry PreToolUse guard. Reads the hook JSON on stdin; prints a deny/ask decision or nothing.
 // Fails open: any internal error -> line in guard.log, exit 0, no stdout.
 // Env: SKILL_SENTRY_DATA_DIR, SKILL_SENTRY_CLAUDE_HOME, SKILL_SENTRY_HOME_DIR (same as scan.mjs).
+// Static imports are Node built-ins only, so a project module that fails to load still fails open:
+// the decision logic is loaded with a dynamic import inside the error handling below.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { decide, formatReason, scanSummary, originToComponentId } from './lib/guardcore.mjs';
-import { findOrigin } from './lib/origin.mjs';
-import { dataDir, dataDirPath } from './lib/datadir.mjs';
-import { loadAllowlist, isFindingAllowed } from './lib/allowlist.mjs';
-import { escapeInvisible, truncate } from './lib/text.mjs';
 
 // Ruling D: selfRoot is the directory containing scripts/.
 const selfRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const SCAN_BUDGET_MS = 2000;
+// Ruling L1: the ask-path component check must finish within 1500 ms of process start (module loading
+// included); the 5 s hook timeout would otherwise discard the decision.
+const DEADLINE = performance.timeOrigin + 1500;
 const LOG_MAX_BYTES = 1024 * 1024;
 
-const safe = s => (s == null ? null : truncate(escapeInvisible(String(s)), 200));
-
-/** Missing, unreadable or blocked data dir -> empty allowlist (never an exception). */
-function readAllowlist(dir) {
-  try { return loadAllowlist(dir); } catch { return { version: 1, entries: [] }; }
-}
-
-/** Creates the data dir on demand; any failure is swallowed and never affects the decision. */
+/** Creates the data dir on demand; any failure is swallowed and never affects the decision (Ruling J). */
 function appendLog(entry) {
   try {
-    const file = path.join(dataDir(), 'guard.log');
+    const dir = process.env.SKILL_SENTRY_DATA_DIR || path.join(os.homedir(), '.claude', 'skill-sentry');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'guard.log');
     try {
       if (fs.statSync(file).size > LOG_MAX_BYTES) fs.renameSync(file, file + '.1');
     } catch { /* missing log or rotation failure: keep appending */ }
@@ -44,81 +38,14 @@ function readStdin() {
   });
 }
 
-/** Scan only the attributed component within the time budget. */
-async function checkComponent(origin, cwd) {
-  const deadline = Date.now() + SCAN_BUDGET_MS;
-  const [{ discover }, { scanComponent }, { scoreComponent }] = await Promise.all([
-    import('./lib/inventory.mjs'), import('./lib/scanner.mjs'), import('./lib/scoring.mjs'),
-  ]);
-  const claudeHome = path.resolve(process.env.SKILL_SENTRY_CLAUDE_HOME || path.join(os.homedir(), '.claude'));
-  const homeDir = path.resolve(process.env.SKILL_SENTRY_HOME_DIR || os.homedir());
-  const projectDir = typeof cwd === 'string' && cwd ? path.resolve(cwd) : undefined;
-  const { components } = discover({ claudeHome, homeDir, projectDir, selfRoot });
-  const id = originToComponentId(origin, components);
-  if (!id) return { id: null, summary: null };
-  if (Date.now() >= deadline) return { id, summary: scanSummary({ incomplete: true }) };
-  const component = components.find(c => c.id === id);
-  const r = scanComponent(component, { deadline });
-  if (r.incomplete) return { id, summary: scanSummary({ incomplete: true }) };
-  const al = readAllowlist(dataDirPath());
-  const sha = Object.fromEntries(r.files.map(f => [f.path, f.sha256]));
-  const active = r.findings.filter(f => !isFindingAllowed(al, { componentId: id, ruleId: f.ruleId, file: f.file, sha256: sha[f.file] }));
-  const s = scoreComponent(active);
-  return { id, summary: scanSummary({ incomplete: false, verdict: s.verdict, score: s.score, count: active.length }) };
-}
-
-const originName = o => (o ? o.skill ?? o.mcpPlugin ?? null : null);
-
 async function main() {
-  const raw = await readStdin();
-  let input;
-  try {
-    input = JSON.parse(raw);
-  } catch {
-    // Fixed message: parser errors may echo input (which can include file content).
-    appendLog({ decision: 'error', error: 'malformed stdin' });
-    return;
-  }
-  if (!input || typeof input !== 'object' || Array.isArray(input) || typeof input.tool_name !== 'string') return;
-
-  const toolName = input.tool_name;
-  // Path only: the decision must not depend on the data dir existing or being creatable (Ruling J).
-  const dir = dataDirPath();
-  let originMemo;
-  const origin = () => (originMemo === undefined ? (originMemo = findOrigin(input.transcript_path, undefined, toolName)) : originMemo);
-  // Lazy: the allowlist file is read only when a critical match is about to be denied.
-  const allowlist = () => readAllowlist(dir);
-
-  const d = decide({ toolName, toolInput: input.tool_input, origin, allowlist, selfRoot, dataDir: dir, cwd: input.cwd });
-  if (d.decision === 'none') return;
-
-  const o = origin();
-  let label = originName(o);
-  let summary = null;
-  if ((d.decision === 'deny' || d.decision === 'ask') && o) {
-    try {
-      const c = await checkComponent(o, input.cwd);
-      if (c.id) label = c.id;
-      summary = c.summary;
-    } catch {
-      summary = scanSummary({ incomplete: true });
-    }
-  }
-
-  appendLog({ tool: safe(toolName), ruleId: d.ruleId, severity: d.severity, snippet: safe(d.snippet), origin: safe(label), decision: d.decision });
-  if (d.decision === 'deny' || d.decision === 'ask') {
-    process.stdout.write(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: d.decision,
-        permissionDecisionReason: formatReason(d, label, summary),
-      },
-    }));
-  }
+  const [raw, { handle }] = await Promise.all([readStdin(), import('./lib/guardmain.mjs')]);
+  await handle({ raw, selfRoot, deadline: DEADLINE, write: s => process.stdout.write(s), log: appendLog });
 }
 
 main().catch(e => {
-  appendLog({ decision: 'error', error: safe(e && e.message ? e.message : e) });
+  // Printable ASCII only, capped: the message may quote attacker-controlled input.
+  appendLog({ decision: 'error', error: String(e && e.message ? e.message : e).replace(/[^\x20-\x7e]/g, '?').slice(0, 200) });
 }).finally(() => {
   process.exitCode = 0;
 });
