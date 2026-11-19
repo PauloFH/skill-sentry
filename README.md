@@ -55,6 +55,8 @@ Verdicts come from a score: critical findings weigh 40, high 15, medium 5. Each 
 
 Any critical finding raises the verdict to at least `suspicious`. Combinations escalate within a file: exfiltration next to secret access becomes critical, and obfuscation next to rce, exfil or secret findings becomes high.
 
+`/skill-sentry:audit` is the normal entry point. To run the script yourself, note that for an installed plugin the scripts live under the plugin install directory, `~/.claude/plugins/cache/skill-sentry/skill-sentry/<version>/scripts/`; the paths below are relative to that directory (or to a clone of this repository).
+
 Useful options (you can ask Claude for them, or run the script yourself):
 
 ```

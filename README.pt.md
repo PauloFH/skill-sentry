@@ -55,6 +55,8 @@ Os vereditos vêm de uma pontuação: achados críticos valem 40, altos 15, méd
 
 Qualquer achado crítico eleva o veredito para pelo menos `suspicious`. Combinações escalam dentro de um arquivo: exfiltração junto de acesso a segredos vira crítica, e ofuscação junto de achados de rce, exfil ou secret vira alta.
 
+`/skill-sentry:audit` é o ponto de entrada normal. Para executar o script por conta própria, note que, num plugin instalado, os scripts ficam no diretório de instalação do plugin, `~/.claude/plugins/cache/skill-sentry/skill-sentry/<versão>/scripts/`; os caminhos abaixo são relativos a esse diretório (ou a um clone deste repositório).
+
 Opções úteis (você pode pedi-las ao Claude ou executar o script por conta própria):
 
 ```

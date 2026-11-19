@@ -43,6 +43,24 @@ test('hooks.json registers the guard on the exact matcher', () => {
   assert.deepEqual(pre[0].hooks, [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/guard.mjs"', timeout: 5 }]);
 });
 
+test('script paths referenced by hooks.json and the skills exist', () => {
+  const h = readJson('hooks/hooks.json');
+  for (const g of h.hooks.PreToolUse) {
+    for (const hk of g.hooks) {
+      const m = /\$\{CLAUDE_PLUGIN_ROOT\}\/([^"\s]+)/.exec(hk.command);
+      assert.ok(m, hk.command);
+      assert.ok(fs.statSync(path.join(ROOT, m[1])).isFile(), m[1]);
+    }
+  }
+  for (const [name, script] of [['audit', 'scan.mjs'], ['harden', 'harden.mjs']]) {
+    const skillDir = path.join(ROOT, 'skills', name);
+    const text = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8');
+    const refs = [...text.matchAll(/<base directory>\/([^"\s`]+\.mjs)/g)].map(m => m[1]);
+    assert.ok(refs.some(r => r.endsWith(`scripts/${script}`)), `${name} references scripts/${script}`);
+    for (const r of refs) assert.ok(fs.statSync(path.resolve(skillDir, r)).isFile(), `${name}: ${r}`);
+  }
+});
+
 test('skills have name/description frontmatter and no allowed-tools or shell injection lines', () => {
   for (const name of ['audit', 'harden']) {
     const text = fs.readFileSync(path.join(ROOT, 'skills', name, 'SKILL.md'), 'utf8');

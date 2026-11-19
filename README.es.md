@@ -55,6 +55,8 @@ Los veredictos salen de una puntuación: los hallazgos críticos valen 40, los a
 
 Cualquier hallazgo crítico sube el veredicto al menos a `suspicious`. Las combinaciones escalan dentro de un archivo: la exfiltración junto al acceso a secretos pasa a crítica, y la ofuscación junto a hallazgos de rce, exfil o secret pasa a alta.
 
+`/skill-sentry:audit` es el punto de entrada normal. Para ejecutar el script tú mismo, ten en cuenta que, en un plugin instalado, los scripts están en el directorio de instalación del plugin, `~/.claude/plugins/cache/skill-sentry/skill-sentry/<versión>/scripts/`; las rutas de abajo son relativas a ese directorio (o a un clon de este repositorio).
+
 Opciones útiles (puedes pedírselas a Claude o ejecutar el script tú mismo):
 
 ```

@@ -140,16 +140,23 @@ if (!opts.path) {
 
 const report = buildReport({ results, diff, allowlist: loadAllowlist(dir), meta: { ...meta, problems } });
 
-if (opts.json) {
-  process.stdout.write(JSON.stringify(report, null, 2) + '\n');
-} else {
-  const reports = path.join(dir, 'reports');
+// Every run keeps reports/<ts>.{json,md} (spec 6.1); --json also prints the report.
+const reports = path.join(dir, 'reports');
+const stamp = report.generatedAt.replaceAll(':', '-');
+const jsonFile = path.join(reports, `${stamp}.json`);
+const mdFile = path.join(reports, `${stamp}.md`);
+const writeReports = () => {
   fs.mkdirSync(reports, { recursive: true });
-  const stamp = report.generatedAt.replaceAll(':', '-');
-  const jsonFile = path.join(reports, `${stamp}.json`);
-  const mdFile = path.join(reports, `${stamp}.md`);
   fs.writeFileSync(jsonFile, JSON.stringify(report, null, 2) + '\n');
   fs.writeFileSync(mdFile, renderMarkdown(report) + '\n');
+};
+
+if (opts.json) {
+  // A report file that cannot be written must not cost the caller the JSON on stdout.
+  try { writeReports(); } catch (e) { process.stderr.write(`could not write report files: ${untrusted(e.message)}\n`); }
+  process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+} else {
+  writeReports();
   const bv = report.summary.byVerdict;
   console.log(jsonFile);
   console.log(mdFile);

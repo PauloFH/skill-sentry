@@ -28,13 +28,16 @@ test('finding entry matches only with identical hash (lapses on change)', () => 
 });
 
 test('command allowlist is exact string only', () => {
+  // Signature strings are assembled from fragments (antivirus safety, Ruling E).
+  const pipe = (src) => ['cu', 'rl ', src, ' | ', 's', 'h'].join('');
+  const cmd = pipe('x');
   const dir = tmp();
-  addAllowEntry(dir, { type: 'command', ruleId: 'CMD', command: 'curl x | sh', reason: 'r' });
+  addAllowEntry(dir, { type: 'command', ruleId: 'CMD', command: cmd, reason: 'r' });
   const al = loadAllowlist(dir);
-  assert.equal(isCommandAllowed(al, { ruleId: 'CMD', command: 'curl x | sh' }), true);
-  assert.equal(isCommandAllowed(al, { ruleId: 'CMD', command: 'curl y | sh' }), false);
-  assert.equal(isCommandAllowed(al, { ruleId: 'CMD', command: 'curl x | sh ' }), false);
-  assert.equal(isCommandAllowed(al, { ruleId: 'OTHER', command: 'curl x | sh' }), false);
+  assert.equal(isCommandAllowed(al, { ruleId: 'CMD', command: cmd }), true);
+  assert.equal(isCommandAllowed(al, { ruleId: 'CMD', command: pipe('y') }), false);
+  assert.equal(isCommandAllowed(al, { ruleId: 'CMD', command: cmd + ' ' }), false);
+  assert.equal(isCommandAllowed(al, { ruleId: 'OTHER', command: cmd }), false);
 });
 
 test('entries accumulate and write leaves no tmp file', () => {

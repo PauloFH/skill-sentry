@@ -55,6 +55,8 @@ Claude 运行扫描器，然后给出摘要（各结论的组件数量、自基�
 
 任何 critical 发现都会把结论至少提升到 `suspicious`。同一文件内的组合会升级：外泄行为与访问机密同时出现时升为 critical，混淆与 rce、exfil 或 secret 发现同时出现时升为 high。
 
+`/skill-sentry:audit` 是常规入口。如果要自己运行脚本，请注意：对于已安装的插件，脚本位于插件安装目录 `~/.claude/plugins/cache/skill-sentry/skill-sentry/<版本>/scripts/` 下；下面的路径都相对于该目录（或本仓库的克隆）。
+
 常用选项（可以让 Claude 使用，也可以自己运行脚本）：
 
 ```

@@ -46,6 +46,26 @@ test('--json prints a report with the notice and the plugin', () => {
   assert.ok(rep.components.some(c => c.id === 'plugin:alpha@mkt'));
 });
 
+test('--json also writes reports/<ts>.json and .md (spec 6.1) and still prints the JSON', () => {
+  const e = setup();
+  const r = run(e, [...base(e), '--json']);
+  assert.equal(r.status, 0, r.stderr);
+  const rep = JSON.parse(r.stdout);
+  const dir = path.join(e.data, 'reports');
+  const names = fs.readdirSync(dir);
+  const stamp = rep.generatedAt.replaceAll(':', '-');
+  assert.deepEqual(names.sort(), [`${stamp}.json`, `${stamp}.md`]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, `${stamp}.json`), 'utf8')), rep);
+});
+
+test('--json still prints the report when the reports directory cannot be written', () => {
+  const e = setup();
+  fs.writeFileSync(path.join(e.data, 'reports'), 'not a directory');
+  const r = run(e, [...base(e), '--json']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(r.stdout).tool, 'skill-sentry');
+});
+
 test('default mode writes reports; first run creates baseline; later runs do not rewrite it', () => {
   const e = setup();
   const r1 = run(e, base(e));
