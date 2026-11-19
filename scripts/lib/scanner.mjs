@@ -113,7 +113,7 @@ export function scanComponent(c, opts = {}) {
       const r = listFiles(c.root, undefined, { deadline });
       list = r.files; skipped = r.skipped; outside = r.outside;
       if (r.timedOut) incomplete = true;
-      if (r.truncated) c = { ...c, meta: { ...c.meta, filesTruncated: true } };
+      if (r.truncated || r.timedOut) c = { ...c, meta: { ...c.meta, filesTruncated: true } };
     }
   }
   const relOf = abs => {

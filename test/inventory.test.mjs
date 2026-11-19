@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -256,9 +256,17 @@ test('stored MCP/hook config redacts URL credentials, query values, secret args 
 
 /** Junction (Windows) or dir symlink; null when the platform refuses. */
 function junction(target, link) {
-  try { fs.symlinkSync(target, link, 'junction'); return true; }
+  try { fs.symlinkSync(target, link, 'junction'); links.push(link); return true; }
   catch (e) { if (['EPERM', 'EACCES', 'ENOSYS'].includes(e.code)) return false; throw e; }
 }
+// Remove the links themselves (never recursively): a junction to a drive root must not be left in
+// the temp dir for a cleanup tool that follows junctions.
+const links = [];
+after(() => {
+  for (const l of links) {
+    try { fs.unlinkSync(l); } catch { try { fs.rmdirSync(l); } catch { /* best effort */ } }
+  }
+});
 
 test('junction from a skill to a large directory outside it is not followed (SCAN_SYMLINK_OUTSIDE)', t => {
   const { h, d } = mkHome();
@@ -314,6 +322,7 @@ test('discover honors a deadline: skills past it are kept, marked incomplete, an
   const c = discover({ ...d(), deadline: Date.now() - 1 }).components.find(x => x.id === 'skill:user:s');
   assert.ok(c, 'skill still listed');
   assert.equal(c.meta.incomplete, true);
+  assert.equal(c.meta.filesTruncated, true);
   assert.deepEqual(c.files, []);
   assert.equal(scanComponent(c).incomplete, true);
 });

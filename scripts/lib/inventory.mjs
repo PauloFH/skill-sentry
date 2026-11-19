@@ -342,7 +342,7 @@ export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits, de
       if (skillFiles) {
         const r = listFiles(root, limits, { deadline });
         comp.files = r.files;
-        if (r.truncated) comp.meta.filesTruncated = true;
+        if (r.truncated || r.timedOut) comp.meta.filesTruncated = true;
         if (r.timedOut) comp.meta.incomplete = true;
         if (r.outside.length) comp.meta.symlinksOutside = r.outside;
       }
