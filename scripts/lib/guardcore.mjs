@@ -96,6 +96,33 @@ function canon(p, cwd) {
 
 const isUnder = (p, root) => p === root || p.startsWith(root.endsWith('/') ? root : root + '/');
 
+const lowerOnWin = s => (process.platform === 'win32' ? s.toLowerCase() : s);
+const slashes = s => String(s).replace(/\\/g, '/').replace(/\/+$/, '');
+
+/** Shell text with backslashes -> '/', home references expanded, lowercased on win32. */
+function normCommandText(cmd) {
+  const home = slashes(os.homedir());
+  let s = String(cmd).replace(/\\/g, '/');
+  s = s.replace(/\$\{HOME\}|\$HOME\b|%USERPROFILE%|%HOMEDRIVE%%HOMEPATH%|\$\{env:USERPROFILE\}|\$env:USERPROFILE\b|\$env:HOME\b/gi, home);
+  s = s.replace(/(^|[\s'"=(:;|&>])~(?=\/|$|[\s'";|&)])/g, (_, pre) => pre + home);
+  return lowerOnWin(s);
+}
+
+/** `needle` occurs in `text` and is not just a prefix of a longer name (`skill-sentry-x`). */
+function mentions(text, needle) {
+  if (!needle) return false;
+  for (let i = text.indexOf(needle); i !== -1; i = text.indexOf(needle, i + 1)) {
+    const next = text[i + needle.length];
+    if (next === undefined || !/[\w.-]/.test(next)) return true;
+  }
+  return false;
+}
+
+/** Normalized text forms of a protected root: as given (resolved) and canonical (realpath). */
+function rootForms(r) {
+  return [...new Set([lowerOnWin(slashes(path.resolve(r))), canon(r)])].filter(f => f.length > 3);
+}
+
 // ---- decision ----
 
 const resolveLazy = v => (typeof v === 'function' ? v() : v);
@@ -142,6 +169,18 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
     if (blocked.length) {
       const m = blocked[0];
       return { decision: 'deny', ruleId: m.ruleId, severity: 'critical', reason: 'critical rule match', snippet: m.snippet };
+    }
+  }
+
+  // Shell commands that mention the data dir or the install dir (any access, read or write) always ask:
+  // a redirect like `echo ... > ~/.claude/skill-sentry/allowlist.json` must not slip through (§6.2).
+  if (t.commands.length) {
+    const needles = [...[dataDir, selfRoot].filter(str).flatMap(rootForms), lowerOnWin('.claude/skill-sentry')];
+    for (const c of t.commands) {
+      const text = normCommandText(c);
+      if (needles.some(n => mentions(text, n))) {
+        return { decision: 'ask', ruleId: 'SELF_PROTECT', severity: 'high', reason: 'shell command touches skill-sentry data or install directory', snippet: snip(c) };
+      }
     }
   }
 

