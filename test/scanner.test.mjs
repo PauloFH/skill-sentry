@@ -235,6 +235,10 @@ test('redactSecrets: URL credentials and query values, secret flags and KEY=valu
   assert.equal(redactSecrets('docker run -p 8080:80 img'), 'docker run -p 8080:80 img');
   assert.deepEqual(redactArgs(['-p', 'hunter2', 'ssh'], 'sshpass'), ['-p', '<redacted>', 'ssh']);
   assert.deepEqual(redactArgs(['-y', '-p', 'evil-mcp@latest', 'x'], 'npx'), ['-y', '-p', 'evil-mcp@latest', 'x']);
+  // A password-command name elsewhere in the args never hides the runner's package.
+  assert.deepEqual(redactArgs(['-y', '-p', 'evil-mcp@latest', 'mysql'], 'npx'), ['-y', '-p', 'evil-mcp@latest', 'mysql']);
+  assert.equal(redactSecrets('npx -y -p evil-mcp@latest mysql'), 'npx -y -p evil-mcp@latest mysql');
+  assert.deepEqual(redactArgs(['-p', 'hunter2'], 'C:\\tools\\sshpass.exe'), ['-p', '<redacted>']);
   assert.equal(redactSecrets('API_KEY=v1 GITHUB_TOKEN=v2 DB_PASS=v3 MODE=dev'), 'API_KEY=<redacted> GITHUB_TOKEN=<redacted> DB_PASS=<redacted> MODE=dev');
   assert.equal(redactSecrets('--header "Authorization: Bearer abcdefgh12345"'), '--header "Authorization: Bearer <redacted>"');
   assert.equal(redactSecrets('node server.js --port 3000'), 'node server.js --port 3000');

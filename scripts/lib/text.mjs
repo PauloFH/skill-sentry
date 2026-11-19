@@ -44,7 +44,10 @@ const SECRET_FLAG = new RegExp(`(^|\\s)(${SECRET_FLAG_NAME})(=|\\s+)("[^"]*"|'[^
 const SECRET_FLAG_EXACT = new RegExp(`^${SECRET_FLAG_NAME}$`, 'i');
 // `-p <value>` is a password only for these commands; for npx/npm/pnpm/yarn/uvx/bunx it names a package
 // (shown so a package swap stays visible), for docker a port.
+// A package runner or container tool in the text wins: its `-p` is never treated as a password.
 const PASSWORD_P_CMD = /(?:^|[\s/\\"'])(?:sshpass|mysql|mysqladmin|mysqldump|mariadb|mongo|mongosh)(?:\.exe)?(?=[\s"']|$)/i;
+const P_RUNNER = /(?:^|[\s/\\"'])(?:npx|npm|pnpm|yarn|uvx|bunx|bun|docker|podman)(?:\.exe|\.cmd)?(?=[\s"']|$)/i;
+const pIsPasswordIn = text => PASSWORD_P_CMD.test(text) && !P_RUNNER.test(text);
 const P_FLAG = /(^|\s)(-p)(=|\s+)("[^"]*"|'[^']*'|\S+)/g;
 const SECRET_ASSIGN = /(^|\s)([A-Za-z_][\w.-]*)=("[^"]*"|'[^']*'|\S+)/g;
 const SECRET_NAME = /token|secret|key|pass|auth/i;
@@ -60,7 +63,7 @@ export function redactSecrets(str) {
     .replace(/^([a-z][\w+.-]*:\/\/)[^/?#@\s]*@/i, `$1${R}@`)
     .replace(/\?([^#]*)/, (_, q) => '?' + q.split('&').map(kv => (kv.includes('=') ? kv.slice(0, kv.indexOf('=') + 1) + R : kv)).join('&')));
   s = s.replace(SECRET_FLAG, (_, pre, flag, sep) => `${pre}${flag}${sep}${R}`);
-  if (PASSWORD_P_CMD.test(s)) s = s.replace(P_FLAG, (_, pre, flag, sep) => `${pre}${flag}${sep}${R}`);
+  if (pIsPasswordIn(s)) s = s.replace(P_FLAG, (_, pre, flag, sep) => `${pre}${flag}${sep}${R}`);
   s = s.replace(SECRET_ASSIGN, (m, pre, key) => (SECRET_NAME.test(key) ? `${pre}${key}=${R}` : m));
   s = s.replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/g, `$1 ${R}`);
   return s;
@@ -68,11 +71,12 @@ export function redactSecrets(str) {
 
 /**
  * redactSecrets over an argv array: also hides the element that follows a bare credential flag
- * (`-p` only when `command` or the args name a password-taking command).
+ * (`-p` only when `command` itself is a password-taking command, decided by its basename).
  */
 export function redactArgs(args, command = '') {
   const out = [];
-  const pIsPassword = PASSWORD_P_CMD.test([String(command ?? ''), ...args.map(String)].join(' '));
+  const base = String(command ?? '').trim().split(/\s+/)[0].replace(/^.*[\\/]/, '');
+  const pIsPassword = pIsPasswordIn(base);
   for (let i = 0; i < args.length; i++) {
     const a = String(args[i]);
     const prev = i > 0 ? String(args[i - 1]) : '';

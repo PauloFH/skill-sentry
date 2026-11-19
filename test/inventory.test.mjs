@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { discover, listFiles, isRemoteLinkText } from '../scripts/lib/inventory.mjs';
 import { scanComponent } from '../scripts/lib/scanner.mjs';
 import { readJsonSafe } from '../scripts/lib/jsonsafe.mjs';
+import { buildReport } from '../scripts/lib/report.mjs';
 import { tmpFactory } from './helpers/tmp.mjs';
 
 const FIX = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
@@ -557,7 +558,12 @@ test('listFiles never realpaths or stats a link whose target is a UNC path (no S
     assert.ok(rc, 'a skill linked to a network path stays listed');
     assert.deepEqual(rc.files, []);
     assert.deepEqual(rc.meta.symlinksOutside.map(o => o.path), [whole]);
-    assert.ok(scanComponent(rc).findings.some(f => f.ruleId === 'SCAN_SYMLINK_OUTSIDE'));
+    const rs = scanComponent(rc);
+    assert.ok(rs.findings.some(f => f.ruleId === 'SCAN_SYMLINK_OUTSIDE'));
+    assert.equal(rs.incomplete, true, 'a component whose root was never read is incomplete, not clean');
+    assert.notEqual(buildReport({ results: [rs], diff: null, allowlist: null }).components[0].scannerVerdict, 'ok');
+    // Same for a component whose root is the remote link and whose files the scanner lists itself.
+    assert.equal(scanComponent({ id: 'skill:user:r2', kind: 'skill', name: 'r2', scope: 'user', root: whole, meta: {} }).incomplete, true);
   } finally {
     mock.restoreAll();
     assert.equal(fs.realpathSync.native, realNative);

@@ -124,6 +124,8 @@ export function scanComponent(c, opts = {}) {
   if (c.meta?.filesTruncated && !c.self) {
     findings.push(finding('SCAN_TRUNCATED', 'config', 'info', '<scan>', 'File listing was truncated by a limit; some files were not scanned'));
   }
+  // The root itself links outside (e.g. to a network path): nothing was read, so never "clean".
+  if (c.root && outside.some(o => path.resolve(o.path) === path.resolve(c.root))) incomplete = true;
   if (!c.self) {
     for (const o of outside) {
       const sev = isSensitiveLinkTarget(o.target) ? 'medium' : 'info';
