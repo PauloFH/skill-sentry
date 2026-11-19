@@ -121,6 +121,27 @@ test('every translatable key has a Portuguese entry and there are no orphans', (
   assert.ok(js().includes('ss-lang'), 'language choice stored under ss-lang');
 });
 
+test('page files carry no malware-signature literals', () => {
+  // Built from fragments so this test file itself carries no signature strings.
+  const words = [['xm', 'rig'], ['cpu', 'miner'], ['nice', 'hash'], ['strat', 'um+tcp'], ['strat', 'um+ssl'], ['Download', 'String'], ['coin', 'hive']]
+    .map(p => p.join('').toLowerCase());
+  const pipeToShell = new RegExp(['(?:cu', 'rl|wg', 'et)\\b[^\\n|]*\\|\\s*(?:sudo\\s+)?(?:ba|z)?sh\\b'].join(''), 'i');
+  const iexDownload = new RegExp(['i', 'ex\\s*\\(?\\s*\\(?\\s*new-object'].join(''), 'i');
+  for (const [name, text] of [['index.html', html()], ['site.css', css()], ['site.js', js()]]) {
+    const lower = text.toLowerCase();
+    for (const w of words) assert.ok(!lower.includes(w), `${name} contains a forbidden literal (${w.length} chars)`);
+    assert.doesNotMatch(text, pipeToShell, `${name}: download piped to a shell`);
+    assert.doesNotMatch(text, iexDownload, `${name}: PowerShell download-and-run`);
+  }
+});
+
+test('links opening a new tab use rel=noopener', () => {
+  for (const m of html().matchAll(/<a\b[^>]*>/g)) {
+    if (!/\starget="_blank"/.test(m[0])) continue;
+    assert.match(m[0], /\srel="[^"]*\bnoopener\b[^"]*"/, m[0]);
+  }
+});
+
 test('self-hosted Inter font and its license are present', () => {
   const font = path.join(DOCS, 'assets', 'fonts', 'inter-latin-wght-normal.woff2');
   assert.ok(fs.statSync(font).size > 20 * 1024, 'font larger than 20 KB');

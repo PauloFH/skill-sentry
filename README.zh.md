@@ -127,7 +127,7 @@ node scripts/scan.mjs --allow <componentId> <ruleId> <file> --reason "why"
 
 ## 验证
 
-已在一台真实的 Windows 11 安装环境上测试，共 11 个插件（65 个组件）；Anthropic 官方插件的结论为 ok 或 review。项目有 197 个自动化测试。
+已在一台真实的 Windows 11 安装环境上测试（68 个组件）：2 个被标记。一个被评为 malicious：一个第三方编排插件，它在禁用权限提示的情况下启动代理并自动批准命令，功能强大是设计使然，并非恶意软件。另一个被评为 review：使用跳过权限标志的测试脚本。其余均为 ok。项目有 240 多个自动化测试。
 
 ## 致谢与灵感
 

@@ -127,7 +127,7 @@ If the `skillspector` command is installed, the audit can offer a second opinion
 
 ## Validation
 
-Tested against a real Windows 11 installation with 11 plugins (65 components); the official Anthropic plugins score ok or review. The project has 197 automated tests.
+Tested against a real Windows 11 installation (68 components): 2 flagged. One was rated malicious: a third-party orchestration plugin that launches agents with permission prompts disabled and auto-approves commands, powerful by design rather than malware. One was rated review: test scripts that use the skip-permissions flag. Everything else came back ok. The project has 240+ automated tests.
 
 ## Credits and inspiration
 
