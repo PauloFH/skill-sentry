@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -142,4 +143,35 @@ test('invisible characters in a snippet are escaped in JSON and Markdown outputs
   assert.ok(!json.includes('​') && !md.includes('​'));
   assert.match(json, /u200B/i);
   assert.match(md, /u200B/i);
+});
+
+test('--allow records the current sha256 of the file and prints the entry', () => {
+  const e = setup();
+  const sha = crypto.createHash('sha256').update(fs.readFileSync(path.join(e.plugRoot, 'SKILL.md'))).digest('hex');
+  const r = run(e, [...base(e), '--allow', 'plugin:alpha@mkt', 'SKILL_INJECT_X', 'SKILL.md', '--reason', 'looked fine']);
+  assert.equal(r.status, 0, r.stderr);
+  const printed = JSON.parse(r.stdout);
+  const al = JSON.parse(fs.readFileSync(path.join(e.data, 'allowlist.json'), 'utf8'));
+  assert.equal(al.entries.length, 1);
+  assert.deepEqual({ ...al.entries[0], addedAt: undefined }, { ...printed, addedAt: undefined });
+  assert.equal(printed.type, 'finding');
+  assert.equal(printed.componentId, 'plugin:alpha@mkt');
+  assert.equal(printed.ruleId, 'SKILL_INJECT_X');
+  assert.equal(printed.file, 'SKILL.md');
+  assert.equal(printed.sha256, sha);
+  assert.equal(printed.reason, 'looked fine');
+});
+
+test('--allow defaults the reason and rejects unknown components or files with exit 2', () => {
+  const e = setup();
+  const ok = run(e, [...base(e), '--allow', 'plugin:alpha@mkt', 'R1', 'SKILL.md']);
+  assert.equal(JSON.parse(ok.stdout).reason, 'user approved');
+  const noComp = run(e, [...base(e), '--allow', 'plugin:nope@mkt', 'R1', 'SKILL.md']);
+  assert.equal(noComp.status, 2);
+  assert.match(noComp.stderr, /component not found/);
+  const noFile = run(e, [...base(e), '--allow', 'plugin:alpha@mkt', 'R1', 'missing.md']);
+  assert.equal(noFile.status, 2);
+  assert.match(noFile.stderr, /file not found/);
+  const al = JSON.parse(fs.readFileSync(path.join(e.data, 'allowlist.json'), 'utf8'));
+  assert.equal(al.entries.length, 1);
 });

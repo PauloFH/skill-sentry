@@ -7,8 +7,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { discover } from './lib/inventory.mjs';
 import { scanComponent } from './lib/scanner.mjs';
-import { loadBaseline, baselineLoadError, saveBaseline, diffBaseline } from './lib/baseline.mjs';
-import { loadAllowlist, allowlistLoadError } from './lib/allowlist.mjs';
+import { loadBaseline, baselineLoadError, saveBaseline, diffBaseline, fileMap } from './lib/baseline.mjs';
+import { loadAllowlist, allowlistLoadError, addAllowEntry } from './lib/allowlist.mjs';
 import { dataDir } from './lib/datadir.mjs';
 import { buildReport, renderMarkdown } from './lib/report.mjs';
 
@@ -16,15 +16,22 @@ import { buildReport, renderMarkdown } from './lib/report.mjs';
 const selfRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SCAN_BUDGET_MS = 120_000;
 
-const USAGE = `usage: node scan.mjs [--json] [--path <dir>] [--component <id>] [--diff-only] [--update-baseline] [--claude-home <dir>] [--project <dir>]`;
+const USAGE = `usage: node scan.mjs [--json] [--path <dir>] [--component <id>] [--diff-only] [--update-baseline] [--claude-home <dir>] [--project <dir>]
+       node scan.mjs --allow <componentId> <ruleId> <file> [--reason <text>]`;
 
 function parseArgs(argv) {
   const o = { json: false, diffOnly: false, updateBaseline: false };
-  const withValue = { '--path': 'path', '--component': 'component', '--claude-home': 'claudeHome', '--project': 'project' };
+  const withValue = { '--path': 'path', '--component': 'component', '--claude-home': 'claudeHome', '--project': 'project', '--reason': 'reason' };
   const flags = { '--json': 'json', '--diff-only': 'diffOnly', '--update-baseline': 'updateBaseline' };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (Object.hasOwn(flags, a)) o[flags[a]] = true;
+    else if (a === '--allow') {
+      const v = argv.slice(i + 1, i + 4);
+      if (v.length < 3 || v.some(x => x.startsWith('--'))) return { error: '--allow needs <componentId> <ruleId> <file>' };
+      o.allow = v;
+      i += 3;
+    }
     else if (Object.hasOwn(withValue, a)) {
       const v = argv[++i];
       if (v === undefined || v.startsWith('--')) return { error: `missing value for ${a}` };
@@ -82,6 +89,27 @@ if (opts.path) {
 }
 
 let results = components.map(c => scanComponent(c, { deadline }));
+
+if (opts.allow) {
+  // Only finding-type entries are created here; command-type (critical) entries are never created by this flag.
+  const [componentId, ruleId, file] = opts.allow;
+  const found = results.find(r => r.component.id === componentId);
+  if (!found) {
+    process.stderr.write(`component not found: ${componentId}
+`);
+    process.exit(2);
+  }
+  const sha256 = fileMap(found)[file];
+  if (!sha256) {
+    process.stderr.write(`file not found in component ${componentId}: ${file}
+`);
+    process.exit(2);
+  }
+  const entry = { type: 'finding', componentId, ruleId, file, sha256, reason: opts.reason ?? 'user approved', addedAt: new Date().toISOString() };
+  addAllowEntry(dir, entry);
+  await new Promise(resolve => process.stdout.write(JSON.stringify(entry, null, 2) + '\n', resolve));
+  process.exit(0);
+}
 
 const allowErr = allowlistLoadError(dir);
 if (allowErr) problems.push(`allowlist.json: ${allowErr}`);

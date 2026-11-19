@@ -1,0 +1,18 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "skill-sentry",
+  "description": "Security tooling for Claude Code: audit plugins, skills, hooks and MCP servers.",
+  "owner": {
+    "name": "Paulo Roberto Fernandes Holanda"
+  },
+  "plugins": [
+    {
+      "name": "skill-sentry",
+      "source": "./",
+      "version": "0.1.0",
+      "category": "security",
+      "description": "Static scanner and runtime guard that audits installed Claude Code plugins, skills, hooks and MCP servers for malicious behavior.",
+      "homepage": "https://github.com/OWNER/skill-sentry"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "skill-sentry",
+  "version": "0.1.0",
+  "description": "Static scanner and runtime guard that audits installed Claude Code plugins, skills, hooks and MCP servers for malicious behavior.",
+  "author": {
+    "name": "Paulo Roberto Fernandes Holanda"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/OWNER/skill-sentry",
+  "homepage": "https://github.com/OWNER/skill-sentry",
+  "keywords": ["security", "audit", "scanner", "guard", "skills", "hooks", "mcp"]
+}
