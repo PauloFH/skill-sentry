@@ -299,10 +299,26 @@ function junctionFixture(t) {
     fs.symlinkSync(data, path.join(work, 'j1'), 'junction');
     fs.symlinkSync(claude, path.join(work, 'j2'), 'junction');
     fs.symlinkSync(ssh, path.join(work, 'keys'), 'junction');
+    // Junctions named like a MIME top-level type or a date year (relative MCP strings resolve against cwd).
+    fs.symlinkSync(ssh, path.join(work, 'text'), 'junction');
+    fs.symlinkSync(data, path.join(work, 'model'), 'junction');
+    fs.symlinkSync(data, path.join(work, '2024'), 'junction');
   } catch { t.skip('cannot create junctions'); return null; }
-  const D = (toolName, toolInput, origin = null) => decide({ toolName, toolInput, origin, allowlist: EMPTY, selfRoot: SELF, dataDir: data });
+  const D = (toolName, toolInput, origin = null) => decide({ toolName, toolInput, origin, allowlist: EMPTY, selfRoot: SELF, dataDir: data, cwd: work });
   return { work, D };
 }
+test('round 4: MIME- or date-shaped relative strings are resolved when their first segment exists', t => {
+  const f = junctionFixture(t);
+  if (!f) return;
+  const r = f.D('mcp__plugin_x_s__read', { p: 'text/id_rsa' }, { mcpPlugin: 'x' });
+  assert.equal(r.decision, 'ask');
+  assert.equal(r.ruleId, 'SECRET_PATH_SSH');
+  for (const p of ['model/allowlist.json', '2024/1/2']) {
+    const w = f.D('mcp__fs__write_file', { p }, null);
+    assert.equal(w.decision, 'ask', p);
+    assert.equal(w.ruleId, 'SELF_PROTECT_WRITE', p);
+  }
+});
 test('round 4: C:// drive spelling still resolves junctions to the data dir', t => {
   const f = junctionFixture(t);
   if (!f) return;

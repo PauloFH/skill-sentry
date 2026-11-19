@@ -22,15 +22,32 @@ const pathLike = s => str(s) && s.length <= 4096 && !/[\r\n]/.test(s) && (s.incl
 const URL_LIKE = /^[a-z][\w+.-]+:\/\//i;
 const MIME_TYPE = /^(?:application|audio|font|image|message|model|multipart|text|video)\/[a-z0-9][\w.+-]*$/i;
 const SLASH_DATE = /^\d{1,4}\/\d{1,2}\/\d{1,4}$/;
-/** URLs, MIME types and slash dates: never local paths, so they get no I/O and no slot in the cap. */
-const nonPathString = s => URL_LIKE.test(s) || MIME_TYPE.test(s) || SLASH_DATE.test(s);
+/**
+ * Strings that are not local paths: URLs, and MIME types / slash dates whose first segment does not
+ * exist under cwd (`text/x` IS a path when `<cwd>/text` exists, e.g. a junction). One cached lstat
+ * per distinct first segment; any error counts as "exists" (fail safe).
+ */
+function makeNonPath(cwd) {
+  const exists = new Map();
+  const segExists = seg => {
+    if (!exists.has(seg)) {
+      let e = true;
+      try { e = fs.lstatSync(path.resolve(cwd || process.cwd(), seg), { throwIfNoEntry: false }) !== undefined; } catch { /* fail safe */ }
+      exists.set(seg, e);
+    }
+    return exists.get(seg);
+  };
+  return s => URL_LIKE.test(s) || ((MIME_TYPE.test(s) || SLASH_DATE.test(s)) && !segExists(s.slice(0, s.indexOf('/'))));
+}
 
 /**
  * Collect path-like strings in encounter order, at any depth (iterative, so deep nesting cannot
- * overflow the stack). Non-path strings are kept only if a path rule matches them as written
- * (`file:///…/.ssh/id_rsa`). `state.truncated` is set when the string cap or node budget hid anything.
+ * overflow the stack). Non-path strings take no slot in the cap and are kept only if a path rule
+ * matches them as written (`file:///…/.ssh/id_rsa`). `state.truncated` is set when the string cap
+ * or node budget hid anything.
  */
-function collectPathStrings(root, out, state) {
+function collectPathStrings(root, out, state, cwd) {
+  const nonPath = makeNonPath(cwd);
   const stack = [[root, '']];
   const seen = new Set();
   let nodes = 1;
@@ -38,7 +55,7 @@ function collectPathStrings(root, out, state) {
     const [value, key] = stack.pop();
     if (MCP_CONTENT_KEYS.has(key)) continue;
     if (typeof value === 'string') {
-      if (seen.has(value) || !pathLike(value) || (nonPathString(value) && !matchPath(value).length)) continue;
+      if (seen.has(value) || !pathLike(value) || (nonPath(value) && !matchPath(value).length)) continue;
       if (out.length >= MAX_MCP_STRINGS) { state.truncated = true; return; }
       seen.add(value);
       out.push(value);
@@ -61,7 +78,7 @@ export function extractTargets(toolName, toolInput) {
 }
 
 /** extractTargets plus `mcp` (targets came from MCP arguments) and `truncated` (some were not collected). */
-function extractTargetsEx(toolName, toolInput) {
+function extractTargetsEx(toolName, toolInput, cwd) {
   const t = { commands: [], readPaths: [], writePaths: [], urls: [] };
   const state = { truncated: false, mcp: false };
   const i = toolInput && typeof toolInput === 'object' ? toolInput : {};
@@ -95,7 +112,7 @@ function extractTargetsEx(toolName, toolInput) {
     default:
       if (typeof toolName === 'string' && toolName.startsWith('mcp__')) {
         state.mcp = true;
-        collectPathStrings(i, t.readPaths, state);
+        collectPathStrings(i, t.readPaths, state, cwd);
         if (MCP_WRITE_TOOL.test(toolName.slice(toolName.lastIndexOf('__') + 2))) t.writePaths.push(...t.readPaths);
       }
   }
@@ -184,7 +201,7 @@ function makeResolver(cwd, mcp) {
     try { abs = path.resolve(cwd || process.cwd(), plainPath(raw)); } catch { /* keep raw */ }
     const checkForm = !mcp || PATH_SHAPED.test(raw);
     const unusual = checkForm && (isUnusualPath(raw) || isUnusualPath(abs));
-    if (unusual || (mcp && nonPathString(raw))) return { abs, long: null, unusual, io: null };
+    if (unusual || (mcp && URL_LIKE.test(raw))) return { abs, long: null, unusual, io: null };
     const key = normForCompare(abs);
     let e = io.get(key);
     if (!e) {
@@ -328,7 +345,7 @@ const synthetic = (ruleId, p) => ({ ruleId, category: 'path', severity: 'high', 
  * @returns {{ decision: 'deny'|'ask'|'log'|'none', ruleId?: string, severity?: string, reason?: string, snippet?: string }}
  */
 export function decide({ toolName, toolInput, origin = null, allowlist = null, selfRoot, dataDir, cwd }) {
-  const { targets: t, mcp, truncated } = extractTargetsEx(toolName, toolInput);
+  const { targets: t, mcp, truncated } = extractTargetsEx(toolName, toolInput, cwd);
   const matches = [];
   for (const c of t.commands) matches.push(...commandMatches(c));
   for (const u of t.urls) matches.push(...commandMatches(u));
