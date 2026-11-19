@@ -34,7 +34,7 @@ function splitTools(v) {
   for (const ch of v.replace(/^\[|\]$/g, '')) {
     if (ch === '(') depth++;
     else if (ch === ')') depth = Math.max(0, depth - 1);
-    if (ch === ',' && depth === 0) { out.push(cur); cur = ''; } else cur += ch;
+    if ((ch === ',' || /\s/.test(ch)) && depth === 0) { out.push(cur); cur = ''; } else cur += ch;
   }
   out.push(cur);
   return out.map(s => s.trim().replace(/^(["'])(.*)\1$/, '$2')).filter(Boolean);

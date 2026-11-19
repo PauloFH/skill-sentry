@@ -137,8 +137,15 @@ export function scanComponent(c, opts = {}) {
       findings.push(finding('SUPPLY_BINARY', 'supply', /(^|\/)bin\//i.test(rel) ? 'high' : 'info', rel, `Binary file: ${rel}`));
       continue;
     }
-    if (!hashed.buf) continue; // over maxFileBytes: hashed only
-    if (hashed.buf.subarray(0, 4096).includes(0)) continue; // not text
+    const skipSev = kind === 'code' || kind === 'markdown' ? 'medium' : 'info';
+    if (!hashed.buf) { // over maxFileBytes: hashed only
+      findings.push(finding('SCAN_SKIPPED_LARGE', 'config', skipSev, rel, `File exceeds ${maxBytes} bytes and was not scanned`));
+      continue;
+    }
+    if (hashed.buf.subarray(0, 4096).includes(0)) { // not text
+      findings.push(finding('SCAN_NOT_TEXT', 'config', skipSev, rel, 'File contains NUL bytes and was not scanned'));
+      continue;
+    }
     const text = hashed.buf.toString('utf8');
 
     if (rel === 'package.json') {

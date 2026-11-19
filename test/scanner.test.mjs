@@ -159,3 +159,27 @@ test('scoring escalation by file', () => {
   assert.equal(o.severity, 'high');
   assert.equal(scoreComponent([F('O', 'obfuscation', 'medium'), F('R', 'rce', 'medium', 'b')]).findings[0].severity, 'medium');
 });
+
+test('space-separated allowed-tools are split', () => {
+  for (const v of ['Bash Read', 'Bash(*) Read', 'Read WebFetch']) {
+    assert.ok(ids(analyzeSkillMarkdown(md(`allowed-tools: ${v}`))).includes('SKILL_ALLOWED_TOOLS_BROAD:high'), v);
+  }
+  const r = ids(analyzeSkillMarkdown(md('allowed-tools: Bash(git add:*) Read')));
+  assert.ok(r.includes('SKILL_ALLOWED_TOOLS:info'));
+  assert.ok(!r.some(x => x.startsWith('SKILL_ALLOWED_TOOLS_BROAD')));
+});
+
+test('skipped files emit findings', () => {
+  const c = comp('clean-skill');
+  fs.writeFileSync(path.join(c.root, 'big.js'), 'var a = 1;\n'.repeat(100));
+  fs.writeFileSync(path.join(c.root, 'big.dat'), 'x'.repeat(2000));
+  fs.writeFileSync(path.join(c.root, 'nul.js'), Buffer.concat([Buffer.from([0]), Buffer.from('var a = 1;')]));
+  fs.writeFileSync(path.join(c.root, 'pic.png'), Buffer.from([137, 80, 0, 1]));
+  const r = scanComponent(c, { maxFileBytes: 500 });
+  const get = (id, file) => r.findings.find(f => f.ruleId === id && f.file === file);
+  assert.equal(get('SCAN_SKIPPED_LARGE', 'big.js').severity, 'medium');
+  assert.equal(get('SCAN_SKIPPED_LARGE', 'big.dat').severity, 'info');
+  assert.equal(get('SCAN_NOT_TEXT', 'nul.js').severity, 'medium');
+  assert.equal(get('SCAN_NOT_TEXT', 'pic.png').severity, 'info');
+  assert.equal(get('SCAN_NOT_TEXT', 'pic.png').category, 'config');
+});
