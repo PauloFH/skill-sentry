@@ -86,26 +86,87 @@ function realpathish(abs) {
   return abs;
 }
 
-function canon(p, cwd) {
-  let s = String(p);
+const reEscape = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// Hosts that make a UNC admin share (`\\host\C$\...`) point back at a local drive.
+const LOCAL_HOST = `(?:localhost|127\\.0\\.0\\.1|\\[?::1\\]?${os.hostname() ? '|' + reEscape(os.hostname()) : ''})`;
+const ADMIN_SHARE_PREFIX = new RegExp(`^[\\\\/]{2}(?:[?.][\\\\/]UNC[\\\\/])?${LOCAL_HOST}[\\\\/]([a-z])\\$(?=[\\\\/]|$)`, 'i');
+const DEVICE_PREFIX = /^[\\/]{2}[?.][\\/](?=[a-z]:)/i;
+const ADMIN_SHARE_IN_TEXT = new RegExp(`//(?:[?.]/unc/)?${LOCAL_HOST}/([a-z])\\$(?=/|$|[\\s'"])`, 'gi');
+
+/** `\\localhost\C$\x`, `\\?\UNC\localhost\C$\x`, `\\?\C:\x` -> `C:\x`; `~` expanded. */
+function plainPath(p) {
+  let s = String(p).replace(ADMIN_SHARE_PREFIX, '$1:').replace(DEVICE_PREFIX, '');
   if (s === '~' || s.startsWith('~/') || s.startsWith('~\\')) s = os.homedir() + s.slice(1);
-  let out = realpathish(path.resolve(cwd || process.cwd(), s)).replace(/\\/g, '/');
+  return s;
+}
+
+/** Absolute long form: resolved, admin shares mapped, symlinks and 8.3 names expanded where they exist. */
+function longPath(p, cwd) {
+  return realpathish(path.resolve(cwd || process.cwd(), plainPath(p)));
+}
+
+function canon(p, cwd) {
+  let out = longPath(p, cwd).replace(/\\/g, '/');
   if (out.length > 1 && out.endsWith('/')) out = out.replace(/\/+$/, '');
   return process.platform === 'win32' ? out.toLowerCase() : out;
 }
 
 const isUnder = (p, root) => p === root || p.startsWith(root.endsWith('/') ? root : root + '/');
 
+const fileId = p => {
+  try {
+    const st = fs.statSync(p, { bigint: true, throwIfNoEntry: false });
+    return st && st.ino !== 0n ? `${st.dev}:${st.ino}` : null;
+  } catch { return null; }
+};
+
+/** True if `abs` or one of its existing ancestors is the same file (dev+ino) as a protected root. */
+function underByIdentity(abs, rootIds) {
+  if (!rootIds.size) return false;
+  let cur = abs;
+  for (let n = 0; n < 64; n++) {
+    const id = fileId(cur);
+    if (id && rootIds.has(id)) return true;
+    const parent = path.dirname(cur);
+    if (parent === cur) return false;
+    cur = parent;
+  }
+  return false;
+}
+
 const lowerOnWin = s => (process.platform === 'win32' ? s.toLowerCase() : s);
 const slashes = s => String(s).replace(/\\/g, '/').replace(/\/+$/, '');
 
-/** Shell text with backslashes -> '/', home references expanded, lowercased on win32. */
+/**
+ * Shell text with backslashes -> '/', local admin shares -> drive letters, home references expanded,
+ * `//` and `/./` collapsed, lowercased on win32.
+ */
 function normCommandText(cmd) {
   const home = slashes(os.homedir());
   let s = String(cmd).replace(/\\/g, '/');
+  s = s.replace(ADMIN_SHARE_IN_TEXT, '$1:');
   s = s.replace(/\$\{HOME\}|\$HOME\b|%USERPROFILE%|%HOMEDRIVE%%HOMEPATH%|\$\{env:USERPROFILE\}|\$env:USERPROFILE\b|\$env:HOME\b/gi, home);
   s = s.replace(/(^|[\s'"=(:;|&>])~(?=\/|$|[\s'";|&)])/g, (_, pre) => pre + home);
+  for (let prev = ''; prev !== s;) { prev = s; s = s.replace(/\/\.(?=\/)/g, ''); }
+  s = s.replace(/\/{2,}/g, '/');
   return lowerOnWin(s);
+}
+
+// Bare `skill-sentry` path segment (relative forms after `cd ~/.claude`), not `some-skill-sentry-fork`.
+const SELF_SEGMENT = /(?:^|[\s'"/=(])skill-sentry(?=$|[\s'"/;&|>)])/i;
+
+/**
+ * De-obfuscated copy of a shell command, used only to ADD matches: drops cmd `^` escapes,
+ * PowerShell backtick escapes, backslash-before-alphanumeric, empty quote pairs, and quotes
+ * around a single word (`c''url`, `c^url`, `s\h`, `"sh"`).
+ */
+export function deobfuscate(cmd) {
+  return String(cmd)
+    .replace(/\^/g, '')
+    .replace(/`(?=[A-Za-z])/g, '')
+    .replace(/\\(?=[A-Za-z0-9])/g, '')
+    .replace(/''|""/g, '')
+    .replace(/(["'])([^\s"']+)\1/g, '$2');
 }
 
 /** `needle` occurs in `text` and is not just a prefix of a longer name (`skill-sentry-x`). */
@@ -134,11 +195,11 @@ const WRITE_PROTECTED = m => m.category === 'persistence' || m.ruleId === 'SECRE
  * `;`, `&&`, `||`, newlines) escalate the exfil match to critical, as scoring does per file.
  * Separate statements (`export $(cat .env) && curl -d @body.json ...`) stay high.
  */
-function commandMatches(target) {
-  const ms = matchCommand(target);
+function textMatches(text, target) {
+  const ms = matchCommand(text);
   const escalate = new Set();
   if (ms.some(m => m.category === 'secret') && ms.some(m => m.category === 'exfil')) {
-    const statements = target.replace(/\\\r?\n[ \t]*/g, ' ').split(/&&|\|\||;|\r?\n/);
+    const statements = text.replace(/\\\r?\n[ \t]*/g, ' ').split(/&&|\|\||;|\r?\n/);
     for (const s of statements) {
       const sm = matchCommand(s);
       if (sm.some(m => m.category === 'secret')) for (const m of sm) if (m.category === 'exfil') escalate.add(m.ruleId);
@@ -146,6 +207,34 @@ function commandMatches(target) {
   }
   return ms.map(m => (escalate.has(m.ruleId) && m.severity !== 'critical'
     ? { ...m, severity: 'critical', escalated: true, target } : { ...m, target }));
+}
+
+const RANK = { critical: 3, high: 2, medium: 1, info: 0 };
+
+/** Matches on the raw command plus its de-obfuscated copy (union per rule, higher severity wins). */
+function commandMatches(target) {
+  const out = textMatches(target, target);
+  const clean = deobfuscate(target);
+  if (clean === target) return out;
+  for (const m of textMatches(clean, target)) {
+    const i = out.findIndex(x => x.ruleId === m.ruleId);
+    if (i === -1) out.push(m);
+    else if (RANK[m.severity] > RANK[out[i].severity]) out[i] = m;
+  }
+  return out;
+}
+
+/** Path rule matches on the path as given plus its long form (8.3 names, symlinks, admin shares). */
+function pathMatches(p, cwd, keep) {
+  const out = matchPath(p).filter(keep).map(m => ({ ...m, target: p }));
+  let long = null;
+  try { long = longPath(p, cwd); } catch { /* unresolvable: raw form only */ }
+  if (long && long !== p) {
+    for (const m of matchPath(long)) {
+      if (keep(m) && !out.some(x => x.ruleId === m.ruleId)) out.push({ ...m, snippet: snip(p), target: p });
+    }
+  }
+  return out;
 }
 
 /**
@@ -159,8 +248,8 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
   const matches = [];
   for (const c of t.commands) matches.push(...commandMatches(c));
   for (const u of t.urls) matches.push(...commandMatches(u));
-  for (const p of t.readPaths) for (const m of matchPath(p)) if (m.category === 'secret') matches.push({ ...m, target: p });
-  for (const p of t.writePaths) for (const m of matchPath(p)) if (WRITE_PROTECTED(m)) matches.push({ ...m, target: p });
+  for (const p of t.readPaths) matches.push(...pathMatches(p, cwd, m => m.category === 'secret'));
+  for (const p of t.writePaths) matches.push(...pathMatches(p, cwd, WRITE_PROTECTED));
 
   const critical = matches.filter(m => m.severity === 'critical');
   if (critical.length) {
@@ -177,18 +266,22 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
   if (t.commands.length) {
     const needles = [...[dataDir, selfRoot].filter(str).flatMap(rootForms), lowerOnWin('.claude/skill-sentry')];
     for (const c of t.commands) {
-      const text = normCommandText(c);
-      if (needles.some(n => mentions(text, n))) {
+      const texts = [normCommandText(c), normCommandText(deobfuscate(c))];
+      if (texts.some(text => SELF_SEGMENT.test(text) || needles.some(n => mentions(text, n)))) {
         return { decision: 'ask', ruleId: 'SELF_PROTECT', severity: 'high', reason: 'shell command touches skill-sentry data or install directory', snippet: snip(c) };
       }
     }
   }
 
   if (t.writePaths.length) {
-    const roots = [dataDir, selfRoot].filter(str).map(r => canon(r));
+    const protectedRoots = [dataDir, selfRoot].filter(str);
+    const roots = protectedRoots.map(r => canon(r));
+    const rootIds = new Set(protectedRoots.map(r => fileId(path.resolve(r))).filter(Boolean));
     for (const p of t.writePaths) {
       const c = canon(p, cwd);
-      if (roots.some(r => isUnder(c, r))) {
+      let raw = null;
+      try { raw = path.resolve(cwd || process.cwd(), plainPath(p)); } catch { /* string compare only */ }
+      if (roots.some(r => isUnder(c, r)) || (raw && underByIdentity(raw, rootIds))) {
         return { decision: 'ask', ruleId: 'SELF_PROTECT_WRITE', severity: 'high', reason: 'write to skill-sentry data or install directory', snippet: snip(p) };
       }
     }
