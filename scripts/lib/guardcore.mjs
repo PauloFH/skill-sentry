@@ -102,12 +102,23 @@ const resolveLazy = v => (typeof v === 'function' ? v() : v);
 const snip = s => truncate(escapeInvisible(String(s ?? '')), 200);
 const WRITE_PROTECTED = m => m.category === 'persistence' || m.ruleId === 'SECRET_PATH_SSH';
 
-/** Command/URL matches, with secret + exfil in the same string escalated to critical (as scoring does). */
+/**
+ * Command/URL matches. A secret and an exfil match in the same statement (pipeline; split on
+ * `;`, `&&`, `||`, newlines) escalate the exfil match to critical, as scoring does per file.
+ * Separate statements (`export $(cat .env) && curl -d @body.json ...`) stay high.
+ */
 function commandMatches(target) {
   const ms = matchCommand(target);
-  const hasSecret = ms.some(m => m.category === 'secret');
-  return ms.map(m => (m.category === 'exfil' && hasSecret && m.severity !== 'critical'
-    ? { ...m, severity: 'critical', escalated: true } : m)).map(m => ({ ...m, target }));
+  const escalate = new Set();
+  if (ms.some(m => m.category === 'secret') && ms.some(m => m.category === 'exfil')) {
+    const statements = target.replace(/\\\r?\n[ \t]*/g, ' ').split(/&&|\|\||;|\r?\n/);
+    for (const s of statements) {
+      const sm = matchCommand(s);
+      if (sm.some(m => m.category === 'secret')) for (const m of sm) if (m.category === 'exfil') escalate.add(m.ruleId);
+    }
+  }
+  return ms.map(m => (escalate.has(m.ruleId) && m.severity !== 'critical'
+    ? { ...m, severity: 'critical', escalated: true, target } : { ...m, target }));
 }
 
 /**
