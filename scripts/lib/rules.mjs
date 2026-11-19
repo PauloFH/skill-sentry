@@ -1,4 +1,4 @@
-import { normalizePath, escapeInvisible, truncate } from './text.mjs';
+import { normalizePath, escapeInvisible, truncate, invisibleRegex } from './text.mjs';
 
 /**
  * @typedef {'critical'|'high'|'medium'|'info'} Severity
@@ -7,9 +7,6 @@ import { normalizePath, escapeInvisible, truncate } from './text.mjs';
  * @typedef {{ id: string, category: string, severity: Severity, pattern: RegExp,
  *             appliesTo: Array<'code'|'markdown'|'config'|'command'|'path'>, description: string }} Rule
  */
-
-// Lines longer than this are cut before matching to bound regex cost on minified bundles.
-const MAX_LINE = 100_000;
 
 // Signature words are assembled from fragments so detector sources stay inert.
 const j = (...p) => p.join('');
@@ -35,6 +32,14 @@ const CODE_CMD = ['code', 'command'];
 const SCRIPTY = ['code', 'config', 'command'];
 const PROSE = ['markdown'];
 
+// download tool, then a pipe into a shell (any args) or into an interpreter reading its program from stdin.
+const PIPE_TO_INTERPRETER = new RegExp(
+  '\\b(?:curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod)\\b[^\\n|;]{0,150}'
+  + '\\|\\s*(?:sudo(?:\\s+-\\S+){0,4}\\s+)?(?:(?:\\/\\S{0,60}\\/)?env\\s+)?(?:\\S{0,80}\\/)?'
+  + '(?:(?:(?:ba|z|da|k|c)?sh|iex|invoke-expression)\\b'
+  + '|(?:python[23]?|node|perl|ruby|php)(?=\\s*(?:$|[;&|)]|-(?:\\s|$))))',
+  'i');
+
 /** @returns {Rule} */
 const r = (id, category, severity, pattern, appliesTo, description) =>
   ({ id, category, severity, pattern, appliesTo, description });
@@ -50,25 +55,29 @@ export const RULES = [
     'Typical miner command-line flags'),
 
   // ---- RCE ----
-  r('RCE_DOWNLOAD_PIPE_SHELL', 'rce', 'critical',
-    /\b(?:curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod)\b[^\n|;]*\|\s*(?:sudo\s+)?(?:(?:ba|z|da|k|c)?sh|python[23]?|node|perl|ruby|php|iex|invoke-expression)\b/i,
-    ALL, 'Downloads content and pipes it straight into an interpreter'),
+  r('RCE_DOWNLOAD_PIPE_SHELL', 'rce', 'critical', PIPE_TO_INTERPRETER, ALL,
+    'Downloads content and pipes it straight into a shell or interpreter'),
+  r('RCE_PROCESS_SUBST', 'rce', 'critical',
+    /(?:^|[\s;&|(])(?:(?:ba|z|da|k)?sh|source|\.)\s+<\(\s*(?:curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod)\b/i, ALL,
+    'Shell sources or executes the output of a download'),
+  r('RCE_EVAL_SUBST', 'rce', 'critical', /\beval\s+["']?(?:\$\(|`)\s*(?:curl|wget)\b/i, ALL,
+    'eval of the output of a download'),
   r('RCE_IEX_DOWNLOAD', 'rce', 'critical',
     /\b(?:iex|invoke-expression)\b\s*\(?\s*\(?\s*(?:new-object\s+(?:system\.)?net\.webclient|iwr|irm|invoke-webrequest|invoke-restmethod)\b|\.downloadstring\s*\(/i,
     ALL, 'PowerShell download-and-evaluate'),
   r('RCE_SHELL_C_SUBST', 'rce', 'critical', /\b(?:ba|z|da)?sh\s+-c\s+["']?\$\(\s*(?:curl|wget)\b/i, ALL,
     'Shell executes the output of a download'),
   r('RCE_POWERSHELL_ENCODED', 'rce', 'high',
-    /\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]*\s-e(?:nc(?:odedcommand)?)?\s+['"]?[A-Za-z0-9+/=]{8,}/i, ALL,
+    /\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]{0,300}\s-e(?:nc(?:odedcommand)?)?\s+['"]?[A-Za-z0-9+/=]{8,}/i, ALL,
     'PowerShell encoded command'),
   r('RCE_REVERSE_SHELL', 'rce', 'critical',
-    /\/dev\/tcp\/[\w.$-]+\/\d+|\bn(?:c|cat)\b[^\n]*\s-e\s+\/?\S*sh\b|\b(?:ba)?sh\s+-i\s*>&|\bmkfifo\b[^\n]*\bnc\b/i, ALL,
+    /\/dev\/tcp\/[\w.$-]+\/\d+|\bn(?:c|cat)\b[^\n]{0,300}\s-e\s+\/?\S*sh\b|\b(?:ba)?sh\s+-i\s*>&|\bmkfifo\b[^\n]{0,300}\bnc\b/i, ALL,
     'Reverse shell construction'),
   r('RCE_DOWNLOAD_EXEC', 'rce', 'high',
-    /\b(?:curl|wget)\b[^\n]*(?:\s-o|\s-O|>)\s*\S+[^\n]*(?:&&|;)\s*(?:sudo\s+)?(?:chmod\s+\+?[ugoa]*x|\.\/|sh\s|bash\s)/i, ALL,
+    /\b(?:curl|wget)\b[^\n;]{0,120}?(?:\s-o\s*|>\s*)\S{1,100}\s*(?:&&|;)\s*(?:sudo\s+)?(?:chmod\s+\+?[ugoa]*x|\.\/|sh\s|bash\s)/i, ALL,
     'Downloads a file then makes it executable / runs it'),
   r('RCE_LOLBIN_DOWNLOAD', 'rce', 'high',
-    /\bmshta\b[^\n]*https?:|\bcertutil(?:\.exe)?\s+[^\n]*-urlcache\b|\bbitsadmin\b[^\n]*\/transfer\b|\bregsvr32\b[^\n]*\/i:https?:/i, ALL,
+    /\bmshta\b[^\n]{0,300}https?:|\bcertutil(?:\.exe)?\s+[^\n]{0,300}-urlcache\b|\bbitsadmin\b[^\n]{0,300}\/transfer\b|\bregsvr32\b[^\n]{0,300}\/i:https?:/i, ALL,
     'Windows living-off-the-land downloader'),
 
   // ---- SECRET ----
@@ -81,16 +90,16 @@ export const RULES = [
   r('SECRET_GIT_NETRC_REF', 'secret', 'high', /(?:^|[\s/\\"'=])(?:\.git-credentials|\.netrc|_netrc)\b/i, ALL,
     'References stored git/netrc credentials'),
   r('SECRET_BROWSER_DATA_REF', 'secret', 'high',
-    /(?:google[-/\\ ]chrome|chromium|brave|microsoft[/\\ ]edge|mozilla[/\\ ]firefox|vivaldi)[^\n]*(?:login data|cookies|logins\.json|key4\.db|web data)/i,
+    /(?:google[-/\\ ]chrome|chromium|brave|microsoft[/\\ ]edge|mozilla[/\\ ]firefox|vivaldi)[^\n]{0,300}(?:login data|cookies|logins\.json|key4\.db|web data)/i,
     ALL, 'References browser credential or cookie stores'),
   r('SECRET_WALLET_REF', 'secret', 'high',
     /\bwallet\.dat\b|[/\\]\.(?:electrum|monero|bitcoin)\b|[/\\]exodus[/\\]|\bmetamask\b|keystore[/\\]utc--/i, ALL,
     'References cryptocurrency wallet files'),
   r('SECRET_ENV_FILE_READ', 'secret', 'high',
-    /\b(?:cat|type|cp|scp|base64|tar|zip|get-content|gc)\b[^\n|;&]*(?:^|[\s/\\])\.env(?:\.(?!example|sample|template)[\w-]+)?(?=\s|$|["'|;&])/i,
+    /\b(?:cat|type|cp|scp|base64|tar|zip|get-content|gc)\b[^\n|;&]{0,300}(?:^|[\s/\\])\.env(?:\.(?!example|sample|template)[\w-]+)?(?=\s|$|["'|;&])/i,
     ['command'], 'Reads a .env file'),
   r('SECRET_ENV_DUMP_PIPE', 'secret', 'high',
-    /JSON\.stringify\(\s*process\.env\b|\bdict\(\s*os\.environ\s*\)|\b(?:printenv|env)\b\s*\|\s*(?:curl|nc|base64)\b|\bget-childitem\s+env:[^\n]*\|\s*(?:iwr|irm|invoke-)/i,
+    /JSON\.stringify\(\s*process\.env\b|\bdict\(\s*os\.environ\s*\)|\b(?:printenv|env)\b\s*\|\s*(?:curl|nc|base64)\b|\bget-childitem\s+env:[^\n]{0,300}\|\s*(?:iwr|irm|invoke-)/i,
     CODE_CMD, 'Dumps the whole environment into a pipe or serializer'),
   r('SECRET_TOKEN_LITERAL', 'secret', 'high',
     /\bgh[pousr]_[A-Za-z0-9]{36,}\b|\bAKIA[0-9A-Z]{16}\b|\bsk-ant-[A-Za-z0-9_-]{20,}|-----BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----|\bxox[baprs]-[A-Za-z0-9-]{10,}/,
@@ -100,7 +109,7 @@ export const RULES = [
   r('EXFIL_KNOWN_SERVICE', 'exfil', 'high', new RegExp(`(?:^|[^a-z0-9.-])(?:${EXFIL_HOSTS.join('|')})`, 'i'), ALL,
     'Known data-exfiltration / paste / tunnel service'),
   r('EXFIL_UPLOAD_FILE', 'exfil', 'high',
-    /\bcurl\b[^\n]*?\s(?:-d|--data(?:-binary|-raw|-urlencode)?|-F|--form|-T|--upload-file)(?:\s+|=)["']?(?:[\w.-]+=)?@\S|\bwget\b[^\n]*--post-file\b|\b(?:iwr|irm|invoke-webrequest|invoke-restmethod)\b[^\n]*-infile\b/i,
+    /\bcurl\b[^\n]{0,120}?\s(?:-d|--data(?:-binary|-raw|-urlencode)?|-F|--form|-T|--upload-file)(?:\s+|=)["']?(?:[\w.-]+=)?@\S|\bwget\b[^\n]{0,300}--post-file\b|\b(?:iwr|irm|invoke-webrequest|invoke-restmethod)\b[^\n]{0,300}-infile\b/i,
     CODE_CMD, 'Uploads a local file to a remote host'),
   r('EXFIL_RAW_IP_URL', 'exfil', 'high',
     /\bhttps?:\/\/(?!(?:127\.|0\.0\.0\.0|10\.|192\.168\.|169\.254\.|172\.(?:1[6-9]|2\d|3[01])\.))\d{1,3}(?:\.\d{1,3}){3}\b/i,
@@ -108,7 +117,7 @@ export const RULES = [
 
   // ---- PERSISTENCE ----
   r('PERSIST_CRON', 'persistence', 'high',
-    /\(\s*crontab\s+-l[^\n]*\)\s*\|\s*crontab\b|\|\s*crontab\s+-?\s*(?:$|[\s;&])|\bcrontab\s+-\s*$|>>?\s*\/etc\/cron\S*|>>?\s*\/var\/spool\/cron\S*/im,
+    /\(\s*crontab\s+-l[^\n]{0,300}\)\s*\|\s*crontab\b|\|\s*crontab\s+-?\s*(?:$|[\s;&])|\bcrontab\s+-\s*$|>>?\s*\/etc\/cron\S*|>>?\s*\/var\/spool\/cron\S*/im,
     CODE_CMD, 'Installs a cron job'),
   r('PERSIST_SCHTASKS', 'persistence', 'high', /\bschtasks(?:\.exe)?\s+\/create\b|\bregister-scheduledtask\b/i, CODE_CMD,
     'Creates a Windows scheduled task'),
@@ -120,10 +129,10 @@ export const RULES = [
   r('PERSIST_STARTUP_FOLDER', 'persistence', 'high', /start menu[/\\]programs[/\\]startup/i, ALL,
     'Writes to the Windows Startup folder'),
   r('PERSIST_RC_APPEND', 'persistence', 'high',
-    /(?:>>|\btee\s+-a|\badd-content\b)[^\n]*(?:\.bashrc|\.zshrc|\.zprofile|\.bash_profile|\.profile\b|\$profile\b|microsoft\.powershell_profile)/i,
+    /(?:>>|\btee\s+-a|\badd-content\b)[^\n]{0,300}(?:\.bashrc|\.zshrc|\.zprofile|\.bash_profile|\.profile\b|\$profile\b|microsoft\.powershell_profile)/i,
     CODE_CMD, 'Appends to a shell startup file'),
   r('PERSIST_CLAUDE_SETTINGS_WRITE', 'persistence', 'high',
-    /(?:>>?|\btee\b|\bsed\s+-i|\bset-content\b|\badd-content\b|\bout-file\b)[^\n]*\.claude[/\\]settings(?:\.local)?\.json/i,
+    /(?:>>?|\btee\b|\bsed\s+-i|\bset-content\b|\badd-content\b|\bout-file\b)[^\n]{0,300}\.claude[/\\]settings(?:\.local)?\.json/i,
     CODE_CMD, 'Modifies Claude Code settings from a script'),
 
   // ---- PERMISSIONS ----
@@ -143,10 +152,10 @@ export const RULES = [
     /\brm\s+(?:-{1,2}[a-z-]+\s+)*(?:~|\$HOME|\$\{HOME\}|\/)\/?\*?(?=\s|$|[;&|"'])/i, CODE_CMD,
     'Recursive delete of the home directory or filesystem root'),
   r('DESTRUCT_WIN_WIPE', 'destructive', 'critical',
-    /\b(?:rd|rmdir|del|erase)\s+(?:\/[sq]\s+)+(?:[a-z]:\\?\*?|%userprofile%\\?\*?|%homepath%)(?=\s|$)|\bremove-item\b[^\n]*-recurse[^\n]*\s(?:[a-z]:\\\*?|\$env:userprofile\\?\*?|~[\\/]?\*?)(?=\s|$)/i,
+    /\b(?:rd|rmdir|del|erase)\s+(?:\/[sq]\s+)+(?:[a-z]:\\?\*?|%userprofile%\\?\*?|%homepath%)(?=\s|$)|\bremove-item\b[^\n]{0,300}-recurse[^\n]{0,300}\s(?:[a-z]:\\\*?|\$env:userprofile\\?\*?|~[\\/]?\*?)(?=\s|$)/i,
     CODE_CMD, 'Recursive delete of a Windows drive root or user profile'),
   r('DESTRUCT_DISK', 'destructive', 'critical',
-    /\bmkfs(?:\.\w+)?\s+\/dev\/|\bdd\s+[^\n]*\bof=\/dev\/(?:sd|nvme|hd|vd|disk)|>\s*\/dev\/(?:sd[a-z]|nvme\d)/i, CODE_CMD,
+    /\bmkfs(?:\.\w+)?\s+\/dev\/|\bdd\s+[^\n]{0,300}\bof=\/dev\/(?:sd|nvme|hd|vd|disk)|>\s*\/dev\/(?:sd[a-z]|nvme\d)/i, CODE_CMD,
     'Overwrites or formats a block device'),
   r('DESTRUCT_FORMAT_DRIVE', 'destructive', 'high', /\bformat(?:\.com)?\s+[a-z]:(?:\s|$)|\bclear-disk\b/i, CODE_CMD,
     'Formats a Windows drive'),
@@ -154,12 +163,12 @@ export const RULES = [
 
   // ---- OBFUSCATION ----
   r('OBF_BASE64_PIPE_SHELL', 'obfuscation', 'critical',
-    /\bbase64\s+(?:-d|-D|--decode)\b[^\n]*\|\s*(?:sudo\s+)?(?:(?:ba|z|da)?sh|python[23]?|perl|iex)\b|frombase64string\b[^\n]*(?:\|\s*iex\b|invoke-expression)|\b(?:iex|invoke-expression)\b[^\n]*frombase64string/i,
+    /\bbase64\s+(?:-d|-D|--decode)\b[^\n]{0,300}\|\s*(?:sudo\s+)?(?:(?:ba|z|da)?sh|python[23]?|perl|iex)\b|frombase64string\b[^\n]{0,300}(?:\|\s*iex\b|invoke-expression)|\b(?:iex|invoke-expression)\b[^\n]{0,300}frombase64string/i,
     ALL, 'Decodes base64 and executes it'),
   r('OBF_EVAL_DECODE', 'obfuscation', 'high',
     /\b(?:eval|exec|new\s+Function)\s*\(\s*(?:atob|Buffer\.from|base64\.b64decode|bytes\.fromhex|zlib\.decompress|String\.fromCharCode)\b/, CODE_CMD,
     'Evaluates decoded data'),
-  r('OBF_BASE64_BLOB', 'obfuscation', 'medium', /[A-Za-z0-9+/]{300,}={0,2}/, ['code'], 'Very long base64-like blob'),
+  r('OBF_BASE64_BLOB', 'obfuscation', 'medium', /(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{300,}={0,2}/, ['code'], 'Very long base64-like blob'),
   r('OBF_HEX_ESCAPES', 'obfuscation', 'medium', /(?:\\x[0-9a-f]{2}){16,}/i, ['code'], 'Long run of hex escapes'),
   r('OBF_CHARCODE_ARRAY', 'obfuscation', 'medium', /String\.fromCharCode\((?:\s*\d+\s*,){8,}/, ['code'],
     'String assembled from char codes'),
@@ -180,7 +189,7 @@ export const RULES = [
   r('INJECT_FAKE_SYSTEM_TAG', 'injection', 'high',
     /<\/?(?:system|important|admin|instructions?)>|\[\s*system\s*\]|<\|(?:im_start|system)\|>/i, PROSE,
     'Fake system / important tag used to hijack the model'),
-  r('INJECT_HIDDEN_COMMENT', 'injection', 'medium', /<!--[^\n]*(?:instruction|ignore|assistant|claude|system prompt|instru[çc][õo]es)[^\n]*-->/i, PROSE,
+  r('INJECT_HIDDEN_COMMENT', 'injection', 'medium', /<!--[^\n]{0,300}(?:instruction|ignore|assistant|claude|system prompt|instru[çc][õo]es)[^\n]{0,300}-->/i, PROSE,
     'HTML comment carrying instructions'),
   r('INJECT_REVEAL_PROMPT', 'injection', 'medium',
     /\b(?:reveal|print|output|repeat|leak|show)\b[^\n.]{0,30}\b(?:system prompt|your instructions|hidden instructions)\b|\b(?:revele|mostre|imprima)\b[^\n.]{0,30}\b(?:prompt do sistema|suas instru[çc][õo]es)\b/i,
@@ -197,9 +206,9 @@ export const RULES = [
 
   // ---- SUPPLY CHAIN ----
   r('SUPPLY_INSTALL_FROM_URL', 'supply', 'medium',
-    /\b(?:npm|pnpm|yarn|bun)\s+(?:i|install|add)\b[^\n]*(?:https?:\/\/|git\+|github:)|\bpip3?\s+install\b[^\n]*(?:https?:\/\/|git\+|--index-url|--extra-index-url|\s-i\s+https?:)/i,
+    /\b(?:npm|pnpm|yarn|bun)\s+(?:i|install|add)\b[^\n]{0,300}(?:https?:\/\/|git\+|github:)|\bpip3?\s+install\b[^\n]{0,300}(?:https?:\/\/|git\+|--index-url|--extra-index-url|\s-i\s+https?:)/i,
     ['command', 'code', 'markdown'], 'Installs a package from a URL or custom index'),
-  r('SUPPLY_NPX_REMOTE', 'supply', 'medium', /\bnpx\s+(?:-y\s+|--yes\s+)[^\n]*(?:https?:\/\/|github:|git\+)/i, ALL,
+  r('SUPPLY_NPX_REMOTE', 'supply', 'medium', /\bnpx\s+(?:-y\s+|--yes\s+)[^\n]{0,300}(?:https?:\/\/|github:|git\+)/i, ALL,
     'npx runs a package from a remote location'),
   r('SUPPLY_REGISTRY_OVERRIDE', 'supply', 'medium', /\bnpm\s+config\s+set\s+registry\b|--registry[= ]+https?:\/\/(?!registry\.npmjs\.org)/i, CODE_CMD,
     'Overrides the package registry'),
@@ -243,7 +252,7 @@ const PATH_RULES = [
 // ---- Matching ----
 
 function lineMatch(rule, line, lineNo) {
-  const hit = rule.pattern.exec(line.length > MAX_LINE ? line.slice(0, MAX_LINE) : line);
+  const hit = rule.pattern.exec(line);
   if (!hit) return null;
   const idx = hit.index;
   // Window around the hit keeps snippets useful on very long (minified) lines.
@@ -268,12 +277,15 @@ export function matchText(text, kind) {
 
 /** @param {string} cmd @returns {Match[]} */
 export function matchCommand(cmd) {
-  const s = String(cmd ?? '');
+  // Join backslash-newline continuations, then evaluate each logical line; one match per rule.
+  const logical = String(cmd ?? '').replace(/\\\r?\n[ \t]*/g, ' ').split(/\r?\n/);
+  const rules = RULES.filter(x => x.appliesTo.includes('command'));
   const out = [];
-  for (const rule of RULES) {
-    if (!rule.appliesTo.includes('command')) continue;
-    const m = lineMatch(rule, s, 1);
-    if (m) out.push(m);
+  for (const rule of rules) {
+    for (const line of logical) {
+      const m = lineMatch(rule, line, 1);
+      if (m) { out.push(m); break; }
+    }
   }
   return out;
 }
@@ -290,7 +302,7 @@ export function matchPath(p) {
   return out;
 }
 
-const INVISIBLE = /[​-‏⁠﻿‪-‮⁦-⁩\u{E0000}-\u{E007F}]/gu;
+const INVISIBLE = invisibleRegex();
 
 /** Report lines containing invisible / bidi / tag characters. @returns {Match[]} */
 export function findInvisible(text, kind) {

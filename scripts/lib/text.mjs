@@ -1,5 +1,15 @@
 import os from 'node:os';
 
+/**
+ * Single source of truth for invisible / bidi / tag characters (escapes only, no raw characters):
+ * U+200B-U+200F zero-width and direction marks, U+2060 word joiner, U+FEFF BOM/ZWNBSP,
+ * U+202A-U+202E and U+2066-U+2069 bidi controls, U+E0000-U+E007F tag characters.
+ */
+export const INVISIBLE_CLASS = '\\u200B-\\u200F\\u2060\\uFEFF\\u202A-\\u202E\\u2066-\\u2069\\u{E0000}-\\u{E007F}';
+
+/** Fresh global regex (own lastIndex) matching one invisible character. */
+export const invisibleRegex = () => new RegExp(`[${INVISIBLE_CLASS}]`, 'gu');
+
 /** Expand `~`, convert backslashes to `/`, lowercase on win32. */
 export function normalizePath(p) {
   let s = String(p ?? '');
@@ -8,11 +18,9 @@ export function normalizePath(p) {
   return process.platform === 'win32' ? s.toLowerCase() : s;
 }
 
-const INVISIBLE_RE = /[​-‏⁠﻿‪-‮⁦-⁩\u{E0000}-\u{E007F}]/gu;
-
 /** Render invisible / bidi / tag characters as \uXXXX escapes. */
 export function escapeInvisible(s) {
-  return String(s).replace(INVISIBLE_RE, ch => {
+  return String(s).replace(invisibleRegex(), ch => {
     const cp = ch.codePointAt(0);
     return cp > 0xFFFF
       ? '\\u{' + cp.toString(16).toUpperCase() + '}'
