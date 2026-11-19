@@ -3,6 +3,7 @@ const ESCALATES_OBF = new Set(['rce', 'exfil', 'secret']);
 
 /**
  * Turn findings into a score and verdict, applying per-file combination escalation.
+ * Score = sum over distinct rule ids of the highest severity weight seen for that rule.
  * Input findings are not mutated; escalated findings are copies with `escalated: true`.
  * @param {Array<import('./scanner.mjs').Finding>} findings
  * @returns {{ score: number, verdict: 'ok'|'review'|'suspicious'|'malicious', findings: Array }}
@@ -24,7 +25,11 @@ export function scoreComponent(findings) {
     }
     return f;
   });
-  const score = Math.min(100, out.reduce((n, f) => n + (WEIGHT[f.severity] ?? 0), 0));
+  // Each rule counts once, at its highest (post-escalation) severity: repeating one pattern in many
+  // files adds little evidence, while distinct rules do. Every finding is still reported.
+  const best = new Map();
+  for (const f of out) best.set(f.ruleId, Math.max(best.get(f.ruleId) ?? 0, WEIGHT[f.severity] ?? 0));
+  const score = Math.min(100, [...best.values()].reduce((n, w) => n + w, 0));
   let verdict = score < 10 ? 'ok' : score < 30 ? 'review' : score < 60 ? 'suspicious' : 'malicious';
   if (verdict === 'ok' || verdict === 'review') {
     if (out.some(f => f.severity === 'critical')) verdict = 'suspicious';

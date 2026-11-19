@@ -76,23 +76,29 @@ export function analyzeSkillMarkdown(text) {
     if (ms.some(m => m.category === 'exfil') && (docSecret || ms.some(m => m.category === 'secret'))) severity = 'critical';
     out.push(mk('SKILL_INJECTED_SHELL', severity, line, cmd));
   };
-  let inBang = false;
-  let block = [];
-  let blockStart = 0;
-  for (let i = end; i < lines.length; i++) {
-    const l = lines[i];
-    if (inBang) {
-      if (/^\s*```\s*$/.test(l)) { injected(block.join('\n'), blockStart); inBang = false; block = []; } else block.push(l);
-      continue;
-    }
-    if (/^\s*```!/.test(l)) {
-      inBang = true; blockStart = i + 1;
-      const rest = l.replace(/^\s*```!\s*/, '');
-      block = rest ? [rest] : [];
-      continue;
-    }
-    for (const m of l.matchAll(/!`([^`\n]+)`/g)) injected(m[1], i + 1);
+  // Mirrors Claude Code's own substitution patterns (read from the shipped CLI, Claude Code 2.1.x):
+  //   block  /```!\s*\n?([\s\S]*?)\n?```/  — anywhere, not only at line start
+  //   inline /(?<=^|\s)!`([^`]+)`/        — `!` at body start or after whitespace; may span lines
+  // Neither pattern skips ordinary ``` fences, so `!` commands inside documentation fences still count.
+  const bodyStart = lines.slice(0, end).reduce((n, l) => n + l.length + 1, 0);
+  const full = lines.join('\n');
+  let body = full.slice(Math.min(bodyStart, full.length));
+  const nl = [];
+  for (let i = body.indexOf('\n'); i !== -1; i = body.indexOf('\n', i + 1)) nl.push(i);
+  const lineAt = idx => { // binary search: number of newlines before idx
+    let lo = 0;
+    let hi = nl.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (nl[mid] < idx) lo = mid + 1; else hi = mid; }
+    return end + 1 + lo;
+  };
+  // Blocks are blanked (newlines kept) so their contents are not reported again as inline matches.
+  const blankOut = s => s.replace(/[^\n]/g, ' ');
+  body = body.replace(/```!\s*\n?([\s\S]*?)\n?```/g, (m0, cmd, idx) => { injected(cmd, lineAt(idx)); return blankOut(m0); });
+  const open = body.indexOf('```!');
+  if (open !== -1) { // unclosed block: Claude Code would not run it, but report it anyway
+    injected(body.slice(open + 4).trim(), lineAt(open));
+    body = body.slice(0, open) + blankOut(body.slice(open));
   }
-  if (inBang) injected(block.join('\n'), blockStart);
+  for (const m of body.matchAll(/(?<=^|\s)!`([^`]+)`/g)) injected(m[1], lineAt(m.index));
   return out;
 }

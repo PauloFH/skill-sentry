@@ -5,7 +5,8 @@ import { normalizePath, escapeInvisible, truncate, invisibleRegex } from './text
  * @typedef {'code'|'markdown'|'config'|'binary'|'other'} FileKind
  * @typedef {{ ruleId: string, category: string, severity: Severity, line: number, snippet: string }} Match
  * @typedef {{ id: string, category: string, severity: Severity, pattern: RegExp,
- *             appliesTo: Array<'code'|'markdown'|'config'|'command'|'path'>, description: string }} Rule
+ *             appliesTo: Array<'code'|'markdown'|'config'|'command'|'path'>, description: string,
+ *             kindSeverity?: Partial<Record<FileKind, Severity>> }} Rule
  */
 
 // Signature words are assembled from fragments so detector sources stay inert.
@@ -32,13 +33,17 @@ const CODE_CMD = ['code', 'command'];
 const SCRIPTY = ['code', 'config', 'command'];
 const PROSE = ['markdown'];
 
-// download tool, then a pipe into a shell (any args) or into an interpreter reading its program from stdin.
+// download tool, optional `| tee …` stages, then a pipe into a shell (any args, `$SHELL` included)
+// or into an interpreter reading its program from stdin.
 const PIPE_TO_INTERPRETER = new RegExp(
   '\\b(?:curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod)\\b[^\\n|;]{0,150}'
-  + '\\|\\s*(?:sudo(?:\\s+-\\S+){0,4}\\s+)?(?:(?:\\/\\S{0,60}\\/)?env\\s+)?(?:\\S{0,80}\\/)?'
-  + '(?:(?:(?:ba|z|da|k|c)?sh|iex|invoke-expression)\\b'
+  + '(?:\\|\\s*(?:sudo\\s+)?tee\\b[^\\n|;]{0,100}){0,3}'
+  + '\\|\\s*(?:sudo(?:\\s+-\\S+){0,4}\\s+)?(?:(?:\\/\\S{0,60}\\/)?env\\s+)?(?:\\S{0,80}\\/)?["\']?'
+  + '(?:(?:(?:ba|z|da|k|c)?sh|iex|invoke-expression)\\b|\\$\\{?shell\\b\\}?'
   + '|(?:python[23]?|node|perl|ruby|php)(?=\\s*(?:$|[;&|)]|-(?:\\s|$))))',
   'i');
+// PowerShell web download cmdlets, optionally wrapped in `(`, `$(`, and `.Content` access.
+const PS_DOWNLOAD = '(?:new-object\\s+(?:system\\.)?net\\.webclient|iwr|irm|invoke-webrequest|invoke-restmethod)\\b';
 
 /** @returns {Rule} */
 const r = (id, category, severity, pattern, appliesTo, description) =>
@@ -63,7 +68,8 @@ export const RULES = [
   r('RCE_EVAL_SUBST', 'rce', 'critical', /\beval\s+["']?(?:\$\(|`)\s*(?:curl|wget)\b/i, ALL,
     'eval of the output of a download'),
   r('RCE_IEX_DOWNLOAD', 'rce', 'critical',
-    /\b(?:iex|invoke-expression)\b\s*\(?\s*\(?\s*(?:new-object\s+(?:system\.)?net\.webclient|iwr|irm|invoke-webrequest|invoke-restmethod)\b|\.downloadstring\s*\(/i,
+    new RegExp(`\\b(?:iex|invoke-expression)\\b\\s*(?:\\$?\\(\\s*){0,3}${PS_DOWNLOAD}`
+      + `|\\[scriptblock\\]::create\\s*(?:\\$?\\(\\s*){0,3}${PS_DOWNLOAD}|\\.downloadstring\\s*\\(`, 'i'),
     ALL, 'PowerShell download-and-evaluate'),
   r('RCE_SHELL_C_SUBST', 'rce', 'critical', /\b(?:ba|z|da)?sh\s+-c\s+["']?\$\(\s*(?:curl|wget)\b/i, ALL,
     'Shell executes the output of a download'),
@@ -84,6 +90,9 @@ export const RULES = [
   r('SECRET_SSH_KEY_REF', 'secret', 'high',
     /\.ssh[/\\](?:id_[a-z0-9_]+(?!\.pub)\b|authorized_keys|[a-z0-9_]*_key\b)|\bid_(?:rsa|ed25519|ecdsa|dsa)\b(?!\.pub)/i, ALL,
     'References an SSH private key'),
+  r('SECRET_SSH_DIR_READ', 'secret', 'high',
+    /\b(?:cat|type|grep|egrep|rg|ag|findstr|select-string|sls|get-content|gc|tar|zip|7z|compress-archive|cp|copy|copy-item|xcopy|robocopy|scp|rsync|base64|xxd|od|strings|find)\b[^\n|;&]{0,300}(?:^|[\s"'=(])(?:(?:~|\$\{?HOME\}?|%USERPROFILE%|\$env:USERPROFILE|[a-z]:[/\\]users[/\\][^/\\\n"']+|\/(?:home|Users)\/[^/\s"']+|\/root)?[/\\])?\.ssh(?:[/\\]\*?)?(?=$|[\s"';|&)])/i,
+    ['command'], 'Reads or archives the whole SSH key directory'),
   r('SECRET_AWS_CREDENTIALS_REF', 'secret', 'high', /\.aws[/\\](?:credentials|sso)\b/i, ALL, 'References AWS credentials'),
   r('SECRET_CLAUDE_CREDENTIALS_REF', 'secret', 'high', /\.claude[/\\]\.credentials\.json/i, ALL,
     'References Claude Code credentials'),
@@ -96,7 +105,8 @@ export const RULES = [
     /\bwallet\.dat\b|[/\\]\.(?:electrum|monero|bitcoin)\b|[/\\]exodus[/\\]|\bmetamask\b|keystore[/\\]utc--/i, ALL,
     'References cryptocurrency wallet files'),
   r('SECRET_ENV_FILE_READ', 'secret', 'high',
-    /\b(?:cat|type|cp|scp|base64|tar|zip|get-content|gc)\b[^\n|;&]{0,300}(?:^|[\s/\\])\.env(?:\.(?!example|sample|template)[\w-]+)?(?=\s|$|["'|;&])/i,
+    // `cp .env.example .env` (creating .env from a template) writes the file, it does not read it.
+    /\b(?:cat|type|cp(?!\s+(?:-\S+\s+)*["']?[^\s"'|;&]*\.env\.(?:example|sample|template|dist)["']?\s+["']?[^\s"'|;&]*\.env["']?\s*(?:$|[|;&]))|scp|base64|tar|zip|get-content|gc)\b[^\n|;&]{0,300}(?:^|[\s/\\])\.env(?:\.(?!example|sample|template)[\w-]+)?(?=\s|$|["'|;&])/i,
     ['command'], 'Reads a .env file'),
   r('SECRET_ENV_DUMP_PIPE', 'secret', 'high',
     /JSON\.stringify\(\s*process\.env\b|\bdict\(\s*os\.environ\s*\)|\b(?:printenv|env)\b\s*\|\s*(?:curl|nc|base64)\b|\bget-childitem\s+env:[^\n]{0,300}\|\s*(?:iwr|irm|invoke-)/i,
@@ -174,17 +184,20 @@ export const RULES = [
     'String assembled from char codes'),
 
   // ---- PROMPT INJECTION (English + Portuguese) ----
+  // Gaps never cross a sentence or clause break (`.`, `;`, `:`, `!`, `?`): "Do not retry; tell the user" is two clauses.
+  // `the` is not a qualifier on its own ("Override the parent's direction"); "ignore the instructions above" is matched explicitly.
+  // These four are high in Markdown (the instruction surface) and medium in code/config (`kindSeverity`).
   r('INJECT_IGNORE_INSTRUCTIONS_EN', 'injection', 'high',
-    /\b(?:ignore|disregard|forget|override)\b[^\n.]{0,30}\b(?:previous|prior|above|earlier|all|any|your|the|system)\b[^\n.]{0,30}\b(?:instructions?|prompts?|rules?|directions?|guidelines?)\b/i,
+    /\b(?:ignore|disregard|forget|override)\b[^\n.;:!?]{0,30}\b(?:previous|prior|above|earlier|preceding|all|any|your|system)\b[^\n.;:!?]{0,30}\b(?<!\b(?:lint|linting|linter|eslint|tslint|style|formatting|prettier)\s)(?:instructions?|prompts?|rules?|directions|guidelines?)\b|\b(?:ignore|disregard|forget|override)\s+(?:the|these|those)\s+(?:instructions?|prompts?|rules?|directions|guidelines?)\s+(?:above|before|given|you (?:were|have been) given)\b/i,
     ['markdown', 'config', 'code'], 'Tells the model to ignore its instructions'),
   r('INJECT_IGNORE_INSTRUCTIONS_PT', 'injection', 'high',
-    /\b(?:ignor[ea]r?|desconsidere|desconsiderar|esque[çc]a|esquecer|sobrescreva)\b[^\n.]{0,40}\b(?:instru[çc][õo]es|regras|diretrizes|orienta[çc][õo]es|prompts?)\b/i,
+    /\b(?:ignor[ea]r?|desconsidere|desconsiderar|esque[çc]a|esquecer|sobrescreva)\b[^\n.;:!?]{0,40}\b(?:instru[çc][õo]es|regras|diretrizes|orienta[çc][õo]es|prompts?)\b/i,
     ['markdown', 'config', 'code'], 'Tells the model to ignore its instructions (Portuguese)'),
   r('INJECT_CONCEAL_FROM_USER_EN', 'injection', 'high',
-    /\b(?:do not|don'?t|never)\b[^\n.]{0,20}\b(?:tell|inform|mention|reveal|notify|show|let)\b[^\n.]{0,20}\b(?:the |this )?(?:user|human|person)\b/i,
+    /\b(?:do not|don'?t|never)\b[^\n.;:!?]{0,20}\b(?:tell|inform|mention|reveal|notify|show|let)\b[^\n.;:!?]{0,20}\b(?:the |this )?(?:user|human|person)\b/i,
     ['markdown', 'config', 'code'], 'Instructs the model to hide actions from the user'),
   r('INJECT_CONCEAL_FROM_USER_PT', 'injection', 'high',
-    /\bn[ãa]o\b[^\n.]{0,20}\b(?:conte|diga|informe|avise|mencione|revele|mostre|fale)\b[^\n.]{0,20}\b(?:usu[áa]rio|humano|pessoa)\b/i,
+    /\bn[ãa]o\b[^\n.;:!?]{0,20}\b(?:conte|diga|informe|avise|mencione|revele|mostre|fale)\b[^\n.;:!?]{0,20}\b(?:usu[áa]rio|humano|pessoa)\b/i,
     ['markdown', 'config', 'code'], 'Instructs the model to hide actions from the user (Portuguese)'),
   r('INJECT_FAKE_SYSTEM_TAG', 'injection', 'high',
     /<\/?(?:system|important|admin|instructions?)>|\[\s*system\s*\]|<\|(?:im_start|system)\|>/i, PROSE,
@@ -198,7 +211,9 @@ export const RULES = [
     /\byou are now\b[^\n.]{0,40}\b(?:unrestricted|jailbroken|dan|developer mode|root|admin)\b|\bnew instructions?\s*:|\bnovas instru[çc][õo]es\s*:|\bvoc[êe] agora [ée] (?:um|uma) [^\n.]{0,20}(?:sem restri[çc][õo]es)/i,
     PROSE, 'Attempts to redefine the model role'),
   r('INJECT_SKIP_CONFIRMATION', 'injection', 'medium',
-    /\b(?:without|sem)\b[^\n.]{0,20}\b(?:asking|confirmation|confirma[çc][ãa]o|permiss[ãa]o|permission|approval|consent)\b/i, PROSE,
+    // An action verb (not negated: "never push without permission") followed by "without asking/confirmation".
+    // Descriptive prose ("answers without asking which...", "without their consent") does not match.
+    /(?<!\b(?:never|not|n't|no|nunca|n[ãa]o)\s+(?:\w+\s+){0,2})\b(?:run|execute|delete|remove|push|install|commit|send|upload|proceed|continue|deploy|overwrite|modify|edit|write|apply|act|do|execut[ae]r?|rode|rodar|apague|apagar|envie|enviar|instale|instalar|fa[çc]a|fazer|prossiga|continue)\b[^\n.;:!?]{0,40}?\b(?:without|sem)\s+(?:(?:first\s+|ever\s+)?(?:asking|prompting|checking with|confirming|consulting)\b(?!\s*["'“‘]|\s+(?:which|what|whether|why|how|(?:any\s+)?(?:follow-?up|clarifying|further)\b|(?:any\s+)?questions?)\b)|(?:\w+\s+){0,2}(?:confirmation|permission|approval|consent)\b|(?:\w+\s+)?(?:confirma[çc][ãa]o|permiss[ãa]o|perguntar|pedir|consultar|aprova[çc][ãa]o)\b)/i, PROSE,
     'Tells the model to act without user confirmation'),
   r('INJECT_EXFIL_INSTRUCTION', 'injection', 'high',
     /\b(?:send|post|upload|exfiltrate|forward|envie|enviar|mande)\b[^\n.]{0,60}\b(?:ssh keys?|credentials?|api keys?|tokens?|secrets?|\.env|chaves? ssh|credenciais|segredos?)\b[^\n.]{0,60}\b(?:to|para)\s+(?:https?:|an? (?:external|remote)|\S+@)/i,
@@ -206,7 +221,9 @@ export const RULES = [
 
   // ---- SUPPLY CHAIN ----
   r('SUPPLY_INSTALL_FROM_URL', 'supply', 'medium',
-    /\b(?:npm|pnpm|yarn|bun)\s+(?:i|install|add)\b[^\n]{0,300}(?:https?:\/\/|git\+|github:)|\bpip3?\s+install\b[^\n]{0,300}(?:https?:\/\/|git\+|--index-url|--extra-index-url|\s-i\s+https?:)/i,
+    // The URL must be an argument of the same install command (no quote, pipe or separator in between),
+    // so `npm i -g pkg` followed later on the line by an unrelated URL does not match.
+    /\b(?:npm|pnpm|yarn|bun)\s+(?:i|install|add)\b(?:\s+[^\s"'`|;&<>()]+){0,20}?\s+["']?[^\s"'`|;&<>()]*(?:https?:\/\/|git\+|github:)|\bpip3?\s+install\b(?:\s+[^\s"'`|;&<>()]+){0,20}?\s+["']?(?:[^\s"'`|;&<>()]*(?:https?:\/\/|git\+)|--index-url\b|--extra-index-url\b|-i\s+["']?https?:)/i,
     ['command', 'code', 'markdown'], 'Installs a package from a URL or custom index'),
   r('SUPPLY_NPX_REMOTE', 'supply', 'medium', /\bnpx\s+(?:-y\s+|--yes\s+)[^\n]{0,300}(?:https?:\/\/|github:|git\+)/i, ALL,
     'npx runs a package from a remote location'),
@@ -217,17 +234,23 @@ export const RULES = [
     ['config'], 'Install lifecycle script that downloads or evaluates code'),
 ];
 
+// Injection phrasing is high where the model reads it as instructions (Markdown) and medium in code/config,
+// where it is mostly string data or comments ("ignore any previous rules" in a linter, a test string).
+const PROSE_HIGH_ONLY = new Set(['INJECT_IGNORE_INSTRUCTIONS_EN', 'INJECT_IGNORE_INSTRUCTIONS_PT', 'INJECT_CONCEAL_FROM_USER_EN', 'INJECT_CONCEAL_FROM_USER_PT']);
+for (const rule of RULES) if (PROSE_HIGH_ONLY.has(rule.id)) rule.kindSeverity = { code: 'medium', config: 'medium' };
+
 // ---- Path rules (applied to normalizePath(p)) ----
 const pr = (id, category, severity, pattern, description) => r(id, category, severity, pattern, ['path'], description);
 
 const PATH_RULES = [
-  pr('SECRET_PATH_SSH', 'secret', 'high', /\/\.ssh(?:\/(?![^/]*\.pub$)|$)/i, 'SSH key directory'),
-  pr('SECRET_PATH_AWS', 'secret', 'high', /\/\.aws\/(?:credentials|sso\/)/i, 'AWS credentials'),
+  // Secret path rules also accept a relative form (`.ssh/id_rsa`, `.aws/credentials`) with no leading `/`.
+  pr('SECRET_PATH_SSH', 'secret', 'high', /(?:^|\/)\.ssh(?:\/(?![^/]*\.pub$)|$)/i, 'SSH key directory'),
+  pr('SECRET_PATH_AWS', 'secret', 'high', /(?:^|\/)\.aws\/(?:credentials|sso\/)/i, 'AWS credentials'),
   pr('SECRET_PATH_ENV', 'secret', 'high', /(?:^|\/)\.env(?:\.(?!example$|sample$|template$|dist$)[\w-]+)?$/i, 'Environment file'),
-  pr('SECRET_PATH_NETRC', 'secret', 'high', /\/(?:\.netrc|_netrc|\.git-credentials)$/i, 'Stored git/netrc credentials'),
+  pr('SECRET_PATH_NETRC', 'secret', 'high', /(?:^|\/)(?:\.netrc|_netrc|\.git-credentials)$/i, 'Stored git/netrc credentials'),
   pr('SECRET_PATH_TOKEN_FILES', 'secret', 'medium',
-    /\/(?:\.npmrc|\.pypirc|\.docker\/config\.json|\.kube\/config|\.config\/gh\/hosts\.yml|\.gnupg\/[^/]+)$/i, 'Tool credential files'),
-  pr('SECRET_PATH_CLAUDE_CREDENTIALS', 'secret', 'high', /\/\.claude\/\.credentials\.json$/i, 'Claude Code credentials'),
+    /(?:^|\/)(?:\.npmrc|\.pypirc|\.docker\/config\.json|\.kube\/config|\.config\/gh\/hosts\.yml|\.gnupg\/[^/]+)$/i, 'Tool credential files'),
+  pr('SECRET_PATH_CLAUDE_CREDENTIALS', 'secret', 'high', /(?:^|\/)\.claude\/\.credentials\.json$/i, 'Claude Code credentials'),
   pr('SECRET_PATH_BROWSER', 'secret', 'high',
     /\/(?:google[-/]chrome|chromium|brave-?software|brave-browser|microsoft[-/]edge|\.?mozilla\/firefox|vivaldi)\b.*\/(?:login data|cookies|logins\.json|key4\.db|web data|local state)$/i,
     'Browser credential or cookie store'),
@@ -251,13 +274,14 @@ const PATH_RULES = [
 
 // ---- Matching ----
 
-function lineMatch(rule, line, lineNo) {
+function lineMatch(rule, line, lineNo, kind) {
   const hit = rule.pattern.exec(line);
   if (!hit) return null;
   const idx = hit.index;
   // Window around the hit keeps snippets useful on very long (minified) lines.
   const text = line.length > 400 ? line.slice(Math.max(0, idx - 60), idx + 160) : line.trim();
-  return { ruleId: rule.id, category: rule.category, severity: rule.severity, line: lineNo, snippet: truncate(escapeInvisible(text.trim())) };
+  const severity = rule.kindSeverity?.[kind] ?? rule.severity;
+  return { ruleId: rule.id, category: rule.category, severity, line: lineNo, snippet: truncate(escapeInvisible(text.trim())) };
 }
 
 /** @param {string} text @param {FileKind} kind @returns {Match[]} */
@@ -268,7 +292,7 @@ export function matchText(text, kind) {
   const lines = String(text).split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
     for (const rule of rules) {
-      const m = lineMatch(rule, lines[i], i + 1);
+      const m = lineMatch(rule, lines[i], i + 1, kind);
       if (m) out.push(m);
     }
   }
