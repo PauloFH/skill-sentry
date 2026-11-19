@@ -8,25 +8,32 @@ const normDir = p => normalizePath(path.resolve(p)).replace(/\/+$/, '');
 
 const DEFAULT_LIMITS = { maxFiles: 2000, maxDepth: 6 };
 
+const SKIP_DIRS = new Set(['node_modules', '.git', '.venv', '__pycache__']);
+
 /**
  * Recursively list files under dir, following symlinks (cycles guarded by realpath).
- * Skips node_modules and .git. Sets `truncated` when a cap cut the listing short.
+ * Skips node_modules, .git, .venv and __pycache__ (the names seen are returned in `skipped`).
+ * Sets `truncated` when a cap cut the listing short and `timedOut` when `deadline` (epoch ms) passed.
  */
-function listFiles(dir, limits) {
+export function listFiles(dir, limits, { deadline } = {}) {
   const { maxFiles, maxDepth } = { ...DEFAULT_LIMITS, ...limits };
   const files = [];
+  const skipped = new Set();
   let truncated = false;
+  let timedOut = false;
   const visited = new Set();
   const walk = (d, depth) => {
     let real;
     try { real = fs.realpathSync(d); } catch { return; }
     if (visited.has(real)) return;
     visited.add(real);
+    if (deadline !== undefined && Date.now() >= deadline) { timedOut = true; return; }
     if (depth > maxDepth) { truncated = true; return; }
     let entries;
     try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
-      if (e.name === 'node_modules' || e.name === '.git') continue;
+      if (timedOut) return;
+      if (SKIP_DIRS.has(e.name)) { skipped.add(e.name); continue; }
       const full = path.join(d, e.name);
       let isDir = e.isDirectory();
       let isFile = e.isFile();
@@ -40,7 +47,7 @@ function listFiles(dir, limits) {
     }
   };
   walk(dir, 0);
-  return { files, truncated };
+  return { files, truncated, skipped, timedOut };
 }
 
 /** Copy of a raw config entry with the VALUES of env/headers replaced by "<redacted>" (keys kept). */

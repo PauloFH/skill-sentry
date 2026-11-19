@@ -1,0 +1,161 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { listFiles } from './inventory.mjs';
+import { matchText, matchCommand, findInvisible } from './rules.mjs';
+import { analyzeSkillMarkdown } from './skillmd.mjs';
+import { classifyFile, truncate, escapeInvisible } from './text.mjs';
+
+/**
+ * @typedef {import('./rules.mjs').Match & { file: string }} Finding
+ * @typedef {{ path: string, sha256: string, kind: 'code'|'markdown'|'config'|'binary'|'other', size: number }} FileEntry
+ */
+
+const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024;
+const CONFIG_ONLY_KINDS = new Set(['hook', 'mcp', 'statusline']);
+const CONFIG_FILE = '<config>';
+const LIFECYCLE = ['preinstall', 'install', 'postinstall'];
+
+const finding = (ruleId, category, severity, file, snippet, line = 1) =>
+  ({ ruleId, category, severity, line, snippet: truncate(escapeInvisible(String(snippet))), file });
+
+/** SHA-256 of a file, read in chunks so huge files are never held in memory. */
+function hashFile(file, size, maxBytes) {
+  const hash = crypto.createHash('sha256');
+  if (size <= maxBytes) {
+    const buf = fs.readFileSync(file);
+    hash.update(buf);
+    return { sha256: hash.digest('hex'), buf };
+  }
+  const fd = fs.openSync(file, 'r');
+  try {
+    const chunk = Buffer.allocUnsafe(1 << 20);
+    let n;
+    while ((n = fs.readSync(fd, chunk, 0, chunk.length, null)) > 0) hash.update(chunk.subarray(0, n));
+  } finally { fs.closeSync(fd); }
+  return { sha256: hash.digest('hex'), buf: null };
+}
+
+const isSkillMarkdown = rel => /(^|\/)SKILL\.md$/i.test(rel) || /(^|\/)(?:commands|agents)\/.+\.md$/i.test(rel);
+
+/** Runner invoked without a pinned version, `npx -y`, `uvx` or `@latest`. */
+function unpinnedRuntime(cmd) {
+  if (/@latest\b/i.test(cmd)) return true;
+  const tokens = cmd.split(/\s+/).filter(Boolean);
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i].replace(/^.*[\\/]/, '').replace(/\.(?:cmd|exe)$/i, '').toLowerCase();
+    const isDlx = t === 'pnpm' && tokens[i + 1] === 'dlx';
+    const isPipx = t === 'pipx' && tokens[i + 1] === 'run';
+    if (!['npx', 'uvx', 'bunx'].includes(t) && !isDlx && !isPipx) continue;
+    const rest = tokens.slice(i + (isDlx || isPipx ? 2 : 1));
+    if (t === 'npx' && rest.some(a => a === '-y' || a === '--yes')) return true;
+    if (t === 'uvx') return true;
+    const pkg = rest.find(a => !a.startsWith('-'));
+    if (!pkg) return true;
+    if (!/@\d|==\d|@[a-z]*\d/i.test(pkg.replace(/^@/, ''))) return true;
+  }
+  return false;
+}
+
+function scanConfig(c, findings) {
+  const cfg = c.config;
+  if (!cfg || typeof cfg !== 'object') return;
+  const args = Array.isArray(cfg.args) ? cfg.args.map(String) : [];
+  const commands = [];
+  if (typeof cfg.command === 'string') commands.push([cfg.command, ...args].join(' '));
+  if (typeof cfg.headersHelper === 'string') commands.push(cfg.headersHelper);
+  for (const cmd of commands) {
+    for (const m of matchCommand(cmd)) findings.push({ ...m, file: CONFIG_FILE });
+    if (unpinnedRuntime(cmd)) findings.push(finding('SUPPLY_UNPINNED_RUNTIME', 'supply', 'medium', CONFIG_FILE, cmd));
+  }
+  if (typeof cfg.url === 'string') {
+    findings.push(finding('SUPPLY_REMOTE_MCP', 'supply', 'info', CONFIG_FILE, cfg.url));
+    for (const m of matchCommand(cfg.url)) findings.push({ ...m, file: CONFIG_FILE });
+  }
+  if (typeof cfg.prompt === 'string') {
+    for (const m of matchText(cfg.prompt, 'markdown')) findings.push({ ...m, file: CONFIG_FILE });
+  }
+}
+
+/**
+ * Scan one inventoried component: hash its files and collect findings.
+ * @param {object} c Component
+ * @param {{ maxFileBytes?: number, deadline?: number }} [opts]
+ * @returns {{ component: object, files: FileEntry[], findings: Finding[], incomplete: boolean }}
+ */
+export function scanComponent(c, opts = {}) {
+  const maxBytes = opts.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
+  const { deadline } = opts;
+  const files = [];
+  const findings = [];
+  let incomplete = false;
+
+  // --- file list ---
+  let list = [];
+  let skipped = new Set();
+  if (!CONFIG_ONLY_KINDS.has(c.kind)) {
+    if (Array.isArray(c.files)) list = c.files;
+    else if (c.root) {
+      const r = listFiles(c.root, undefined, { deadline });
+      list = r.files; skipped = r.skipped;
+      if (r.timedOut) incomplete = true;
+      if (r.truncated) c = { ...c, meta: { ...c.meta, filesTruncated: true } };
+    }
+  }
+  if (c.meta?.filesTruncated && !c.self) {
+    findings.push(finding('SCAN_TRUNCATED', 'config', 'info', '<scan>', 'File listing was truncated by a limit; some files were not scanned'));
+  }
+  if (skipped.has('node_modules') && !c.self) {
+    findings.push(finding('SUPPLY_BUNDLED_DEPS', 'supply', 'info', 'node_modules', 'node_modules present (not scanned)'));
+  }
+
+  // --- files ---
+  const seenObf = new Set();
+  for (const abs of list) {
+    if (deadline !== undefined && Date.now() >= deadline) { incomplete = true; break; }
+    let rel = c.root ? path.relative(c.root, abs).replaceAll('\\', '/') : '';
+    if (!rel || rel.startsWith('../') || path.isAbsolute(rel)) rel = abs.replace(/\\/g, '/');
+    let st;
+    try { st = fs.statSync(abs); } catch { continue; }
+    if (!st.isFile()) continue;
+    let hashed;
+    try { hashed = hashFile(abs, st.size, maxBytes); } catch { continue; }
+    const kind = classifyFile(rel);
+    files.push({ path: rel, sha256: hashed.sha256, kind, size: st.size });
+    if (c.self) continue;
+
+    const add = m => {
+      if (m.category === 'obfuscation') {
+        const key = `${rel}\0${m.ruleId}`;
+        if (seenObf.has(key)) return;
+        seenObf.add(key);
+      }
+      findings.push({ ...m, file: rel });
+    };
+
+    if (kind === 'binary') {
+      findings.push(finding('SUPPLY_BINARY', 'supply', /(^|\/)bin\//i.test(rel) ? 'high' : 'info', rel, `Binary file: ${rel}`));
+      continue;
+    }
+    if (!hashed.buf) continue; // over maxFileBytes: hashed only
+    if (hashed.buf.subarray(0, 4096).includes(0)) continue; // not text
+    const text = hashed.buf.toString('utf8');
+
+    if (rel === 'package.json') {
+      try {
+        const scripts = JSON.parse(text.replace(/^﻿/, '')).scripts;
+        for (const k of LIFECYCLE) {
+          if (scripts && typeof scripts[k] === 'string') findings.push(finding('SUPPLY_INSTALL_SCRIPT', 'supply', 'medium', rel, `${k}: ${scripts[k]}`));
+        }
+      } catch { /* unparsable package.json: text rules still apply */ }
+    }
+    for (const m of matchText(text, kind)) add(m);
+    for (const m of findInvisible(text, kind)) add(m);
+    if (kind === 'markdown' && isSkillMarkdown(rel)) for (const m of analyzeSkillMarkdown(text)) add(m);
+  }
+
+  // --- config (hooks, MCP servers, statusLine, monitors) ---
+  if (!c.self) scanConfig(c, findings);
+
+  return { component: c, files, findings, incomplete };
+}
