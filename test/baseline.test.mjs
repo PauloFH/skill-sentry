@@ -6,6 +6,8 @@ import path from 'node:path';
 import { loadBaseline, saveBaseline, diffBaseline, baselineLoadError } from '../scripts/lib/baseline.mjs';
 import { dataDir } from '../scripts/lib/datadir.mjs';
 import { scanComponent } from '../scripts/lib/scanner.mjs';
+import { discover } from '../scripts/lib/inventory.mjs';
+import { fileMap } from '../scripts/lib/baseline.mjs';
 
 const tmps = [];
 after(() => tmps.forEach(d => fs.rmSync(d, { recursive: true, force: true })));
@@ -142,4 +144,43 @@ test('corrupt component entries: no throw, error reported', () => {
   assert.ok(baselineLoadError(dir));
   assert.doesNotThrow(() => diffBaseline(b, [res('x', { f: '1' }), res('ok', { 'a.js': 'h' })]));
   assert.deepEqual(Object.keys(b.components), ['ok']);
+});
+
+// The "<config>" hash covers the RAW config (the stored copy is redacted): a package, query, key-file
+// or env change confined to a redacted value must still show as "changed".
+test('<config> hash is taken over the raw MCP config: redacted-value swaps appear in the diff', () => {
+  const pairs = [
+    ['npx -p package swap', { command: 'npx', args: ['-y', '-p', 'good-mcp@1.2.3', 'good-mcp'] }, { command: 'npx', args: ['-y', '-p', 'evil-mcp@latest', 'good-mcp'] }],
+    ['url query swap', { type: 'http', url: 'https://mcp.example.com/m?upstream=good.example' }, { type: 'http', url: 'https://mcp.example.com/m?upstream=evil.example' }],
+    ['--key file swap', { command: 'node', args: ['srv.js', '--key', 'a.pem'] }, { command: 'node', args: ['srv.js', '--key', '/tmp/attacker.pem'] }],
+    ['env value swap', { command: 'node', args: ['srv.js'], env: { NODE_OPTIONS: '' } }, { command: 'node', args: ['srv.js'], env: { NODE_OPTIONS: '--import=./x.mjs' } }],
+  ];
+  const scanWith = server => {
+    const h = tmp();
+    fs.writeFileSync(path.join(h, '.claude.json'), JSON.stringify({ mcpServers: { srv: server } }));
+    const c = discover({ claudeHome: h, homeDir: h, projectDir: null, selfRoot: null }).components.find(x => x.id === 'mcp:user:srv');
+    return scanComponent(c);
+  };
+  for (const [label, before, after] of pairs) {
+    const a = scanWith(before);
+    const b = scanWith(after);
+    assert.notEqual(fileMap(a)['<config>'], fileMap(b)['<config>'], label);
+    const dir = tmp();
+    saveBaseline(dir, [a]);
+    const stored = fs.readFileSync(path.join(dir, 'baseline.json'), 'utf8');
+    for (const raw of ['good-mcp@1.2.3', 'good.example', 'a.pem']) assert.ok(!stored.includes(raw), `${label}: baseline stores hashes only`);
+    const diff = diffBaseline(loadBaseline(dir), [b]);
+    assert.deepEqual(diff.changed, [{ id: 'mcp:user:srv', files: ['<config>'] }], label);
+    assert.deepEqual(diffBaseline(loadBaseline(dir), [scanWith(before)]).changed, [], `${label}: unchanged config stays unchanged`);
+  }
+});
+
+test('npx -p package names are not redacted: the SUPPLY_UNPINNED_RUNTIME snippet names the package', () => {
+  const h = tmp();
+  fs.writeFileSync(path.join(h, '.claude.json'), JSON.stringify({ mcpServers: { srv: { command: 'npx', args: ['-y', '-p', 'evil-mcp@latest', 'good-mcp'] } } }));
+  const c = discover({ claudeHome: h, homeDir: h, projectDir: null, selfRoot: null }).components.find(x => x.id === 'mcp:user:srv');
+  assert.deepEqual(c.config.args, ['-y', '-p', 'evil-mcp@latest', 'good-mcp']);
+  const f = scanComponent(c).findings.find(x => x.ruleId === 'SUPPLY_UNPINNED_RUNTIME');
+  assert.ok(f, 'unpinned runtime reported');
+  assert.match(f.snippet, /-p evil-mcp@latest good-mcp/);
 });

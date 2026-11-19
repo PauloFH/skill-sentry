@@ -283,6 +283,33 @@ test('--allow records the current sha256 of the file and prints the entry', () =
   assert.equal(printed.reason, 'looked fine');
 });
 
+test('--allow on a <config> finding of an MCP server with redacted values still matches on the next scan', () => {
+  const e = setup();
+  fs.writeFileSync(path.join(e.home, '.claude.json'), JSON.stringify({ mcpServers: {
+    srv: { command: 'npx', args: ['-y', '-p', 'evil-mcp@latest', 'good-mcp', '--token', 'S3cr3tV4lue'], env: { API_KEY: 'k' } },
+  } }));
+  const find = () => {
+    const r = run(e, [...base(e), '--json']);
+    assert.equal(r.status, 0, r.stderr);
+    const c = JSON.parse(r.stdout).components.find(x => x.id === 'mcp:user:srv');
+    return c.findings.find(f => f.ruleId === 'SUPPLY_UNPINNED_RUNTIME');
+  };
+  assert.equal(find().allowlisted, false);
+  const al = run(e, [...base(e), '--allow', 'mcp:user:srv', 'SUPPLY_UNPINNED_RUNTIME', '<config>']);
+  assert.equal(al.status, 0, al.stderr);
+  assert.ok(!al.stdout.includes('S3cr3tV4lue'));
+  assert.equal(find().allowlisted, true);
+  // A package swap hidden behind the same redacted shape no longer matches the entry.
+  fs.writeFileSync(path.join(e.home, '.claude.json'), JSON.stringify({ mcpServers: {
+    srv: { command: 'npx', args: ['-y', '-p', 'other-mcp@latest', 'good-mcp', '--token', 'S3cr3tV4lue'], env: { API_KEY: 'k' } },
+  } }));
+  assert.equal(find().allowlisted, false);
+  fs.writeFileSync(path.join(e.home, '.claude.json'), JSON.stringify({ mcpServers: {
+    srv: { command: 'npx', args: ['-y', '-p', 'evil-mcp@latest', 'good-mcp', '--token', 'An0therS3cret'], env: { API_KEY: 'k' } },
+  } }));
+  assert.equal(find().allowlisted, false, 'a changed redacted token value also invalidates the entry');
+});
+
 test('--allow defaults the reason and rejects unknown components or files with exit 2', () => {
   const e = setup();
   const ok = run(e, [...base(e), '--allow', 'plugin:alpha@mkt', 'R1', 'SKILL.md']);

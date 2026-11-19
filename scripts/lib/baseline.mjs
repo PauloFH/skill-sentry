@@ -1,6 +1,7 @@
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { readJson, writeJsonAtomic, quarantine } from './datadir.mjs';
+import { rawConfigOf } from './inventory.mjs';
 
 const FILE = 'baseline.json';
 const CONFIG_PSEUDO_FILE = '<config>';
@@ -9,11 +10,15 @@ const CONFIG_PSEUDO_FILE = '<config>';
 const nullMap = () => Object.create(null);
 const has = (o, k) => Object.hasOwn(o, k);
 
-/** Map relPath -> sha256 for one scan result (config hashed as pseudo-file "<config>"). */
+/**
+ * Map relPath -> sha256 for one scan result (config hashed as pseudo-file "<config>"). The hash covers
+ * the RAW config: a package, URL query, key file or env value swap hidden behind "<redacted>" in the
+ * stored copy must still change it. Only the hash is ever stored, never the raw config.
+ */
 export function fileMap(result) {
   const files = nullMap();
   for (const f of result.files ?? []) files[f.path] = f.sha256;
-  const cfg = result.component?.config;
+  const cfg = rawConfigOf(result.component?.config);
   if (cfg !== undefined && cfg !== null && !has(files, CONFIG_PSEUDO_FILE)) {
     files[CONFIG_PSEUDO_FILE] = crypto.createHash('sha256').update(JSON.stringify(cfg)).digest('hex');
   }

@@ -118,7 +118,7 @@ function redactRaw(raw, extra = {}) {
   for (const k of ['url', 'command', 'headersHelper']) {
     if (typeof out[k] === 'string') out[k] = redactSecrets(out[k]);
   }
-  if (Array.isArray(out.args)) out.args = redactArgs(out.args.map(String));
+  if (Array.isArray(out.args)) out.args = redactArgs(out.args.map(String), rawCopy.command);
   RAW_CONFIG.set(out, rawCopy);
   return out;
 }

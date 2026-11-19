@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { scanComponent } from '../scripts/lib/scanner.mjs';
-import { redactSecrets } from '../scripts/lib/text.mjs';
+import { redactSecrets, redactArgs } from '../scripts/lib/text.mjs';
 import { analyzeSkillMarkdown } from '../scripts/lib/skillmd.mjs';
 import { scoreComponent } from '../scripts/lib/scoring.mjs';
 import { buildFixture } from './helpers/fixtures.mjs';
@@ -228,7 +228,13 @@ test('redactSecrets: URL credentials and query values, secret flags and KEY=valu
   assert.equal(redactSecrets('https://bob:pw1@mcp.example.com/x?token=abc&mode=1#f'), 'https://<redacted>@mcp.example.com/x?token=<redacted>&mode=<redacted>#f');
   assert.equal(redactSecrets('srv --token abc --api-key=xyz --apikey q --key k --secret s --password p --auth a --bearer b --access-token t --name ok'),
     'srv --token <redacted> --api-key=<redacted> --apikey <redacted> --key <redacted> --secret <redacted> --password <redacted> --auth <redacted> --bearer <redacted> --access-token <redacted> --name ok');
-  assert.equal(redactSecrets('db -p hunter2 -v'), 'db -p <redacted> -v');
+  // `-p` is a password only for known commands; for package runners it names a package.
+  assert.equal(redactSecrets('sshpass -p hunter2 ssh host'), 'sshpass -p <redacted> ssh host');
+  assert.equal(redactSecrets('mysql -u root -p hunter2'), 'mysql -u root -p <redacted>');
+  assert.equal(redactSecrets('npx -y -p good-mcp@1.2.3 good-mcp'), 'npx -y -p good-mcp@1.2.3 good-mcp');
+  assert.equal(redactSecrets('docker run -p 8080:80 img'), 'docker run -p 8080:80 img');
+  assert.deepEqual(redactArgs(['-p', 'hunter2', 'ssh'], 'sshpass'), ['-p', '<redacted>', 'ssh']);
+  assert.deepEqual(redactArgs(['-y', '-p', 'evil-mcp@latest', 'x'], 'npx'), ['-y', '-p', 'evil-mcp@latest', 'x']);
   assert.equal(redactSecrets('API_KEY=v1 GITHUB_TOKEN=v2 DB_PASS=v3 MODE=dev'), 'API_KEY=<redacted> GITHUB_TOKEN=<redacted> DB_PASS=<redacted> MODE=dev');
   assert.equal(redactSecrets('--header "Authorization: Bearer abcdefgh12345"'), '--header "Authorization: Bearer <redacted>"');
   assert.equal(redactSecrets('node server.js --port 3000'), 'node server.js --port 3000');

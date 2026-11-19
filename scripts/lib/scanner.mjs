@@ -74,7 +74,7 @@ function scanConfig(c, findings) {
   if (typeof cfg.headersHelper === 'string') commands.push([cfg.headersHelper]);
   for (const argv of commands) {
     const cmd = argv.join(' ');
-    const shown = [argv[0], ...redactArgs(argv.slice(1))].map(redactSecrets).join(' ');
+    const shown = [argv[0], ...redactArgs(argv.slice(1), argv[0])].map(redactSecrets).join(' ');
     for (const m of matchCommand(cmd)) push(m);
     if (unpinnedRuntime(cmd)) findings.push(finding('SUPPLY_UNPINNED_RUNTIME', 'supply', 'medium', CONFIG_FILE, shown));
   }

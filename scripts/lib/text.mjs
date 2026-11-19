@@ -38,8 +38,14 @@ export const untrusted = s => truncate(escapeInvisible(s ?? ''), 200);
 
 const R = '<redacted>';
 // Flags whose value is a credential: --token, --api-key, --apikey, --key, --secret, --password, --auth,
-// --bearer, also with a prefix (--access-token, --client-secret); and -p followed by a value.
-const SECRET_FLAG = /(^|\s)(--(?:[\w-]*-)?(?:token|api-?key|key|secret|password|passwd|auth|bearer)|-p)(=|\s+)("[^"]*"|'[^']*'|\S+)/gi;
+// --bearer, also with a prefix (--access-token, --client-secret).
+const SECRET_FLAG_NAME = '--(?:[\\w-]*-)?(?:token|api-?key|key|secret|password|passwd|auth|bearer)';
+const SECRET_FLAG = new RegExp(`(^|\\s)(${SECRET_FLAG_NAME})(=|\\s+)("[^"]*"|'[^']*'|\\S+)`, 'gi');
+const SECRET_FLAG_EXACT = new RegExp(`^${SECRET_FLAG_NAME}$`, 'i');
+// `-p <value>` is a password only for these commands; for npx/npm/pnpm/yarn/uvx/bunx it names a package
+// (shown so a package swap stays visible), for docker a port.
+const PASSWORD_P_CMD = /(?:^|[\s/\\"'])(?:sshpass|mysql|mysqladmin|mysqldump|mariadb|mongo|mongosh)(?:\.exe)?(?=[\s"']|$)/i;
+const P_FLAG = /(^|\s)(-p)(=|\s+)("[^"]*"|'[^']*'|\S+)/g;
 const SECRET_ASSIGN = /(^|\s)([A-Za-z_][\w.-]*)=("[^"]*"|'[^']*'|\S+)/g;
 const SECRET_NAME = /token|secret|key|pass|auth/i;
 const URL_RE = /[a-z][\w+.-]*:\/\/[^\s"'<>]+/gi;
@@ -54,18 +60,23 @@ export function redactSecrets(str) {
     .replace(/^([a-z][\w+.-]*:\/\/)[^/?#@\s]*@/i, `$1${R}@`)
     .replace(/\?([^#]*)/, (_, q) => '?' + q.split('&').map(kv => (kv.includes('=') ? kv.slice(0, kv.indexOf('=') + 1) + R : kv)).join('&')));
   s = s.replace(SECRET_FLAG, (_, pre, flag, sep) => `${pre}${flag}${sep}${R}`);
+  if (PASSWORD_P_CMD.test(s)) s = s.replace(P_FLAG, (_, pre, flag, sep) => `${pre}${flag}${sep}${R}`);
   s = s.replace(SECRET_ASSIGN, (m, pre, key) => (SECRET_NAME.test(key) ? `${pre}${key}=${R}` : m));
   s = s.replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/g, `$1 ${R}`);
   return s;
 }
 
-/** redactSecrets over an argv array: also hides the element that follows a bare credential flag. */
-export function redactArgs(args) {
+/**
+ * redactSecrets over an argv array: also hides the element that follows a bare credential flag
+ * (`-p` only when `command` or the args name a password-taking command).
+ */
+export function redactArgs(args, command = '') {
   const out = [];
+  const pIsPassword = PASSWORD_P_CMD.test([String(command ?? ''), ...args.map(String)].join(' '));
   for (let i = 0; i < args.length; i++) {
     const a = String(args[i]);
     const prev = i > 0 ? String(args[i - 1]) : '';
-    const flagBefore = /^(--(?:[\w-]*-)?(?:token|api-?key|key|secret|password|passwd|auth|bearer)|-p)$/i.test(prev);
+    const flagBefore = SECRET_FLAG_EXACT.test(prev) || (pIsPassword && prev === '-p');
     out.push(flagBefore ? R : redactSecrets(a));
   }
   return out;
