@@ -78,7 +78,8 @@ if (opts.path) {
   components = [pathComponent(opts.path)];
   if (skillspectorOnPath()) meta.skillspectorAvailable = true;
 } else {
-  const inv = discover({ claudeHome, homeDir, projectDir, selfRoot });
+  // Same deadline as the scan: skills the inventory could not walk in time are reported as incomplete.
+  const inv = discover({ claudeHome, homeDir, projectDir, selfRoot, deadline });
   // CONFIG_UNREADABLE findings are surfaced as report-level problems (not attached to a component).
   for (const f of inv.configFindings) problems.push(`${f.ruleId}: ${f.file}: ${f.snippet}`);
   components = inv.components;

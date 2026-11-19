@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { discover } from '../scripts/lib/inventory.mjs';
+import { discover, listFiles } from '../scripts/lib/inventory.mjs';
+import { scanComponent } from '../scripts/lib/scanner.mjs';
 import { readJsonSafe } from '../scripts/lib/jsonsafe.mjs';
 
 const FIX = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
@@ -212,16 +213,128 @@ test('project mcp in ~/.claude.json and .mcp.json with same name both kept', () 
   assert.ok(by['mcp:project:dup#2'].meta.source.endsWith('.mcp.json'));
 });
 
-test('symlinked file inside a skill is listed', t => {
+test('symlinked file inside a skill pointing inside it is listed; one pointing outside is not followed', t => {
   const { h, d } = mkHome();
   const skill = path.join(h, 'skills', 's');
   write(path.join(skill, 'SKILL.md'), 'x');
+  write(path.join(skill, 'data', 'in.txt'), 'z');
   const outside = path.join(h, 'outside.txt');
   write(outside, 'y');
-  try { fs.symlinkSync(outside, path.join(skill, 'link.txt')); }
-  catch (e) { if (e.code === 'EPERM' || e.code === 'EACCES') return t.skip('symlinks not permitted'); throw e; }
+  try {
+    fs.symlinkSync(path.join(skill, 'data', 'in.txt'), path.join(skill, 'inlink.txt'));
+    fs.symlinkSync(outside, path.join(skill, 'link.txt'));
+  } catch (e) { if (e.code === 'EPERM' || e.code === 'EACCES') return t.skip('symlinks not permitted'); throw e; }
   const c = discover(d()).components.find(x => x.id === 'skill:user:s');
-  assert.ok(c.files.some(f => f.endsWith('link.txt')));
+  assert.ok(c.files.some(f => f.endsWith('inlink.txt')));
+  assert.ok(!c.files.some(f => f.endsWith('link.txt') && !f.endsWith('inlink.txt')));
+  assert.deepEqual(c.meta.symlinksOutside.map(o => path.basename(o.path)), ['link.txt']);
+});
+
+/** Junction (Windows) or dir symlink; null when the platform refuses. */
+function junction(target, link) {
+  try { fs.symlinkSync(target, link, 'junction'); return true; }
+  catch (e) { if (['EPERM', 'EACCES', 'ENOSYS'].includes(e.code)) return false; throw e; }
+}
+
+test('junction from a skill to a large directory outside it is not followed (SCAN_SYMLINK_OUTSIDE)', t => {
+  const { h, d } = mkHome();
+  const skill = path.join(h, 'skills', 's');
+  write(path.join(skill, 'SKILL.md'), 'x');
+  const big = path.join(tmp(), 'big');
+  for (let i = 0; i < 30; i++) write(path.join(big, `d${i}`, 'f.js'), 'x');
+  if (!junction(big, path.join(skill, 'linked'))) return t.skip('junctions not permitted');
+  const c = discover(d()).components.find(x => x.id === 'skill:user:s');
+  assert.ok(!c.files.some(f => f.includes(`${path.sep}linked${path.sep}`)), 'files behind the junction are not listed');
+  assert.equal(c.meta.symlinksOutside.length, 1);
+  const r = scanComponent(c);
+  const f = r.findings.filter(x => x.ruleId === 'SCAN_SYMLINK_OUTSIDE');
+  assert.equal(f.length, 1);
+  assert.equal(f[0].category, 'config');
+  assert.equal(f[0].severity, 'info');
+  assert.equal(f[0].file, 'linked');
+  // A plugin root walked by the scanner itself behaves the same.
+  const pr = scanComponent({ id: 'plugin:x@y', kind: 'plugin', name: 'x@y', scope: 'user', root: skill, meta: {} });
+  assert.equal(pr.findings.filter(x => x.ruleId === 'SCAN_SYMLINK_OUTSIDE').length, 1);
+  assert.ok(!pr.files.some(x => x.path.startsWith('linked/')));
+});
+
+test('symlink to a drive root or filesystem root is a medium SCAN_SYMLINK_OUTSIDE', t => {
+  const { h, d } = mkHome();
+  const skill = path.join(h, 'skills', 's');
+  write(path.join(skill, 'SKILL.md'), 'x');
+  if (!junction(path.parse(os.tmpdir()).root, path.join(skill, 'root'))) return t.skip('junctions not permitted');
+  const c = discover(d()).components.find(x => x.id === 'skill:user:s');
+  const f = scanComponent(c).findings.filter(x => x.ruleId === 'SCAN_SYMLINK_OUTSIDE');
+  assert.equal(f.length, 1);
+  assert.equal(f[0].severity, 'medium');
+});
+
+test('directories count against the walk caps and the walk ends at the cap', () => {
+  const { h, d } = mkHome();
+  const skill = path.join(h, 'skills', 's');
+  write(path.join(skill, 'SKILL.md'), 'x');
+  for (let i = 0; i < 40; i++) fs.mkdirSync(path.join(skill, `e${i}`, 'a', 'b'), { recursive: true });
+  const c = discover({ ...d(), limits: { maxDirs: 10 } }).components.find(x => x.id === 'skill:user:s');
+  assert.equal(c.meta.filesTruncated, true);
+  const r = listFiles(skill, { maxDirs: 10 });
+  assert.equal(r.truncated, true);
+  // Files in later directories are not listed once the cap ended the walk.
+  for (let i = 0; i < 40; i++) write(path.join(skill, `e${i}`, 'a', 'b', 'f.txt'), 'y');
+  assert.ok(listFiles(skill, { maxDirs: 10 }).files.length < 10);
+});
+
+test('discover honors a deadline: skills past it are kept, marked incomplete, and not walked', () => {
+  const { h, d } = mkHome();
+  write(path.join(h, 'skills', 's', 'SKILL.md'), 'x');
+  write(path.join(h, 'skills', 's', 'more.md'), 'x');
+  const c = discover({ ...d(), deadline: Date.now() - 1 }).components.find(x => x.id === 'skill:user:s');
+  assert.ok(c, 'skill still listed');
+  assert.equal(c.meta.incomplete, true);
+  assert.deepEqual(c.files, []);
+  assert.equal(scanComponent(c).incomplete, true);
+});
+
+test('discover with skillFiles: false leaves skill files to the scanner', () => {
+  const { h, d } = mkHome();
+  write(path.join(h, 'skills', 's', 'SKILL.md'), 'x');
+  const c = discover({ ...d(), skillFiles: false }).components.find(x => x.id === 'skill:user:s');
+  assert.equal(c.files, undefined);
+  assert.ok(scanComponent(c).files.some(f => f.path === 'SKILL.md'));
+});
+
+test('self is detected through a junctioned install path', t => {
+  const h = tmp();
+  const real = path.join(h, 'real-self');
+  write(path.join(real, '.claude-plugin', 'plugin.json'), '{}');
+  write(path.join(real, 'scripts', 'x.js'), 'x');
+  const link = path.join(h, 'linked-self');
+  if (!junction(real, link)) return t.skip('junctions not permitted');
+  write(path.join(h, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'skill-sentry@m': [{ scope: 'user', installPath: real }] } }));
+  const viaLink = discover({ claudeHome: h, homeDir: h, projectDir: null, selfRoot: link }).components.find(c => c.id === 'plugin:skill-sentry@m');
+  assert.equal(viaLink.self, true);
+  write(path.join(h, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'skill-sentry@m': [{ scope: 'user', installPath: link }] } }));
+  const viaInstall = discover({ claudeHome: h, homeDir: h, projectDir: null, selfRoot: real }).components.find(c => c.id === 'plugin:skill-sentry@m');
+  assert.equal(viaInstall.self, true);
+});
+
+test('every install entry of a plugin is inventoried (deduped by real path)', () => {
+  const h = tmp();
+  const a = path.join(h, 'plugins', 'cache', 'm', 'p', '1.0.0');
+  const b = path.join(h, 'proj', '.claude', 'p');
+  write(path.join(a, 'hooks', 'hooks.json'), JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'one' }] }] } }));
+  write(path.join(b, 'hooks', 'hooks.json'), JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'two' }] }] } }));
+  write(path.join(h, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'p@m': [
+    { scope: 'user', installPath: a, version: '1.0.0' },
+    { scope: 'project', installPath: b, version: '2.0.0' },
+    { scope: 'local', installPath: a + path.sep, version: '1.0.0' },
+  ] } }));
+  const comps = discover({ claudeHome: h, homeDir: h, projectDir: null, selfRoot: null }).components;
+  const plugins = comps.filter(c => c.kind === 'plugin');
+  assert.deepEqual(plugins.map(c => c.id), ['plugin:p@m', 'plugin:p@m#2']);
+  assert.equal(plugins[0].root, a);
+  assert.equal(plugins[1].root, b);
+  const cmds = comps.filter(c => c.kind === 'hook').map(c => c.config.command).sort();
+  assert.deepEqual(cmds, ['one', 'two']);
 });
 
 test('symlink directory cycle terminates', t => {

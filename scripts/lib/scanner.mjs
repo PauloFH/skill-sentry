@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { listFiles } from './inventory.mjs';
+import { listFiles, isSensitiveLinkTarget } from './inventory.mjs';
 import { matchText, matchCommand, findInvisible } from './rules.mjs';
 import { analyzeSkillMarkdown } from './skillmd.mjs';
 import { classifyFile, truncate, escapeInvisible } from './text.mjs';
@@ -19,8 +19,8 @@ const LIFECYCLE = ['preinstall', 'install', 'postinstall'];
 const finding = (ruleId, category, severity, file, snippet, line = 1) =>
   ({ ruleId, category, severity, line, snippet: truncate(escapeInvisible(String(snippet))), file });
 
-/** SHA-256 of a file, read in chunks so huge files are never held in memory. */
-function hashFile(file, size, maxBytes) {
+/** SHA-256 of a file, read in chunks so huge files are never held in memory; stops at `deadline`. */
+function hashFile(file, size, maxBytes, deadline) {
   const hash = crypto.createHash('sha256');
   if (size <= maxBytes) {
     const buf = fs.readFileSync(file);
@@ -31,7 +31,10 @@ function hashFile(file, size, maxBytes) {
   try {
     const chunk = Buffer.allocUnsafe(1 << 20);
     let n;
-    while ((n = fs.readSync(fd, chunk, 0, chunk.length, null)) > 0) hash.update(chunk.subarray(0, n));
+    while ((n = fs.readSync(fd, chunk, 0, chunk.length, null)) > 0) {
+      hash.update(chunk.subarray(0, n));
+      if (deadline !== undefined && Date.now() >= deadline) return { sha256: null, buf: null, timedOut: true };
+    }
   } finally { fs.closeSync(fd); }
   return { sha256: hash.digest('hex'), buf: null };
 }
@@ -93,17 +96,32 @@ export function scanComponent(c, opts = {}) {
   // --- file list ---
   let list = [];
   let skipped = new Set();
+  let outside = [];
+  if (c.meta?.incomplete) incomplete = true; // inventory walk cut off by its deadline
   if (!CONFIG_ONLY_KINDS.has(c.kind)) {
-    if (Array.isArray(c.files)) list = c.files;
-    else if (c.root) {
+    if (Array.isArray(c.files)) {
+      list = c.files;
+      if (Array.isArray(c.meta?.symlinksOutside)) outside = c.meta.symlinksOutside;
+    } else if (c.root) {
       const r = listFiles(c.root, undefined, { deadline });
-      list = r.files; skipped = r.skipped;
+      list = r.files; skipped = r.skipped; outside = r.outside;
       if (r.timedOut) incomplete = true;
       if (r.truncated) c = { ...c, meta: { ...c.meta, filesTruncated: true } };
     }
   }
+  const relOf = abs => {
+    let rel = c.root ? path.relative(c.root, abs).replaceAll('\\', '/') : '';
+    if (!rel || rel.startsWith('../') || path.isAbsolute(rel)) rel = abs.replace(/\\/g, '/');
+    return rel;
+  };
   if (c.meta?.filesTruncated && !c.self) {
     findings.push(finding('SCAN_TRUNCATED', 'config', 'info', '<scan>', 'File listing was truncated by a limit; some files were not scanned'));
+  }
+  if (!c.self) {
+    for (const o of outside) {
+      const sev = isSensitiveLinkTarget(o.target) ? 'medium' : 'info';
+      findings.push(finding('SCAN_SYMLINK_OUTSIDE', 'config', sev, relOf(o.path), `Link to a path outside the component was not followed: ${o.target}`));
+    }
   }
   if (skipped.has('node_modules') && !c.self) {
     findings.push(finding('SUPPLY_BUNDLED_DEPS', 'supply', 'info', 'node_modules', 'node_modules present (not scanned)'));
@@ -113,13 +131,13 @@ export function scanComponent(c, opts = {}) {
   const seenObf = new Set();
   for (const abs of list) {
     if (deadline !== undefined && Date.now() >= deadline) { incomplete = true; break; }
-    let rel = c.root ? path.relative(c.root, abs).replaceAll('\\', '/') : '';
-    if (!rel || rel.startsWith('../') || path.isAbsolute(rel)) rel = abs.replace(/\\/g, '/');
+    const rel = relOf(abs);
     let st;
     try { st = fs.statSync(abs); } catch { continue; }
     if (!st.isFile()) continue;
     let hashed;
-    try { hashed = hashFile(abs, st.size, maxBytes); } catch { continue; }
+    try { hashed = hashFile(abs, st.size, maxBytes, deadline); } catch { continue; }
+    if (hashed.timedOut) { incomplete = true; break; }
     const kind = classifyFile(rel);
     files.push({ path: rel, sha256: hashed.sha256, kind, size: st.size });
     if (c.self) continue;
