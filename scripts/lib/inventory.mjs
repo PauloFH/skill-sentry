@@ -6,6 +6,13 @@ import { normalizePath, truncate } from './text.mjs';
 const isObj = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const normDir = p => normalizePath(path.resolve(p)).replace(/\/+$/, '');
 
+/** Canonical directory key: realpath when it exists (symlinks/junctions resolved), case-insensitive on win32. */
+function realDir(p) {
+  let r = path.resolve(p);
+  try { r = fs.realpathSync.native(r); } catch { /* missing: compare the resolved form */ }
+  return normDir(r);
+}
+
 const DEFAULT_LIMITS = { maxFiles: 2000, maxDepth: 6 };
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '.venv', '__pycache__']);
@@ -120,9 +127,24 @@ export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits }) 
     }
   };
 
+  // One component per marketplace name: known_marketplaces.json and every settings file's
+  // extraKnownMarketplaces declare the same marketplace (not a shadowing collision). The first
+  // declaration supplies `config`; `meta.sources` lists every file that declares it.
+  const marketplaces = new Map();
   const addMarketplace = (name, info, source) => {
-    add({ id: `marketplace:${name}`, kind: 'marketplace', name, scope: 'user', root: null, config: isObj(info) ? info : {}, meta: {} }, source);
+    const prev = marketplaces.get(name);
+    if (prev) {
+      if (!prev.meta.sources.includes(source)) prev.meta.sources.push(source);
+      return;
+    }
+    const c = { id: `marketplace:${name}`, kind: 'marketplace', name, scope: 'user', root: null, config: isObj(info) ? info : {}, meta: { sources: [source] } };
+    marketplaces.set(name, c);
+    add(c, source);
   };
+
+  // When the project's .claude directory IS the user's (Claude Code started from the home directory),
+  // its settings and skills are already the user scope: listing them again would duplicate every item.
+  const projectClaudeIsUser = !!projectDir && realDir(path.join(projectDir, '.claude')) === realDir(claudeHome);
 
   // --- Plugins ---
   const selfNorm = selfRoot ? normDir(selfRoot) : null;
@@ -198,7 +220,7 @@ export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits }) 
 
   // --- Settings (user, then project) ---
   const settingsSources = [{ scope: 'user', dir: claudeHome }];
-  if (projectDir) settingsSources.push({ scope: 'project', dir: path.join(projectDir, '.claude') });
+  if (projectDir && !projectClaudeIsUser) settingsSources.push({ scope: 'project', dir: path.join(projectDir, '.claude') });
   for (const { scope, dir } of settingsSources) {
     for (const f of ['settings.json', 'settings.local.json']) {
       const sFile = path.join(dir, f);
@@ -234,7 +256,7 @@ export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits }) 
 
   // --- Standalone skills ---
   const skillRoots = [{ scope: 'user', dir: path.join(claudeHome, 'skills') }];
-  if (projectDir) skillRoots.push({ scope: 'project', dir: path.join(projectDir, '.claude', 'skills') });
+  if (projectDir && !projectClaudeIsUser) skillRoots.push({ scope: 'project', dir: path.join(projectDir, '.claude', 'skills') });
   for (const { scope, dir } of skillRoots) {
     let entries = [];
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { /* absent */ }

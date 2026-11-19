@@ -244,3 +244,56 @@ test('file cap truncation sets meta.filesTruncated', () => {
   const full = discover(d()).components.find(x => x.id === 'skill:user:s');
   assert.ok(!full.meta.filesTruncated);
 });
+
+// ---- home directory used as the project (Claude Code started from ~) ----
+test('projectDir = home: user-scope settings and skills are not listed again as project scope', () => {
+  const ids = discover({ claudeHome: H, homeDir: HOME, projectDir: HOME, selfRoot: null }).components.map(c => c.id);
+  assert.equal(new Set(ids).size, ids.length, 'ids unique');
+  assert.ok(!ids.some(id => /#\d+$/.test(id)), `no collision suffixes: ${ids.filter(id => /#\d+$/.test(id))}`);
+  assert.ok(!ids.some(id => /^(?:hook|statusline|skill):project\b/.test(id)), 'no project copies of user settings/skills');
+  for (const id of ['statusline:user', 'hook:user:PreToolUse:0', 'skill:user:notes', 'marketplace:mkt']) assert.ok(ids.includes(id), id);
+});
+
+test('projectDir = home matched case-insensitively (win32) and through a trailing separator', { skip: process.platform !== 'win32' }, () => {
+  const ids = discover({ claudeHome: H.toUpperCase(), homeDir: HOME, projectDir: HOME.toLowerCase() + path.sep, selfRoot: null }).components.map(c => c.id);
+  assert.ok(!ids.some(id => /^(?:hook|statusline|skill):project\b/.test(id)));
+});
+
+test('projectDir = home still includes project-only sources (.mcp.json, CLAUDE.md, AGENTS.md, ~/.claude.json projects)', () => {
+  const home = tmp();
+  const ch = path.join(home, '.claude');
+  write(path.join(ch, 'settings.json'), JSON.stringify({ statusLine: { type: 'command', command: 'hud' }, hooks: { Stop: [{ hooks: [{ type: 'command', command: 'x' }] }] } }));
+  write(path.join(ch, 'skills', 's', 'SKILL.md'), 'x');
+  write(path.join(home, '.mcp.json'), JSON.stringify({ mcpServers: { pm: { command: 'a' } } }));
+  write(path.join(home, 'CLAUDE.md'), '# home');
+  write(path.join(home, 'AGENTS.md'), '# agents');
+  write(path.join(home, '.claude.json'), JSON.stringify({ projects: { [home]: { mcpServers: { cj: { command: 'b' } } } } }));
+  const ids = discover({ claudeHome: ch, homeDir: home, projectDir: home, selfRoot: null }).components.map(c => c.id);
+  for (const id of ['mcp:project:pm', 'mcp:project:cj', 'instructions:project:CLAUDE.md', 'instructions:project:AGENTS.md',
+    'statusline:user', 'hook:user:Stop:0', 'skill:user:s']) assert.ok(ids.includes(id), id);
+  assert.deepEqual(ids.filter(id => /^(?:hook|statusline|skill):project\b|#\d+$/.test(id)), []);
+});
+
+test('a different project with its own .claude is still inventoried as project scope', () => {
+  const home = tmp();
+  const proj = path.join(home, 'proj');
+  write(path.join(home, '.claude', 'settings.json'), JSON.stringify({ statusLine: { type: 'command', command: 'u' } }));
+  write(path.join(proj, '.claude', 'settings.json'), JSON.stringify({ statusLine: { type: 'command', command: 'p' } }));
+  write(path.join(proj, '.claude', 'skills', 'ps', 'SKILL.md'), 'x');
+  const ids = discover({ claudeHome: path.join(home, '.claude'), homeDir: home, projectDir: proj, selfRoot: null }).components.map(c => c.id);
+  for (const id of ['statusline:user', 'statusline:project', 'skill:project:ps']) assert.ok(ids.includes(id), id);
+});
+
+test('a marketplace declared in known_marketplaces.json and in settings files is one component with every source', () => {
+  const { h, d } = mkHome();
+  const known = path.join(h, 'plugins', 'known_marketplaces.json');
+  write(known, JSON.stringify({ m1: { source: { source: 'github', repo: 'a/m1' }, installLocation: '/x' } }));
+  write(path.join(h, 'settings.json'), JSON.stringify({ extraKnownMarketplaces: { m1: { source: { source: 'github', repo: 'a/m1' } }, m2: { source: { source: 'git', url: 'https://e.test/m2.git' } } } }));
+  write(path.join(h, 'settings.local.json'), JSON.stringify({ extraKnownMarketplaces: { m1: { source: { source: 'github', repo: 'a/m1' } } } }));
+  const ms = discover(d()).components.filter(c => c.kind === 'marketplace');
+  assert.deepEqual(ms.map(c => c.id).sort(), ['marketplace:m1', 'marketplace:m2']);
+  const m1 = ms.find(c => c.id === 'marketplace:m1');
+  assert.deepEqual(m1.meta.sources, [known, path.join(h, 'settings.json'), path.join(h, 'settings.local.json')]);
+  assert.equal(m1.meta.source, known);
+  assert.equal(m1.config.installLocation, '/x');
+});
