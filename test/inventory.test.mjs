@@ -163,3 +163,84 @@ test('manifest hooks continue the counter after hooks/hooks.json', () => {
   const ids = discover({ claudeHome: home, homeDir: home, projectDir: null, selfRoot: null }).components.map(c => c.id);
   assert.ok(ids.includes('hook:plugin:p:SessionStart:0') && ids.includes('hook:plugin:p:SessionStart:1'));
 });
+
+const mkHome = () => { const h = tmp(); return { h, d: () => ({ claudeHome: h, homeDir: h, projectDir: null, selfRoot: null }) }; };
+
+test('hook config keeps non-command fields (http hook url)', () => {
+  const { h, d } = mkHome();
+  write(path.join(h, 'settings.json'), JSON.stringify({ hooks: { Stop: [{ hooks: [
+    { type: 'http', url: 'http://example.test/x', headers: { Authorization: 'Bearer s3cret' } }] }] } }));
+  const c = discover(d()).components.find(x => x.id === 'hook:user:Stop:0');
+  assert.equal(c.config.url, 'http://example.test/x');
+  assert.equal(c.config.event, 'Stop');
+  assert.deepEqual(c.config.headers, { Authorization: '<redacted>' });
+  assert.ok(!('matcher' in c.config) && !('command' in c.config));
+});
+
+test('mcp config keeps headers, headersHelper, cwd; redacts header values; no empty env', () => {
+  const { h, d } = mkHome();
+  write(path.join(h, '.claude.json'), JSON.stringify({ mcpServers: {
+    r: { type: 'http', url: 'http://x.test', headers: { 'X-Key': 'zzz' }, headersHelper: 'node get.js', cwd: '/w' } } }));
+  const c = discover(d()).components.find(x => x.id === 'mcp:user:r');
+  assert.deepEqual(c.config.headers, { 'X-Key': '<redacted>' });
+  assert.equal(c.config.headersHelper, 'node get.js');
+  assert.equal(c.config.cwd, '/w');
+  assert.ok(!('env' in c.config) && !('command' in c.config));
+  assert.ok(!JSON.stringify(c).includes('zzz'));
+});
+
+test('colliding statusLine entries are all inventoried with suffixed ids and meta.source', () => {
+  const { h, d } = mkHome();
+  write(path.join(h, 'settings.json'), JSON.stringify({ statusLine: { type: 'command', command: 'one' } }));
+  write(path.join(h, 'settings.local.json'), JSON.stringify({ statusLine: { type: 'command', command: 'two' } }));
+  const by = Object.fromEntries(discover(d()).components.map(c => [c.id, c]));
+  assert.equal(by['statusline:user'].config.command, 'one');
+  assert.equal(by['statusline:user#2'].config.command, 'two');
+  assert.equal(by['statusline:user#2'].meta.source, path.join(h, 'settings.local.json'));
+});
+
+test('project mcp in ~/.claude.json and .mcp.json with same name both kept', () => {
+  const home = tmp();
+  const proj = path.join(home, 'proj');
+  write(path.join(home, '.claude.json'), JSON.stringify({ projects: { [proj]: { mcpServers: { dup: { command: 'a' } } } } }));
+  write(path.join(proj, '.mcp.json'), JSON.stringify({ mcpServers: { dup: { command: 'b' } } }));
+  const by = Object.fromEntries(discover({ claudeHome: path.join(home, '.claude'), homeDir: home, projectDir: proj, selfRoot: null })
+    .components.map(c => [c.id, c]));
+  assert.equal(by['mcp:project:dup'].config.command, 'a');
+  assert.equal(by['mcp:project:dup#2'].config.command, 'b');
+  assert.ok(by['mcp:project:dup'].meta.source.endsWith('.claude.json'));
+  assert.ok(by['mcp:project:dup#2'].meta.source.endsWith('.mcp.json'));
+});
+
+test('symlinked file inside a skill is listed', t => {
+  const { h, d } = mkHome();
+  const skill = path.join(h, 'skills', 's');
+  write(path.join(skill, 'SKILL.md'), 'x');
+  const outside = path.join(h, 'outside.txt');
+  write(outside, 'y');
+  try { fs.symlinkSync(outside, path.join(skill, 'link.txt')); }
+  catch (e) { if (e.code === 'EPERM' || e.code === 'EACCES') return t.skip('symlinks not permitted'); throw e; }
+  const c = discover(d()).components.find(x => x.id === 'skill:user:s');
+  assert.ok(c.files.some(f => f.endsWith('link.txt')));
+});
+
+test('symlink directory cycle terminates', t => {
+  const { h, d } = mkHome();
+  const skill = path.join(h, 'skills', 's');
+  write(path.join(skill, 'SKILL.md'), 'x');
+  try { fs.symlinkSync(skill, path.join(skill, 'loop'), 'dir'); }
+  catch (e) { if (e.code === 'EPERM' || e.code === 'EACCES') return t.skip('symlinks not permitted'); throw e; }
+  const c = discover(d()).components.find(x => x.id === 'skill:user:s');
+  assert.ok(c.files.some(f => f.endsWith('SKILL.md')));
+});
+
+test('file cap truncation sets meta.filesTruncated', () => {
+  const { h, d } = mkHome();
+  const skill = path.join(h, 'skills', 's');
+  write(path.join(skill, 'SKILL.md'), 'x');
+  for (let i = 0; i < 5; i++) write(path.join(skill, `f${i}.txt`), 'y');
+  const small = discover({ ...d(), limits: { maxFiles: 3 } }).components.find(x => x.id === 'skill:user:s');
+  assert.equal(small.meta.filesTruncated, true);
+  const full = discover(d()).components.find(x => x.id === 'skill:user:s');
+  assert.ok(!full.meta.filesTruncated);
+});
