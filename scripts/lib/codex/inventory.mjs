@@ -155,7 +155,8 @@ function inventoryHome({ home, projectDir, homes, components, configFindings, la
   /**
    * One TOML file as a config-only component. Returns the parsed value, or null (missing/unparseable).
    * Unparseable: the component is still emitted, with `meta.parseError` and a raw config holding only
-   * the text hash (baseline still sees edits); a CONFIG_UNREADABLE config finding is also recorded.
+   * the text hash (baseline still sees edits). The scanner reports it once, as a CONFIG_UNREADABLE
+   * finding on the component (codex/rules.mjs), so no config finding is recorded here.
    */
   const tomlComponent = (file, id, kind, scope, name = path.basename(file)) => {
     const text = readTextSafe(file);
@@ -165,7 +166,6 @@ function inventoryHome({ home, projectDir, homes, components, configFindings, la
       const parseError = { message: truncate(r.error), line: r.line };
       const config = bindRawConfig({}, { parseError, sha256: sha256(text) });
       add({ id, kind, name, scope, root: null, files: [], config, meta: { file, parseError } }, file);
-      unreadable(file, `TOML: ${r.error}`, r.line);
       return null;
     }
     add({ id, kind, name, scope, root: null, files: [], config: redactConfig(r.value), meta: { file } }, file);

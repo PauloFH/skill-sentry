@@ -345,8 +345,11 @@ test('discoverCodex: unparseable config.toml is still a component with a parse-e
   assert.equal(c.meta.parseError.line, 3);
   assert.match(c.meta.parseError.message, /duplicate key/);
   assert.ok(!JSON.stringify(components).includes(SENTINEL));
-  assert.ok(configFindings.some(f => f.ruleId === 'CONFIG_UNREADABLE' && f.file === path.join(root, 'config.toml')));
-  assert.match(fileMap(scanComponent(c))['<config>'], /^[0-9a-f]{64}$/);
+  // Reported once: as a CONFIG_UNREADABLE finding on the component (codex rules), not also as a problem line.
+  assert.ok(!configFindings.some(f => f.ruleId === 'CONFIG_UNREADABLE' && f.file === path.join(root, 'config.toml')));
+  const scanned = scanComponent(c);
+  assert.equal(scanned.findings.filter(f => f.ruleId === 'CONFIG_UNREADABLE').length, 1);
+  assert.match(fileMap(scanned)['<config>'], /^[0-9a-f]{64}$/);
 });
 
 test('discoverCodex: WSL home gets its own label, system layer and POSIX paths mapped into the distro', () => {
