@@ -250,10 +250,132 @@ function normCommandText(cmd) {
   return lowerOnWin(s);
 }
 
-// Bare `skill-sentry` path segment (relative forms after `cd ~/.claude`), not `some-skill-sentry-fork`.
-// Boundary on both sides = start/end or any character outside [\w.-] (same notion as `mentions`).
-// Trailing dots/spaces are accepted (Ruling K): Win32 strips them, so `skill-sentry.\x` is the same dir.
-const SELF_SEGMENT = /(?:^|[^\w.-])skill-sentry[. ]*(?=$|[^\w.-])/i;
+// `skill-sentry` path segment (any spelling: absolute, relative after `cd ~/.claude`, bare), not
+// `some-skill-sentry-fork`. Boundary on both sides = start/end or any character outside [\w.-] (same
+// notion as `mentions`). Trailing dots/spaces are accepted (Ruling K): Win32 strips them, so
+// `skill-sentry.\x` is the same dir. Groups: 1 = left boundary, 2 = trailing dots/spaces.
+const SELF_SEGMENT = /(^|[^\w.-])skill-sentry([. ]*)(?=$|[^\w.-])/gi;
+const SEG_LEN = 'skill-sentry'.length;
+
+// ---- Ruling R9: a `skill-sentry` segment asks only when it can name the data or install dir ----
+
+// Rule 4: a data-dir file name right after the segment.
+const DATA_FILE_AFTER = /^["']*\/["']*(?:allowlist\.json|baseline\.json|guard\.log|guard-sessions|reports)/i;
+// Rule 1: parents that can hold the data dir (`.claude`) or the install dir (`plugins/cache/<mkt>/<name>`).
+const PROTECTED_PARENTS = new Set(['.claude', 'cache', 'plugins', 'skill-sentry']);
+// Rule 2: a path prefix is literal only if made of these characters (quotes removed first). Anything else
+// (`$`, `%`, `*`, `?`, `[`, `{`, backtick, `(`, `~user`/`~-`/8.3 `~`, control or exotic spaces) asks.
+const LITERAL_PREFIX = /^[\p{L}\p{N}_.:/-]*$/u;
+// Rule 2: a glob, brace or expansion character touching the segment itself (`skill-sentry*`, `{a,skill-sentry}`).
+const GLOB_NEIGHBOR = /[*?[\]{},$%`]/;
+// Rule 3 contexts: the text names Claude's home, or computes paths (variables, substitutions, grouping).
+const CLAUDE_TEXT = /\.claude|plugins/i;
+const DYNAMIC_TEXT = /[$%`({@]/;
+// Any segment asks when the same command can make a literal path point at Claude's home: it names a
+// `.claude` path segment (not `.claude-plugin`) or links/moves something (`ln -s ~/.cl?ude /tmp/j &&
+// rm -rf /tmp/j/skill-sentry`). Links made by an earlier command are caught by realpath instead.
+const CLAUDE_SEGMENT = /(?:^|[^\w.-])\.claude[. ]*(?=$|[^\w.-])/i;
+const LINK_OR_MOVE = /(?:^|[\s;&|({])(?:ln|mklink|subst|mount|mv|move|ren|rename|robocopy|new-item|ni|move-item|mi|rename-item|rni)(?=$|[\s;&|)])/i;
+// Ruling K in shell text: a UNC/device path token (collapsed later by normCommandText).
+const UNC_TOKEN = /(?:^|[\s'"=(<>|;&,])[\\/]{2}(?![\\/])/;
+// Characters that end a path token when walking back from the segment.
+const TOKEN_BOUNDARY = /[\s=<>|;&]/;
+// Directory changes; group 1 = command, group 2 = its argument text up to the next statement end.
+const CD_COMMAND = /(?:^|[\s;&|({])(cd|chdir|pushd|popd|sl|set-location|push-location|pop-location)(?=$|[\s;&|)])([^;&|\n)]*)/gi;
+const CD_LITERAL = /^[\p{L}\p{N}_.:/ "'-]*$/u;
+
+/**
+ * Directory changes in normalized shell text: `nonLiteral` when any target is computed, globbed,
+ * `-`, or a stack pop; otherwise the literal targets (quotes and parameter names removed).
+ */
+function cdTargets(text) {
+  const out = { nonLiteral: false, literal: [] };
+  for (const m of text.matchAll(CD_COMMAND)) {
+    const cmd = m[1].toLowerCase();
+    let arg = m[2].trim();
+    if (cmd === 'popd' || cmd === 'pop-location' || arg === '-' || arg.startsWith('- ') || !CD_LITERAL.test(arg)) {
+      out.nonLiteral = true;
+      continue;
+    }
+    while (/^--?[a-z][\w-]*(?:\s+|$)|^--(?:\s+|$)/i.test(arg)) arg = arg.replace(/^--?[\w-]*\s*/, '');
+    const q = /^["']/.test(arg) ? arg[0] : null;
+    const close = q ? arg.indexOf(q, 1) : -1;
+    const target = q ? arg.slice(1, close === -1 ? undefined : close) : arg.split(/\s+/)[0];
+    if (target) out.literal.push(target);
+  }
+  return out;
+}
+
+/**
+ * Whether a normalized shell text names the data or install dir through a `skill-sentry` segment
+ * (Ruling R9). `ctx` supplies lazily computed facts shared by every text of one command.
+ */
+function segmentAsks(text, ctx) {
+  for (const m of text.matchAll(SELF_SEGMENT)) {
+    const start = m.index + m[1].length;
+    const end = start + SEG_LEN + m[2].length;
+    if (DATA_FILE_AFTER.test(text.slice(end))) return true; // rule 4
+    if (ctx.unc || ctx.relinks()) return true; // Ruling K; same-command link, move or `.claude` path
+    const prev = text[start - 1] ?? '';
+    if (GLOB_NEIGHBOR.test(prev) || GLOB_NEIGHBOR.test(text[end] ?? '')) return true; // rule 2 (segment)
+    let token = 'skill-sentry';
+    let relative = true; // bare
+    if (prev === '/') {
+      let s = start - 1;
+      while (s > 0 && !TOKEN_BOUNDARY.test(text[s - 1])) s--;
+      const prefix = text.slice(s, start).replace(/["']/g, '');
+      if (!LITERAL_PREFIX.test(prefix)) return true; // rule 2 (parent)
+      const comps = prefix.split('/').slice(0, -1).map(c => (c === '.' || c === '..' ? c : c.replace(/[. ]+$/, '').toLowerCase()));
+      if (PROTECTED_PARENTS.has(comps[comps.length - 1]) || comps.includes('.claude')) return true; // rule 1
+      relative = comps.includes('.') || comps.includes('..');
+      token = prefix + token;
+    }
+    if (relative && ctx.risky()) return true; // rule 3
+    if (ctx.resolvesProtected(token)) return true; // literal spelling of a protected dir (junction, cwd)
+  }
+  return false;
+}
+
+/** Lazily computed context for segmentAsks over the texts of one command. */
+function segmentContext(raw, texts, { roots, cwd }) {
+  const base = str(cwd) ? cwd : process.cwd();
+  let claude;
+  const claudeForms = () => (claude ??= rootForms(path.join(os.homedir(), '.claude')));
+  const hits = f => roots.some(r => isUnder(f, r) || isUnder(r, f)) || claudeForms().some(c => isUnder(f, c));
+  let cds;
+  const cdInfo = () => {
+    if (!cds) {
+      cds = { nonLiteral: false, literal: [] };
+      for (const t of texts) {
+        const c = cdTargets(t);
+        cds.nonLiteral ||= c.nonLiteral;
+        cds.literal.push(...c.literal);
+      }
+    }
+    return cds;
+  };
+  let risky;
+  let relinks;
+  let bases;
+  const seen = new Map();
+  return {
+    unc: UNC_TOKEN.test(raw),
+    relinks: () => (relinks ??= texts.some(t => CLAUDE_SEGMENT.test(t) || LINK_OR_MOVE.test(t))),
+    risky: () => (risky ??= rootForms(base).some(f => [...roots, ...claudeForms()].some(r => isUnder(f, r)))
+      || texts.some(t => CLAUDE_TEXT.test(t) || DYNAMIC_TEXT.test(t))
+      || cdInfo().nonLiteral),
+    resolvesProtected: token => {
+      bases ??= [base, ...cdInfo().literal.map(c => path.resolve(base, c))];
+      for (const b of bases) {
+        let abs;
+        try { abs = path.resolve(b, token); } catch { return true; }
+        if (!seen.has(abs)) seen.set(abs, [lowerOnWin(slashes(abs)), canonRoot(abs)].some(hits));
+        if (seen.get(abs)) return true;
+      }
+      return false;
+    },
+  };
+}
 
 /**
  * De-obfuscated copy of a shell command, used only to ADD matches: drops cmd `^` escapes,
@@ -392,12 +514,17 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
 
   // Shell commands that mention the data dir or the install dir (any access, read or write) always ask:
   // a redirect like `echo ... > ~/.claude/skill-sentry/allowlist.json` must not slip through (§6.2).
+  // Other `skill-sentry` segments ask only when they can name one of those dirs (Ruling R9).
   if (t.commands.length) {
-    const needles = [...[dataDir, selfRoot].filter(str).flatMap(rootForms), lowerOnWin('.claude/skill-sentry')];
+    const roots = [dataDir, selfRoot].filter(str).flatMap(rootForms);
+    const needles = [...roots, lowerOnWin('.claude/skill-sentry')];
     for (const c of t.commands) {
       if (isReadOnlySelfInvocation(c, selfRoot, toolName)) continue; // Rulings L2, L3
-      const texts = [normCommandText(c), normCommandText(deobfuscate(c))];
-      if (texts.some(text => SELF_SEGMENT.test(text) || needles.some(n => mentions(text, n)))) {
+      // Line continuations (bash `\`, PowerShell backtick) are joined in the de-obfuscated copy.
+      const joined = String(c).replace(/\\\r?\n/g, '').replace(/`\r?\n/g, ' ');
+      const texts = [normCommandText(c), normCommandText(deobfuscate(joined))];
+      const ctx = segmentContext(c, texts, { roots, cwd });
+      if (texts.some(text => needles.some(n => mentions(text, n)) || segmentAsks(text, ctx))) {
         return { decision: 'ask', ruleId: 'SELF_PROTECT', severity: 'high', reason: 'shell command touches skill-sentry data or install directory', snippet: snip(c) };
       }
     }

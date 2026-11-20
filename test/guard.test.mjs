@@ -393,6 +393,160 @@ test('skill-sentry segment boundary is any non-name character on both sides', ()
     assert.equal(d('Bash', { command: c }).decision, 'none', c);
   }
 });
+
+// ---------------------------------------------------------------- Ruling R9 (task 3b)
+// A bare `skill-sentry` segment asks only when it can refer to the data dir or the install dir.
+const CHECKOUT = 'C:/Users/x/skill-sentry';
+const HOME_CLAUDE = path.join(os.homedir(), '.claude');
+const dc = (toolName, command, cwd) => decide({ toolName, toolInput: { command }, origin: null, allowlist: EMPTY, selfRoot: SELF, dataDir: DATA, cwd });
+const asksSelf = (tool, command, cwd) => {
+  const r = dc(tool, command, cwd);
+  assert.equal(r.decision, 'ask', `${tool} [cwd ${cwd}]: ${command}`);
+  assert.equal(r.ruleId, 'SELF_PROTECT', `${tool} [cwd ${cwd}]: ${command}`);
+};
+const noneSelf = (tool, command, cwd) => assert.equal(dc(tool, command, cwd).decision, 'none', `${tool} [cwd ${cwd}]: ${command}`);
+
+test('R9: a literal other parent of skill-sentry no longer asks (developer checkout)', () => {
+  noneSelf('Bash', 'cd ~/skill-sentry && git log --oneline -3', CHECKOUT);
+  noneSelf('Bash', 'cat C:/Users/x/skill-sentry/README.md', CHECKOUT);
+  noneSelf('Bash', 'node --test test/', CHECKOUT);
+  noneSelf('Bash', 'node --test ../skill-sentry/test/guard.test.mjs', CHECKOUT);
+  noneSelf('Bash', 'ls /home/x/src/skill-sentry/scripts', CHECKOUT);
+  noneSelf('PowerShell', 'Get-Content C:\\Users\\x\\skill-sentry\\x.md', CHECKOUT);
+  for (const c of [
+    'cat C:\\Users\\x\\skill-sentry\\README.md',
+    'cat /c/Users/x/skill-sentry/README.md',
+    'echo x > ~/skill-sentry/notes.md',
+    'git -C "C:/Users/x/skill-sentry" status',
+    'node --test D:\\dev\\skill-sentry\\scripts',
+    'rm -rf D:/dev/skill-sentry/scripts/tmp',
+    'git commit -m "fix: stop prompts for unrelated skill-sentry folders"',
+    'cd skill-sentry && git status',
+  ]) noneSelf('Bash', c, os.homedir());
+});
+
+test('R9: references that can reach the data or install dir still ask', () => {
+  for (const [tool, c, cwd] of [
+    ['Bash', 'echo x > ~/.claude/skill-sentry/allowlist.json', CHECKOUT],
+    ['Bash', 'cd ~/.claude && echo x > skill-sentry/allowlist.json', CHECKOUT],
+    ['Bash', 'cd ~/.claude/plugins/cache && rm -rf skill-sentry', CHECKOUT],
+    ['Bash', 'D=~/.claude; rm -rf $D/skill-sentry', CHECKOUT],
+    ['Bash', 'rm -rf "$HOME/.claude/skill-sentry"', CHECKOUT],
+    ['Bash', 'rm -rf skill-sentry', HOME_CLAUDE],
+    ['Bash', 'rm -rf ./skill-sentry', path.join(HOME_CLAUDE, 'plugins', 'cache')],
+    ['Bash', 'cd ~/.cl*/skill-sentry && ls', CHECKOUT],
+    ['Bash', 'rm -rf %USERPROFILE%\\.claude\\skill-sentry', CHECKOUT],
+    ['PowerShell', 'Remove-Item -Recurse %USERPROFILE%\\.claude\\skill-sentry', CHECKOUT],
+  ]) asksSelf(tool, c, cwd);
+});
+
+test('R9: rule 1, a protected-looking parent component asks', () => {
+  for (const c of [
+    'rm -rf C:/Users/x/plugins/skill-sentry',
+    'rm -rf /home/x/stuff/cache/skill-sentry',
+    'rm -rf C:/x/cache/skill-sentry/skill-sentry/0.1.0',
+    'rm -rf C:/x/Cache/Skill-Sentry',
+    'rm -rf C:/Users/x/.claude./skill-sentry',
+    'rm -rf C:/Users/x/.claude/plugins/marketplaces/skill-sentry',
+  ]) asksSelf('Bash', c, CHECKOUT);
+});
+
+test('R9: rule 2, a non-literal parent or a globbed segment asks', () => {
+  for (const [tool, c] of [
+    ['Bash', 'rm -rf $CLAUDE_CONFIG_DIR/skill-sentry'],
+    ['Bash', 'rm -rf "${CLAUDE_CONFIG_DIR}"/skill-sentry'],
+    ['Bash', 'rm -rf "$(dirname x)"/skill-sentry'],
+    ['Bash', 'rm -rf `pwd`/skill-sentry'],
+    ['Bash', 'rm -rf C:/Users/x/CLAUDE~1/skill-sentry'],
+    ['Bash', 'rm -rf C:/Users/x/.cl?ude/skill-sentry'],
+    ['Bash', 'rm -rf C:/Users/x/[.]claude/skill-sentry'],
+    ['Bash', 'rm -rf ~-/skill-sentry'],
+    ['Bash', 'rm -rf C:/Users/x/skill-sentry*'],
+    ['Bash', 'rm -rf $D/{a,skill-sentry}'],
+    ['Bash', 'rm -rf C:/Users/%X%/skill-sentry'],
+    ['PowerShell', 'Remove-Item -Recurse $env:CLAUDE_CONFIG_DIR\\skill-sentry'],
+    ['PowerShell', 'Remove-Item -Recurse "$($env:CLAUDE_CONFIG_DIR)\\skill-sentry"'],
+    ['Bash', 'rm -rf \\\\?\\C:\\Users\\x\\skill-sentry'],
+    ['Bash', 'rm -rf \\\\localhost\\share\\skill-sentry'],
+  ]) asksSelf(tool, c, CHECKOUT);
+});
+
+test('R9: rule 3, a bare or relative segment asks when the location can be protected', () => {
+  for (const [tool, c, cwd] of [
+    // the hook cwd is under ~/.claude or a protected root, or is the parent of the data dir
+    ['Bash', 'rm -rf skill-sentry', path.join(HOME_CLAUDE, 'plugins')],
+    ['Bash', 'ls skill-sentry', path.join(DATA, 'reports')],
+    ['Bash', 'rm -rf skill-sentry', path.dirname(DATA)],
+    ['Bash', 'rm -rf ../skill-sentry', path.join(path.dirname(DATA), 'x')],
+    // the text mentions .claude or plugins
+    ['Bash', 'cd C:/Users/x/.CLAUDE && rm -rf skill-sentry', CHECKOUT],
+    ['Bash', 'cd C:/x/plugins && rm -rf skill-sentry', CHECKOUT],
+    ['Bash', 'rm -rf ~/.cl\\\naude/skill-sentry', CHECKOUT],
+    ['Bash', 'rm -rf C:/Users/x/.claude/a/../skill-sentry', CHECKOUT],
+    // the command changes directory to a non-literal path
+    ['Bash', 'cd "$(echo x)" && rm -rf skill-sentry', CHECKOUT],
+    ['Bash', 'cd - && rm -rf skill-sentry', CHECKOUT],
+    ['Bash', 'pushd /tmp; popd; rm -rf skill-sentry', CHECKOUT],
+    ['Bash', 'cd ~/.cl* && rm -rf skill-sentry', CHECKOUT],
+    ['PowerShell', 'Set-Location $env:CLAUDE_CONFIG_DIR; Remove-Item -Recurse skill-sentry', CHECKOUT],
+    ['PowerShell', 'sl ~/.c*; ri -r skill-sentry', CHECKOUT],
+    // the command builds a path from variables or substitutions
+    ['PowerShell', "Remove-Item -Recurse (Join-Path $env:CLAUDE_CONFIG_DIR 'skill-sentry')", CHECKOUT],
+    ['PowerShell', "Remove-Item -Recurse (Join-Path (Join-Path C:/Users/x ('.cl'+'aude')) 'skill-sentry')", CHECKOUT],
+  ]) asksSelf(tool, c, cwd);
+  // a literal cd elsewhere, or no cd at all, from a neutral cwd stays none
+  noneSelf('Bash', 'cd C:/Users/x && ls skill-sentry', CHECKOUT);
+  noneSelf('Bash', 'ls ./skill-sentry', os.homedir());
+});
+
+test('R9: rule 4, a data-dir file name after the segment always asks', () => {
+  for (const c of [
+    'cat C:/Users/x/skill-sentry/allowlist.json',
+    'echo x > /home/x/src/skill-sentry/baseline.json',
+    'type D:\\dev\\skill-sentry\\guard.log',
+    'ls ~/skill-sentry/guard-sessions',
+    'rm -rf C:/Users/x/skill-sentry/reports',
+    'cat "C:/Users/x/skill-sentry"/ALLOWLIST.JSON',
+  ]) asksSelf('Bash', c, CHECKOUT);
+});
+
+test('R9: a literal path asks when the same command links, moves or names a .claude path', () => {
+  for (const [tool, c] of [
+    ['Bash', 'ln -s ~/.cl?ude /tmp/j && rm -rf /tmp/j/skill-sentry'],
+    ['Bash', 'mv ~/.cl* /tmp/y && rm -rf /tmp/y/skill-sentry'],
+    ['Bash', 'mv ~/.claude ~/y && rm -rf ~/y/skill-sentry'],
+    ['Bash', 'cmd /c mklink /J C:\\j %APPDATA%\\..\\..\\.claude & rd /s /q C:\\j\\skill-sentry'],
+    ['PowerShell', 'New-Item -ItemType Junction -Path C:\\j -Target (gci ~ -Force -Filter .cl*); Remove-Item -Recurse C:\\j\\skill-sentry'],
+    ['Bash', 'cp -r C:/Users/x/skill-sentry/scripts ~/.claude/x'],
+  ]) asksSelf(tool, c, CHECKOUT);
+  // `.claude-plugin` is not a `.claude` path segment
+  noneSelf('Bash', 'cat C:/Users/x/skill-sentry/.claude-plugin/plugin.json', CHECKOUT);
+});
+
+test('R9: every occurrence is classified, not just the first', () => {
+  asksSelf('Bash', 'cat ~/skill-sentry/README.md; rm -rf $D/skill-sentry', CHECKOUT);
+  asksSelf('Bash', 'cat C:/Users/x/skill-sentry/a.md && rm -rf C:/x/plugins/skill-sentry', CHECKOUT);
+});
+
+test('R9: literal paths and cd targets that resolve into a protected dir ask (junctions)', t => {
+  const f = junctionFixture(t);
+  if (!f) return;
+  const j2 = path.join(f.work, 'j2');
+  const data = path.join(path.dirname(f.work), 'home', '.claude', 'skill-sentry');
+  const D = (command, cwd) => decide({ toolName: 'Bash', toolInput: { command }, origin: null, allowlist: EMPTY, selfRoot: SELF, dataDir: data, cwd });
+  for (const [c, cwd] of [
+    [`rm -rf ${j2.replace(/\\/g, '/')}/skill-sentry`, f.work],
+    [`rm -rf "${j2}\\skill-sentry"`, f.work],
+    [`cd ${j2.replace(/\\/g, '/')} && rm -rf skill-sentry`, f.work],
+    ['cd j2 && rm -rf skill-sentry', f.work],
+    ['rm -rf skill-sentry', j2],
+  ]) {
+    const r = D(c, cwd);
+    assert.equal(r.decision, 'ask', c);
+    assert.equal(r.ruleId, 'SELF_PROTECT', c);
+  }
+  assert.equal(D('rm -rf skill-sentry', f.work).decision, 'none');
+});
 test('non-local UNC paths are matched by string only (no network I/O)', () => {
   const timed = fn => { const t0 = performance.now(); const r = fn(); return { r, ms: performance.now() - t0 }; };
   // Ruling K: any UNC path is an unusual form -> PATH_UNUSUAL_READ (log without origin, ask with one).
