@@ -6,6 +6,7 @@ import { findOrigin } from './origin.mjs';
 import { dataDirPath } from './datadir.mjs';
 import { loadAllowlist, isFindingAllowed } from './allowlist.mjs';
 import { escapeInvisible, truncate } from './text.mjs';
+import { isCodexInput, handleCodex } from './codex/guardpolicy.mjs';
 
 const safe = s => (s == null ? null : truncate(escapeInvisible(String(s)), 200));
 const originName = o => (o ? o.skill ?? o.mcpPlugin ?? null : null);
@@ -57,6 +58,11 @@ export async function handle({ raw, selfRoot, deadline, write, log }) {
     return;
   }
   if (!input || typeof input !== 'object' || Array.isArray(input) || typeof input.tool_name !== 'string') return;
+  // OpenAI Codex (Ruling R6): its own tiered policy, since Codex has no "ask".
+  if (isCodexInput(input)) {
+    await handleCodex({ input, selfRoot, write, log });
+    return;
+  }
 
   const toolName = input.tool_name;
   // Path only: the decision must not depend on the data dir existing or being creatable (Ruling J).

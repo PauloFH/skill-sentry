@@ -617,10 +617,14 @@ const synthetic = (ruleId, p) => ({ ruleId, category: 'path', severity: 'high', 
  * Decide what to do with one tool call.
  * `origin` and `allowlist` may be values or zero-arg functions; functions are only called when the
  * decision depends on them (origin for `high`, allowlist for `critical`).
- * @returns {{ decision: 'deny'|'ask'|'log'|'none', ruleId?: string, severity?: string, reason?: string, snippet?: string }}
+ * `extraWritePaths` (Codex apply_patch header paths) join the write targets; Claude callers never pass it.
+ * A `high` decision also carries `highs` (every high match: ruleId, category, snippet) for the Codex tiers.
+ * @returns {{ decision: 'deny'|'ask'|'log'|'none', ruleId?: string, severity?: string, reason?: string, snippet?: string,
+ *   highs?: { ruleId: string, category: string, snippet: string }[] }}
  */
-export function decide({ toolName, toolInput, origin = null, allowlist = null, selfRoot, dataDir, cwd }) {
+export function decide({ toolName, toolInput, origin = null, allowlist = null, selfRoot, dataDir, cwd, extraWritePaths = null }) {
   const { targets: t, mcp, truncated } = extractTargetsEx(toolName, toolInput, cwd);
+  if (Array.isArray(extraWritePaths)) t.writePaths.push(...extraWritePaths.filter(str));
   const matches = [];
   for (const c of t.commands) matches.push(...commandMatches(c));
   for (const u of t.urls) matches.push(...commandMatches(u));
@@ -696,7 +700,8 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
   const high = matches.find(m => m.severity === 'high');
   if (high) {
     const o = resolveLazy(origin);
-    return { decision: o ? 'ask' : 'log', ruleId: high.ruleId, severity: 'high', reason: 'high-risk rule match', snippet: high.snippet };
+    const highs = matches.filter(m => m.severity === 'high').map(m => ({ ruleId: m.ruleId, category: m.category, snippet: m.snippet }));
+    return { decision: o ? 'ask' : 'log', ruleId: high.ruleId, severity: 'high', reason: 'high-risk rule match', snippet: high.snippet, highs };
   }
   return { decision: 'none' };
 }

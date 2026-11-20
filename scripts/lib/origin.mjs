@@ -12,7 +12,7 @@ const BUILTIN_COMMANDS = new Set([
 const COMMAND_NAME = /<command-name>\/?([^<\s]+)<\/command-name>/;
 
 /** Read at most the last `maxBytes` of a file; drops the partial first line when starting mid-file. */
-function readTail(file, maxBytes) {
+export function readTail(file, maxBytes) {
   const fd = fs.openSync(file, 'r');
   try {
     const size = fs.fstatSync(fd).size;
