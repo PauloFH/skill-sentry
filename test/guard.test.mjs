@@ -752,6 +752,10 @@ test('R14 X5: dynamic PowerShell gets no exemption (drive made via alias, call o
     ['PowerShell', `Microsoft.PowerShell.Management\\New-PSDrive C FileSystem ${home} -Scope Local | Out-Null; ${RI}`],
     ['PowerShell', `. C:\\tmp\\x.ps1; ${RI}`],
     ['PowerShell', `Get-Content C:\\tmp\\x.txt | i\`ex; ${RI}`],
+    // the alias provider, with the verb glued to a parameter or in curly quotes
+    ['PowerShell', `Set-Item alias:zr -Value:Remove-PSDrive; Set-Item alias:zq -Value:New-PSDrive; Set-Location HKCU:\\; zr C -Force; zq C FileSystem ${home}; ${RI}`],
+    ['PowerShell', `Rename-Item alias:rdr zr; Rename-Item alias:ndr zq; Set-Location HKCU:\\; zr C -Force; zq C FileSystem ${home}; ${RI}`],
+    ['PowerShell', `Set-Item alias:zq \u2018New-PSDrive\u2019; zq C FileSystem ${home} -Scope Local; ${RI}`],
     ['Bash', `pwsh -c "& ('New-PS'+'Drive') C FileSystem ${fwdSlash(home)}" ';' Remove-Item -Recurse -Force C:/.claude/plugins/cache/mkt/skill-sentry`],
   ].filter(([, c]) => onThisOs(c))) asksSelf(tool, c, h.o);
   for (const c of [

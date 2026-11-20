@@ -435,14 +435,15 @@ const changesPsDrive = script => shellWords(script, true).some(w => w.value.spli
 
 // Ruling R14 (X5): a drive can also be made with no drive token in sight: an alias or `iex` of a name built
 // at run time (`sal zq ('New-PS'+'Drive')`), the call operator, `gcm` wildcards, dot-sourcing, or the .NET
-// API (`$executionContext.SessionState.Drive.New`). So a PowerShell command, or one that runs `pwsh` /
+// API (`$executionContext.SessionState.Drive.New`), or the alias provider (`Set-Item alias:zq -Value:New-PSDrive`,
+// `Rename-Item alias:ndr zq`, curly quotes). So a PowerShell command, or one that runs `pwsh` /
 // `powershell`, with any dynamic construct gets no exemption at all (`~` neither: the FileSystem provider's
 // Home can be reassigned). Residual (documented): a `-Scope Global` drive made by a `.ps1` script or module
 // planted in an earlier call and run or imported here.
 const RUNS_PWSH = /(?:^|[\s;|&('"/\\])(?:pwsh|powershell)(?:\.exe)?(?=$|[\s;|&)'"])/i;
 const PS_DYNAMIC_CHAR = /[$({[@+`]/;
 const PS_DOT_SOURCE = /(?:^|[;|{(\r\n]|&&)\s*\.(?=[\s'"])/;
-const PS_DYNAMIC_WORD = /(?<![\w-])(?:iex|invoke-expression|invoke-command|icm|sal|set-alias|nal|new-alias|gcm|get-command|new-object|add-type)(?![\w-])/i;
+const PS_DYNAMIC_WORD = /(?<![\w-])(?:(?:iex|invoke-expression|invoke-command|icm|sal|set-alias|nal|new-alias|gcm|get-command|new-object|add-type|new-psdrive|ndr|mount|remove-psdrive|rdr)(?![\w-])|(?:alias|function):)/i;
 /** PowerShell text that can build a command at run time (call operator `&`, not `&&` or `2>&1`). */
 const psDynamic = c => PS_DYNAMIC_CHAR.test(c) || /(?<!>)&/.test(c.replace(/&&/g, '  ')) || PS_DOT_SOURCE.test(c) || PS_DYNAMIC_WORD.test(c);
 const CLAUDE_SEGMENT = /(?:^|[^\w.-])\.claude[. ]*(?=$|[^\w.-])/i;
