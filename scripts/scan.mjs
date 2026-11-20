@@ -2,7 +2,8 @@
 // skill-sentry scan CLI. Env: SKILL_SENTRY_DATA_DIR (data dir), SKILL_SENTRY_CLAUDE_HOME (default ~/.claude),
 // SKILL_SENTRY_HOME_DIR (default os.homedir(); where ~/.claude.json and ~/.codex are read from),
 // SKILL_SENTRY_CODEX_HOME (scan this Codex home instead of $CODEX_HOME / ~/.codex),
-// SKILL_SENTRY_NO_WSL=1 (do not look for Codex homes inside WSL distributions).
+// SKILL_SENTRY_NO_WSL=1 (do not look for Codex homes inside WSL distributions; the --no-wsl flag does the same).
+// Flags: --agent claude|codex|all (default all), --codex-home <dir> (repeatable, added to the default home).
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -22,12 +23,16 @@ const selfRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const SCAN_BUDGET_MS = 120_000;
 
 const USAGE = `usage: node scan.mjs [--json] [--path <dir>] [--component <id>] [--diff-only] [--update-baseline] [--claude-home <dir>] [--project <dir>]
+                    [--agent claude|codex|all] [--codex-home <dir>]... [--no-wsl]
        node scan.mjs --allow <componentId> <ruleId> <file> [--reason <text>]`;
 
 function parseArgs(argv) {
-  const o = { json: false, diffOnly: false, updateBaseline: false };
-  const withValue = { '--path': 'path', '--component': 'component', '--claude-home': 'claudeHome', '--project': 'project', '--reason': 'reason' };
-  const flags = { '--json': 'json', '--diff-only': 'diffOnly', '--update-baseline': 'updateBaseline' };
+  const o = { json: false, diffOnly: false, updateBaseline: false, noWsl: false, agent: 'all', codexHomes: [] };
+  const withValue = {
+    '--path': 'path', '--component': 'component', '--claude-home': 'claudeHome', '--project': 'project', '--reason': 'reason',
+    '--agent': 'agent', '--codex-home': 'codexHomes',
+  };
+  const flags = { '--json': 'json', '--diff-only': 'diffOnly', '--update-baseline': 'updateBaseline', '--no-wsl': 'noWsl' };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (Object.hasOwn(flags, a)) o[flags[a]] = true;
@@ -42,7 +47,11 @@ function parseArgs(argv) {
       if (v === undefined) return { error: `missing value for ${a}` };
       // Ruling L3 (defense in depth): a value never starts with `-` nor hides a flag after whitespace.
       if (v.startsWith('-') || /\s-/.test(v)) return { error: `invalid value for ${a}: ${untrusted(v)}` };
-      o[withValue[a]] = v;
+      if (a === '--codex-home') o.codexHomes.push(v);
+      else if (a === '--agent') {
+        if (!['claude', 'codex', 'all'].includes(v)) return { error: `invalid value for --agent: ${untrusted(v)} (expected claude, codex or all)` };
+        o.agent = v;
+      } else o[withValue[a]] = v;
     } else return { error: `unknown argument: ${a}` };
   }
   return o;
@@ -86,12 +95,17 @@ if (opts.path) {
   if (skillspectorOnPath()) meta.skillspectorAvailable = true;
 } else {
   // Same deadline as the scan: skills the inventory could not walk in time are reported as incomplete.
-  const inv = discover({ claudeHome, homeDir, projectDir, selfRoot, deadline });
-  const homes = codexHomes({
-    env: process.env, homeDir, platform: process.platform, deadline,
-    includeWsl: process.env.SKILL_SENTRY_NO_WSL !== '1', problems,
-  });
-  const cx = discoverCodex({ homes, projectDir, selfRoot, deadline });
+  // --agent claude never looks at a Codex home; --agent codex never reads the Claude homes.
+  const none = { components: [], configFindings: [] };
+  const inv = opts.agent === 'codex' ? none : discover({ claudeHome, homeDir, projectDir, selfRoot, deadline });
+  let cx = none;
+  if (opts.agent !== 'claude') {
+    const homes = codexHomes({
+      env: process.env, homeDir, platform: process.platform, deadline, explicit: opts.codexHomes,
+      includeWsl: !opts.noWsl && process.env.SKILL_SENTRY_NO_WSL !== '1', problems,
+    });
+    cx = discoverCodex({ homes, projectDir, selfRoot, deadline });
+  }
   // CONFIG_UNREADABLE findings are surfaced as report-level problems (not attached to a component).
   for (const f of [...inv.configFindings, ...cx.configFindings]) problems.push(`${f.ruleId}: ${f.file}: ${f.snippet}`);
   components = [...inv.components, ...cx.components];
@@ -140,9 +154,11 @@ let diff = null;
 if (!opts.path) {
   const prev = loadBaseline(dir);
   diff = diffBaseline(prev, results);
-  if (opts.component) diff.removed = [];
+  // A partial scan (one component or one agent) cannot say what was removed and must not rewrite the baseline.
+  const partial = !!opts.component || opts.agent !== 'all';
+  if (partial) diff.removed = [];
   const exists = fs.existsSync(path.join(dir, 'baseline.json'));
-  if (!opts.component && (opts.updateBaseline || !exists)) saveBaseline(dir, results);
+  if (!partial && (opts.updateBaseline || !exists)) saveBaseline(dir, results);
   if (opts.diffOnly) {
     const keep = new Set([...diff.added, ...diff.changed.map(c => c.id)]);
     results = results.filter(r => keep.has(r.component.id));

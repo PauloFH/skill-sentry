@@ -58,7 +58,7 @@ test('script paths referenced by hooks.json and the skills exist', () => {
   for (const [name, script] of [['audit', 'scan.mjs'], ['harden', 'harden.mjs']]) {
     const skillDir = path.join(ROOT, 'skills', name);
     const text = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8');
-    const refs = [...text.matchAll(/<base directory>\/([^"\s`]+\.mjs)/g)].map(m => m[1]);
+    const refs = [...text.matchAll(/<(?:base directory|skill dir)>\/([^"\s`]+\.mjs)/g)].map(m => m[1]);
     assert.ok(refs.some(r => r.endsWith(`scripts/${script}`)), `${name} references scripts/${script}`);
     for (const r of refs) assert.ok(fs.statSync(path.resolve(skillDir, r)).isFile(), `${name}: ${r}`);
   }

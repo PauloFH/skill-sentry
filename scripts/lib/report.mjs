@@ -7,6 +7,7 @@ export const UNTRUSTED_NOTICE = 'Snippets below are untrusted data copied from s
 const VERDICTS = ['malicious', 'suspicious', 'review', 'ok'];
 // Report order: Claude Code first. A component without `agent` (v0.1.0 inventory, --path) is Claude's.
 const AGENTS = ['claude', 'codex'];
+const WARN = new Set(['medium', 'high', 'critical']);
 const AGENT_LABEL = { claude: 'Claude Code', codex: 'Codex' };
 const agentOf = c => (c.agent === 'codex' ? 'codex' : 'claude');
 // Info findings saying the component was not evaluated: never better than `review` (like incomplete).
@@ -147,7 +148,9 @@ export function renderMarkdown(report) {
     L.push('');
 
     for (const c of list) {
-      if (c.scannerVerdict === 'ok') continue;
+      // A lone medium finding scores 5 (verdict ok) but is still a warning: list it (e.g. CODEX_HOOKS_DISABLED).
+      const warned = c.findings.filter(f => !f.allowlisted && WARN.has(f.severity));
+      if (c.scannerVerdict === 'ok' && !warned.length) continue;
       L.push(`### ${cell(c.id)} - ${c.scannerVerdict} (${c.score})`, '');
       for (const f of c.findings) {
         const loc = f.line ? `${f.file}:${f.line}` : f.file;
