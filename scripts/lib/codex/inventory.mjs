@@ -20,7 +20,7 @@ const normDir = p => normalizePath(path.resolve(p)).replace(/\/+$/, '');
 const sha256 = s => crypto.createHash('sha256').update(s).digest('hex');
 const snake = e => String(e).replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
 const DEFAULT_MAX_DIRS = 2000;
-const MAX_TOML_BYTES = 4 * 1024 * 1024;
+const MAX_TEXT_BYTES = 4 * 1024 * 1024; // config.toml, *.toml, *.rules
 const MAX_TRUSTED_PROJECTS = 50;
 const PLUGIN_MANIFESTS = ['.codex-plugin/plugin.json', 'plugin.json', '.claude-plugin/plugin.json', '.cursor-plugin/plugin.json'];
 
@@ -28,20 +28,29 @@ const PLUGIN_MANIFESTS = ['.codex-plugin/plugin.json', 'plugin.json', '.claude-p
 const R = '<redacted>';
 // Values under these keys are all credentials (env vars, headers, OAuth), whatever their names.
 const SECRET_CONTAINERS = new Set(['env', 'set', 'http_headers', 'env_http_headers', 'headers', 'oauth']);
-const SECRET_KEY = /token|secret|key|pass|auth|credential|cookie/i; // superset of text.mjs SECRET_NAME
+// Superset of text.mjs SECRET_NAME. Everything below a matching key is redacted too.
+const SECRET_KEY = /token|secret|key|pass|auth|credential|cookie|bearer|signature|private/i;
+// `{ name: 'Authorization', value: '...' }` style pairs: the field naming the pair.
+const PAIR_NAME_FIELDS = ['name', 'key', 'header'];
 const setOwn = (o, k, v) => Object.defineProperty(o, k, { value: v, enumerable: true, writable: true, configurable: true });
 
 function redactValue(v, key, secret, command) {
-  if (typeof v === 'string') return secret || SECRET_KEY.test(key) ? R : redactSecrets(v);
+  const sec = secret || SECRET_KEY.test(key);
+  if (typeof v === 'string') return sec ? R : redactSecrets(v);
+  if (typeof v === 'number' || typeof v === 'bigint') return sec ? R : v;
   if (Array.isArray(v)) {
-    if (secret || SECRET_KEY.test(key)) return v.map(x => redactValue(x, key, true));
+    if (sec) return v.map(x => redactValue(x, key, true));
     if (v.length && v.every(x => typeof x === 'string')) return redactArgs(v, command);
     return v.map(x => redactValue(x, key, false));
   }
   if (isObj(v)) {
     const out = {};
     const cmd = typeof v.command === 'string' ? v.command : '';
-    for (const [k, x] of Object.entries(v)) setOwn(out, k, redactValue(x, k, secret || SECRET_CONTAINERS.has(k), cmd));
+    const pairSecret = PAIR_NAME_FIELDS.some(f => typeof v[f] === 'string' && SECRET_KEY.test(v[f]));
+    for (const [k, x] of Object.entries(v)) {
+      const childSecret = sec || SECRET_CONTAINERS.has(k) || (pairSecret && k === 'value');
+      setOwn(out, k, redactValue(x, k, childSecret, cmd));
+    }
     return out;
   }
   return v;
@@ -116,6 +125,19 @@ function inventoryHome({ home, projectDir, homes, components, configFindings, la
     return c;
   };
   const unreadable = (file, snippet, line = 0) => configFindings.push({ ruleId: 'CONFIG_UNREADABLE', category: 'config', severity: 'info', line, snippet: truncate(snippet), file });
+  // Text of a regular file up to MAX_TEXT_BYTES, else null (missing: silent; device/FIFO/dir/too large:
+  // a finding). Files here may be repo-controlled: a link to /dev/zero or a FIFO must never be read.
+  const readTextSafe = file => {
+    try {
+      const st = fs.statSync(file);
+      if (!st.isFile()) { unreadable(file, 'not a regular file'); return null; }
+      if (st.size > MAX_TEXT_BYTES) { unreadable(file, `file too large (${st.size} bytes, limit ${MAX_TEXT_BYTES})`); return null; }
+      return fs.readFileSync(file, 'utf8').replace(/^﻿/, '');
+    } catch (e) {
+      if (e.code !== 'ENOENT' && e.code !== 'ENOTDIR') unreadable(file, e.code ?? 'unreadable');
+      return null;
+    }
+  };
   const readJson = file => {
     const r = readJsonSafe(file);
     if (r.ok) return r.value;
@@ -136,14 +158,8 @@ function inventoryHome({ home, projectDir, homes, components, configFindings, la
    * the text hash (baseline still sees edits); a CONFIG_UNREADABLE config finding is also recorded.
    */
   const tomlComponent = (file, id, kind, scope, name = path.basename(file)) => {
-    let text;
-    try {
-      if (fs.statSync(file).size > MAX_TOML_BYTES) { unreadable(file, 'file too large'); return null; }
-      text = fs.readFileSync(file, 'utf8').replace(/^﻿/, '');
-    } catch (e) {
-      if (e.code !== 'ENOENT' && e.code !== 'ENOTDIR') unreadable(file, e.code ?? 'unreadable');
-      return null;
-    }
+    const text = readTextSafe(file);
+    if (text === null) return null;
     const r = parseToml(text);
     if (!r.ok) {
       const parseError = { message: truncate(r.error), line: r.line };
@@ -239,8 +255,8 @@ function inventoryHome({ home, projectDir, homes, components, configFindings, la
     for (const e of dirents(dir)) {
       if (!e.name.endsWith('.rules')) continue;
       const file = path.join(dir, e.name);
-      let text;
-      try { if (!isFile(file)) continue; text = fs.readFileSync(file, 'utf8'); } catch (err) { unreadable(file, err.code ?? 'unreadable'); continue; }
+      const text = readTextSafe(file);
+      if (text === null) continue;
       const { rules, unparsed } = parseRules(text);
       const config = redactConfig({ rules, unparsed, sha256: sha256(text) });
       add({ id: `rules:${idPrefix}${e.name}`, kind: 'rules', name: e.name, scope, root: null, files: [], config, meta: { file } }, file);

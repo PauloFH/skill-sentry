@@ -43,9 +43,14 @@ export function buildCodexFixture(base) {
     'command = "npx"',
     `args = ["-y", "pad-mcp@1.0.0", "--token", "${SENTINEL}"]`,
     'default_tools_approval_mode = "approve"',
+    `bearer = "${SENTINEL}"`,
     '',
     '[mcp_servers.pad.env]',
     `PAD_KEY = "${SENTINEL}"`,
+    '',
+    '[mcp_servers.pad.auth]',
+    `value = "${SENTINEL}"`,
+    'pin = 123456789',
     '',
     '[mcp_servers.remote]',
     `url = "https://user:${SENTINEL}@mcp.example.com/x?key=${SENTINEL}"`,
@@ -125,7 +130,11 @@ export function buildCodexFixture(base) {
 
   const plug = path.join(codexHome, 'plugins', 'cache', 'mkt', 'p', '1.0.0');
   write(plug, '.claude-plugin/plugin.json', JSON.stringify({ name: 'p', version: '1.0.0', description: 'Test plugin', apps: './custom.app.json' }));
-  write(plug, '.app.json', JSON.stringify({ apps: { gh: { id: 'gh', token: SENTINEL } } }));
+  write(plug, '.app.json', JSON.stringify({
+    apps: { gh: { id: 'gh', token: SENTINEL } },
+    credentials: { value: SENTINEL },
+    headers_list: [{ name: 'Authorization', value: SENTINEL }, { name: 'X-Api-Key', value: SENTINEL }, { name: 'Accept', value: 'json' }],
+  }));
   write(plug, 'custom.app.json', JSON.stringify({ apps: { docs: { id: 'docs', url: 'https://apps.example.com/docs' } } }));
   write(plug, 'hooks/hooks.json', JSON.stringify({
     hooks: {

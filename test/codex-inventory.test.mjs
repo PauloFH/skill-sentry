@@ -9,6 +9,7 @@ import { discoverCodex } from '../scripts/lib/codex/inventory.mjs';
 import { discover, rawConfigOf } from '../scripts/lib/inventory.mjs';
 import { scanComponent } from '../scripts/lib/scanner.mjs';
 import { fileMap } from '../scripts/lib/baseline.mjs';
+import { readJsonSafe } from '../scripts/lib/jsonsafe.mjs';
 import { tmpFactory } from './helpers/tmp.mjs';
 import { SENTINEL, buildCodexFixture, buildWslTree, buildBrokenCodexHome, buildWslCandidates } from './helpers/codexfixtures.mjs';
 
@@ -247,6 +248,83 @@ test('discoverCodex: secrets never reach a component; raw values stay reachable 
   assert.ok(!JSON.stringify(results).includes(SENTINEL), 'sentinel leaked into scan results');
   const h1 = fileMap(results.find(r => r.component.id === 'codex[win]:config'))['<config>'];
   assert.match(h1, /^[0-9a-f]{64}$/);
+});
+
+test('discoverCodex: secrets below secret-looking keys and in name/value pairs are redacted', () => {
+  const fx = fixture();
+  const by = byId(run(fx).components);
+  const pad = by['codex[win]:mcp:user:pad'].config;
+  assert.equal(pad.bearer, '<redacted>');
+  assert.deepEqual(pad.auth, { value: '<redacted>', pin: '<redacted>' });
+  assert.equal(pad.default_tools_approval_mode, 'approve');
+  const app = by['codex[win]:app:plugin:p@mkt:.app.json'].config;
+  assert.deepEqual(app.credentials, { value: '<redacted>' });
+  assert.deepEqual(app.headers_list, [
+    { name: 'Authorization', value: '<redacted>' }, { name: 'X-Api-Key', value: '<redacted>' }, { name: 'Accept', value: 'json' },
+  ]);
+  assert.equal(rawConfigOf(by['codex[win]:mcp:user:pad'].config).auth.value, SENTINEL);
+});
+
+// A malformed JSON file whose parse error would quote the credential next to the error position.
+function brokenJsonHome() {
+  const root = path.join(tmp('bj'), '.codex');
+  const plug = path.join(root, 'plugins', 'cache', 'mkt', 'q', '1.0.0');
+  fs.mkdirSync(plug, { recursive: true });
+  fs.writeFileSync(path.join(root, 'hooks.json'), `{"hooks": {"K": ${SENTINEL}z}}`);
+  fs.writeFileSync(path.join(plug, '.mcp.json'), `{"mcpServers": {"x": {"command": "node", "env": {"I_TOKEN": '${SENTINEL}'}}}}`);
+  return root;
+}
+const leaks = s => s.includes(SENTINEL.slice(0, 6)) || s.includes(SENTINEL.slice(8, 14));
+
+test('JSON parse errors never quote the file (no secret fragment in findings or problems)', () => {
+  const root = brokenJsonHome();
+  const r = readJsonSafe(path.join(root, 'hooks.json'));
+  assert.equal(r.ok, false);
+  assert.match(r.error, /^invalid JSON( at line \d+ column \d+)?$/);
+  const { configFindings } = discoverCodex({ homes: [{ label: 'h0', root }], projectDir: null, selfRoot: null });
+  const unread = configFindings.filter(f => f.ruleId === 'CONFIG_UNREADABLE');
+  assert.equal(unread.length, 2, JSON.stringify(unread.map(f => f.file)));
+  assert.ok(!leaks(JSON.stringify(configFindings)), 'secret fragment in a config finding');
+  const data = tmp('bjdata');
+  const home = tmp('bjhome');
+  const s = spawnSync(process.execPath, [SCAN, '--json', '--claude-home', path.join(home, '.claude'), '--project', tmp('bjproj')], {
+    encoding: 'utf8',
+    env: { ...process.env, SKILL_SENTRY_DATA_DIR: data, SKILL_SENTRY_HOME_DIR: home, SKILL_SENTRY_CODEX_HOME: root, SKILL_SENTRY_NO_WSL: '1' },
+  });
+  assert.equal(s.status, 0, s.stderr);
+  assert.ok(JSON.parse(s.stdout).problems.some(p => p.includes('invalid JSON')));
+  assert.ok(!leaks(s.stdout), 'secret fragment in the report');
+  for (const f of fs.readdirSync(path.join(data, 'reports'))) assert.ok(!leaks(fs.readFileSync(path.join(data, 'reports', f), 'utf8')), f);
+});
+
+test('TOML parse errors name keys and positions only, never values', () => {
+  const root = path.join(tmp('bt'), '.codex');
+  fs.mkdirSync(root, { recursive: true });
+  for (const text of [`a = ${SENTINEL}\n`, `a = "${SENTINEL}\n`, `a = [1, ${SENTINEL}]\n`, `a = { b = ${SENTINEL} }\n`, `[${SENTINEL}\n`]) {
+    fs.writeFileSync(path.join(root, 'config.toml'), text);
+    const r = discoverCodex({ homes: [{ label: 'h0', root }], projectDir: null, selfRoot: null });
+    assert.ok(!leaks(JSON.stringify(r)), text);
+  }
+});
+
+test('a config.toml that is not a regular file and an oversize rules file are never read', () => {
+  const root = path.join(tmp('nf'), '.codex');
+  fs.mkdirSync(path.join(root, 'config.toml'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'rules'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'rules', 'big.rules'), 'prefix_rule(pattern=["ls"])\n' + '#'.repeat(4 * 1024 * 1024 + 1));
+  const { components, configFindings } = discoverCodex({ homes: [{ label: 'h0', root }], projectDir: null, selfRoot: null });
+  assert.deepEqual(components.map(c => c.id), []);
+  assert.ok(configFindings.some(f => f.file === path.join(root, 'config.toml') && f.snippet === 'not a regular file'));
+  assert.ok(configFindings.some(f => f.file === path.join(root, 'rules', 'big.rules') && /too large/.test(f.snippet)));
+});
+
+test('a project .codex/config.toml linked to a device is never read', { skip: process.platform === 'win32' && 'needs a device symlink (POSIX)' }, () => {
+  const fx = fixture();
+  const f = path.join(fx.project, '.codex', 'config.toml');
+  fs.rmSync(f);
+  fs.symlinkSync('/dev/zero', f);
+  const { configFindings } = run(fx);
+  assert.ok(configFindings.some(x => x.file === f && x.snippet === 'not a regular file'));
 });
 
 test('discoverCodex: the config hash follows the raw (secret) value', () => {

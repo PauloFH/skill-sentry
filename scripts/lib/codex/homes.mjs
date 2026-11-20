@@ -113,7 +113,8 @@ function terminalDistros(localAppData) {
   const names = [];
   for (const f of files) {
     try {
-      if (fs.statSync(f).size > MAX_SETTINGS_BYTES) continue;
+      const st = fs.statSync(f);
+      if (!st.isFile() || st.size > MAX_SETTINGS_BYTES) continue; // never a device/FIFO, never huge
       const s = JSON.parse(stripJsonc(fs.readFileSync(f, 'utf8').replace(/^﻿/, '')));
       const p = s?.profiles;
       const list = Array.isArray(p) ? p : Array.isArray(p?.list) ? p.list : [];
