@@ -250,6 +250,15 @@ function normCommandText(cmd) {
   return lowerOnWin(s);
 }
 
+/** Normalized shell text with `name/..` pairs removed (`.claude/plugins/../skill-sentry`), for needles. */
+function collapseDotDot(s) {
+  for (let prev = '', n = 0; prev !== s && n < 64; n++) {
+    prev = s;
+    s = s.replace(/\/(?!\.\.(?:[/\s'";|&)]|$))[^/\s'";|&()]+\/\.\.(?=[/\s'";|&)]|$)/g, '');
+  }
+  return s;
+}
+
 // `skill-sentry` path segment, not `some-skill-sentry-fork`. Boundary on both sides = start/end or any
 // character outside [\w.-] (same notion as `mentions`). Trailing dots/spaces are accepted (Ruling K):
 // Win32 strips them, so `skill-sentry.\x` is the same dir.
@@ -328,39 +337,60 @@ function shellWords(cmd, ps) {
   return words;
 }
 
-// A literal path: letters, digits and `_ . - : /`, plus spaces from quoting; `~` only as a leading `~/`.
-const LITERAL_PATH = /^[\p{L}\p{N}_.\-:/ ]*$/u;
+// A literal path piece: letters, digits and `_ . - : /`; `~` only as a leading `~/`.
+const LITERAL_PATH = /^[\p{L}\p{N}_.\-:/]*$/u;
 // Realpath resolutions per decision for segment words; one more fails safe (asks).
 const MAX_SEGMENT_REALPATHS = 16;
+// Words after one of these carry a script for another shell (`bash -c "…"`, `cmd /c`, `eval "…"`).
+const SCRIPT_FLAG = /^(?:-[a-z]*c[a-z]*|-command|-e|-ec|-enc|-encodedcommand|\/+[ck]|eval)$/i;
+
+// A drive letter is a real OS volume (not a PowerShell `New-PSDrive` name); cached per process.
+const driveCache = new Map();
+function driveExists(letter) {
+  if (process.platform !== 'win32') return false;
+  const l = letter.toUpperCase();
+  if (!driveCache.has(l)) {
+    let e = false;
+    try { e = fs.existsSync(`${l}:\\`); } catch { /* not a drive */ }
+    driveCache.set(l, e);
+  }
+  return driveCache.get(l);
+}
 
 /**
- * Absolute form of a literal absolute path word, or null when the word cannot be exempt: not literal,
- * not absolute (`X:/`, Git Bash `/x/`, `/`, `~/`), an unusual form (Ruling K), a driveless root under
- * PowerShell (`Join-Path`/`+` can append it to any directory), or the segment right under a root.
+ * Absolute form of one whitespace-free path piece, or null when it cannot be exempt: not literal, not
+ * absolute, an unusual form (Ruling K), or the segment right under a root (`node -e … /skill-sentry`
+ * can append it anywhere). Absolute means `X:/` on a real volume, an unquoted `~/`, Git Bash `/x/`
+ * (win32, real volume) or `/…` (POSIX only: Git Bash maps `/tmp` and others to other places). Under
+ * PowerShell a driveless root is never exempt (`Join-Path $p '/x'` and `$p + '/x'` append it).
  */
-function exemptCandidate(w, ps) {
-  if (!w.literal) return null;
-  const v = w.value;
+function exemptPiece(v, tildeOk, ps) {
   const body = v.startsWith('~/') ? v.slice(2) : v;
   if (!LITERAL_PATH.test(body) || isUnusualPath(v)) return null;
   if (/^\/+skill-sentry(?:[. ]*)(?:\/|$)/i.test(v)) return null;
   let p;
-  if (/^[a-z]:\//i.test(v)) p = v;
-  else if (v.startsWith('~/')) p = os.homedir() + v.slice(1);
-  else if (!ps && process.platform === 'win32' && /^\/[a-z](?:\/|$)/i.test(v)) p = `${v[1]}:/${v.slice(3)}`;
-  else if (!ps && v.startsWith('/')) p = v;
-  else return null;
+  if (/^[a-z]:\//i.test(v)) p = driveExists(v[0]) ? v : null;
+  else if (v.startsWith('~/')) p = tildeOk ? os.homedir() + v.slice(1) : null;
+  else if (ps || !v.startsWith('/')) p = null;
+  else if (process.platform !== 'win32') p = v;
+  else if (/^\/[a-z](?:\/|$)/i.test(v) && driveExists(v[1])) p = `${v[1]}:/${v.slice(3)}`;
+  else p = null;
+  if (p === null) return null;
   try { return path.resolve(p); } catch { return null; }
 }
 
-/** Per-decision checker: does a `skill-sentry` word need confirmation? Caps and dedupes realpath. */
+/**
+ * Per-decision checker: does a `skill-sentry` word need confirmation? A word with whitespace (a quoted
+ * command line) is split, and every piece holding the segment must be exempt on its own; such a word
+ * after a script flag (`-c`, `/c`, `-Command`, `eval`) never is. Realpath is capped and deduped.
+ */
 function makeSegmentCheck(roots) {
   let claude;
   const claudeForms = () => (claude ??= rootForms(path.join(os.homedir(), '.claude')));
   const hits = f => claudeForms().some(c => isUnder(f, c)) || roots.some(r => isUnder(f, r) || isUnder(r, f));
   const canon = new Map();
-  return (w, ps) => {
-    const abs = exemptCandidate(w, ps);
+  const pieceAsks = (v, tildeOk, ps) => {
+    const abs = exemptPiece(v, tildeOk, ps);
     if (abs === null) return true;
     const key = lowerOnWin(slashes(abs));
     if (hits(key)) return true;
@@ -372,13 +402,26 @@ function makeSegmentCheck(roots) {
     }
     return hits(canon.get(key));
   };
+  return (w, ps, afterScriptFlag) => {
+    if (!w.literal || isUnusualPath(w.value) || /^\s/.test(w.value)) return true;
+    if (!/\s/.test(w.value)) return pieceAsks(w.value, w.raw.startsWith('~'), ps);
+    if (afterScriptFlag) return true;
+    const segs = w.value.split(/\s+/).filter(v => SELF_SEGMENT.test(v));
+    return !segs.length || segs.some(v => pieceAsks(v, false, ps));
+  };
 }
 
 // ---- moves and links of Claude's home (independent of any skill-sentry mention) ----
 
 // `mv ~/.claude ~/y` then `rm -rf ~/y/skill-sentry` (two calls) would leave a literal, unprotected-looking
-// path; links made earlier are seen by realpath, but a moved directory is not. So these ask up front.
-const RELINK_VERBS = new Set(['mv', 'ln', 'mklink', 'subst', 'rename-item', 'ren', 'rename', 'rni', 'move-item', 'move', 'mi']);
+// path; links made earlier are seen by realpath, but a moved directory is not. So these ask up front when
+// an operand names `.claude` or is non-literal (`$`, `%`, backtick, `(`), or when the verb runs under
+// `xargs` or `find -exec`/`fd -x` (Ruling R13). PowerShell drives (`New-PSDrive`/`ndr`/`mount`) and
+// `subst`/`net use` count as links. Residual (documented): moves through an API rather than a verb,
+// such as `[IO.Directory]::Move(...)` or an interpreter's `fs.renameSync(...)`.
+const RELINK_VERBS = new Set(['mv', 'ln', 'mklink', 'subst', 'rename-item', 'ren', 'rename', 'rni', 'move-item', 'move', 'mi', 'new-psdrive', 'ndr', 'mount']);
+const RELINK_RUNNERS = new Set(['-exec', '-execdir', '-ok', '-okdir', '-x', '-X', '--exec', '--exec-batch']);
+const NON_LITERAL = /[$%`(]/;
 const SHELL_WRAPPERS = new Set(['sudo', 'command', 'exec', 'nohup', 'time', 'env', 'nice', 'xargs', 'call', 'start']);
 const CLAUDE_SEGMENT = /(?:^|[^\w.-])\.claude[. ]*(?=$|[^\w.-])/i;
 
@@ -406,6 +449,11 @@ function relinksClaude(cmd, ps, depth = 0) {
     let verb = verbAt(j);
     const stmtEnd = (() => { let k = j + 1; while (k < words.length && !words[k].cmd) k++; return k; })();
     const args = words.slice(j + 1, stmtEnd);
+    // A relink verb run by xargs or find -exec / fd -x: its operands are not visible here.
+    for (let k = i; k < stmtEnd - 1; k++) {
+      if (verbAt(k) === 'xargs' ? words.slice(k + 1, stmtEnd).some((_, m) => RELINK_VERBS.has(verbAt(k + 1 + m)))
+        : RELINK_RUNNERS.has(words[k].value) && RELINK_VERBS.has(verbAt(k + 1))) return true;
+    }
     if (verb === 'cmd' && args.length && /^\/+[ck]$/i.test(args[0].value)) {
       if (depth < 2 && relinksClaude(args.slice(1).map(a => a.raw).join(' '), false, depth + 1)) return true;
       continue;
@@ -421,7 +469,8 @@ function relinksClaude(cmd, ps, depth = 0) {
     else if (verb === 'robocopy') verb = vals.some(v => /^\/mov(?:e)?$/.test(v)) ? 'mv' : '';
     else if (verb === 'cp') verb = vals.some(v => /^-[a-z]*[ls][a-z]*$|^--(?:link|symbolic-link)$/.test(v)) ? 'ln' : '';
     else if (verb === 'fsutil') verb = vals.includes('hardlink') ? 'ln' : '';
-    if (RELINK_VERBS.has(verb) && args.some(namesClaude)) return true;
+    else if (verb === 'net') verb = vals[0] === 'use' ? 'mount' : '';
+    if (RELINK_VERBS.has(verb) && args.some(a => namesClaude(a) || NON_LITERAL.test(a.raw))) return true;
   }
   return false;
 }
@@ -577,10 +626,13 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
       // Line continuations (bash `\`, PowerShell backtick) are joined in the de-obfuscated copy.
       const joined = String(c).replace(/\\\r?\n/g, '').replace(/`\r?\n/g, ' ');
       const texts = [normCommandText(c), normCommandText(deobfuscate(joined))];
-      const segWords = shellWords(c, ps).filter(w => SELF_SEGMENT.test(w.value) || SELF_SEGMENT.test(w.raw));
+      texts.push(...texts.map(collapseDotDot).filter((x, k) => x !== texts[k]));
+      const words = shellWords(c, ps);
+      const scriptAt = words.findIndex(w => SCRIPT_FLAG.test(w.value));
+      const segAt = words.flatMap((w, k) => (SELF_SEGMENT.test(w.value) || SELF_SEGMENT.test(w.raw) ? [k] : []));
       if (texts.some(text => needles.some(n => mentions(text, n)))
-        || segWords.some(w => segmentAsks(w, ps))
-        || (!segWords.length && texts.some(text => SELF_SEGMENT.test(text)))) {
+        || segAt.some(k => segmentAsks(words[k], ps, scriptAt !== -1 && k > scriptAt))
+        || (!segAt.length && texts.some(text => SELF_SEGMENT.test(text)))) {
         return ask('shell command touches skill-sentry data or install directory');
       }
     }

@@ -413,20 +413,25 @@ const asksSelf = (tool, command, o) => {
 // Drive-letter paths are absolute only on win32 (elsewhere they are relative and keep asking).
 const onThisOs = c => process.platform === 'win32' || !/(?:^|[\s'"])[A-Za-z]:[\\/]/.test(c);
 const noneSelf = (tool, command, o) => assert.equal(dc(tool, command, o).decision, 'none', `${tool}: ${command}`);
+// Rooted non-drive paths: exempt on POSIX; on win32 Git Bash maps `/tmp`, `/usr`, ... elsewhere, so they ask.
+const ROOTED = 'ls /home/x/src/skill-sentry/scripts';
+test('R9: rooted non-drive paths are exempt on POSIX only', () => {
+  if (process.platform === 'win32') asksSelf('Bash', ROOTED);
+  else noneSelf('Bash', ROOTED);
+});
 
 test('R9: literal absolute paths outside Claude home no longer ask', () => {
   for (const c of [
     'cd ~/skill-sentry && git log --oneline -3',
     'cat C:/Users/x/skill-sentry/README.md',
-    'ls /home/x/src/skill-sentry/scripts',
     'cat /c/Users/x/skill-sentry/README.md',
     'echo x > ~/skill-sentry/notes.md',
     'git -C "C:/Users/x/skill-sentry" status',
     "cat 'C:\\Users\\x\\skill-sentry\\README.md'",
-    'cat "D:\\dev\\skill-sentry\\scripts\\a.mjs"',
-    'rm -rf "C:/a b/skill-sentry/tmp"',
+    'cat "C:\\dev\\skill-sentry\\scripts\\a.mjs"',
+    'rm -rf "C:/Users/x/skill-sentry/my notes.md"',
     'cat C:/Users/x/skill-sentry/allowlist.json',
-    'cd D:/skill-sentry; git status',
+    'cd C:/skill-sentry; git status',
     // review false positives
     "node 'C:\\Users\\x\\.claude\\plugins\\cache\\context-mode\\context-mode\\2.2.1\\search.mjs' s5h 'C:\\Users\\x\\skill-sentry\\.superpowers\\sdd\\r.md' 'C:\\Users\\x'",
     'bash "C:/Users/x/.claude/plugins/cache/claude-plugins-official/superpowers/7.0.2/skills/sdd/scripts/review-package" C:/Users/x/skill-sentry/docs/plan.md A B',
@@ -437,8 +442,8 @@ test('R9: literal absolute paths outside Claude home no longer ask', () => {
   ].filter(onThisOs)) noneSelf('Bash', c);
   for (const c of [
     'Get-Content C:\\Users\\x\\skill-sentry\\x.md',
-    'Get-ChildItem D:\\dev\\skill-sentry\\scripts',
-    "Get-Content '~\\skill-sentry\\x.md'",
+    'Get-ChildItem C:\\dev\\skill-sentry\\scripts',
+    'Get-Content ~\\skill-sentry\\x.md',
     'Set-Location C:\\Users\\x\\skill-sentry; git status',
   ].filter(onThisOs)) noneSelf('PowerShell', c);
 });
@@ -581,15 +586,104 @@ test('R9: segment checks are bounded (many cd targets and tokens decide fast and
   const timed = c => { const t0 = performance.now(); const r = dc('Bash', c); return { r, ms: performance.now() - t0 }; };
   const cds = Array.from({ length: 300 }, (_, i) => `cd C:/z${i}`).join('; ');
   const rel = Array.from({ length: 300 }, (_, i) => `a${i}/b/c/d/e/f/g/h/skill-sentry`).join(' ');
-  const abs = Array.from({ length: 300 }, (_, i) => `/z${i}/a/skill-sentry`).join(' ');
+  const absPath = i => (process.platform === 'win32' ? `C:/z${i}/a/skill-sentry` : `/z${i}/a/skill-sentry`);
+  const abs = Array.from({ length: 300 }, (_, i) => absPath(i)).join(' ');
   for (const c of [`${cds}; ls ${rel}; rm -rf $D/skill-sentry`, `${cds}; ls ${abs}`, `ls ${abs} ${rel}`]) {
     const { r, ms } = timed(c);
     assert.equal(r.decision, 'ask');
     assert.equal(r.ruleId, 'SELF_PROTECT');
     assert.ok(ms < 200, `took ${ms.toFixed(0)} ms`);
   }
-  // Up to the realpath cap, distinct literal paths are still exempt.
-  noneSelf('Bash', `ls ${Array.from({ length: 16 }, (_, i) => `/z${i}/a/skill-sentry`).join(' ')}`);
+  // Up to the realpath cap, distinct literal paths are still exempt; repeats of one path stay cheap.
+  noneSelf('Bash', `ls ${Array.from({ length: 16 }, (_, i) => absPath(i)).join(' ')}`);
+  const { r, ms } = timed(`ls ${Array(5000).fill(absPath(1)).join(' ')}`);
+  assert.equal(r.decision, 'none');
+  assert.ok(ms < 200, `repeats took ${ms.toFixed(0)} ms`);
+});
+
+// ---------------------------------------------------------------- R9 fix round 2
+// Synthetic Claude home inside a tmp dir: dataDir/selfRoot live under it, so its paths are protected.
+function r9Home() {
+  const base = fs.realpathSync.native(tmp('r9h'));
+  const claude = path.join(base, 'home', '.claude');
+  const data = path.join(claude, 'skill-sentry');
+  const self = path.join(claude, 'plugins', 'cache', 'mkt', 'skill-sentry', '0.1.1');
+  for (const dir of [data, self]) fs.mkdirSync(dir, { recursive: true });
+  return { base, claude, data, self, inst: path.join(claude, 'plugins', 'cache', 'mkt', 'skill-sentry'), o: { dataDir: data, selfRoot: self } };
+}
+
+test('R9 N1: a quoted command line is not one literal path', () => {
+  const h = r9Home();
+  const inst = fwdSlash(h.inst);
+  const cases = [
+    ['Bash', `bash -c "/usr/bin/rm -rf ${inst}"`],
+    ['Bash', `bash -c "C:/Program Files/Git/usr/bin/rm.exe -rf ${inst}"`],
+    ['Bash', `sh -c "/usr/bin/rm -rf ${fwdSlash(h.claude)}/plugins/../skill-sentry"`],
+    ['Bash', `eval "/usr/bin/rm -rf ${inst}"`],
+    ['Bash', `cmd //c "C:/Windows/System32/cmd.exe /c rd /s /q ${h.inst}"`],
+    ['PowerShell', `powershell -c "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -c Remove-Item -Recurse -Force ${h.inst}"`],
+    ['PowerShell', `powershell -c "C:/Windows/System32/cmd.exe /c rd /s /q ${h.inst}"`],
+    // the needle sees `..`-collapsed forms
+    ['Bash', `cat ${fwdSlash(h.claude)}/plugins/../skill-sentry/allowlist.json`],
+    // even when every piece is an exempt literal path, a script argument never is
+    ['Bash', 'bash -c "ls C:/Users/x/skill-sentry"'],
+    // a quoted path with a space before the segment is split; the tail piece is relative
+    ['Bash', 'rm -rf "C:/a b/skill-sentry/tmp"'],
+    // quoted `~` is not expanded by the shell
+    ['Bash', "rm -rf '~'/mkt/skill-sentry"],
+    // a quoted value with a trailing or leading space
+    ['Bash', `rm -rf "${inst} "`],
+    ['Bash', 'rm -rf " C:/Users/x/skill-sentry"'],
+  ];
+  for (const [tool, c] of cases) asksSelf(tool, c, h.o);
+});
+
+test('R9 N2: PowerShell drives are not real volumes, and creating one is a link', () => {
+  const h = r9Home();
+  for (const c of [
+    'New-PSDrive -Name Q -PSProvider FileSystem -Root "$HOME\\.claude" | Out-Null; Remove-Item -Recurse -Force Q:\\skill-sentry',
+    'New-PSDrive -Name Q -PSProvider FileSystem -Root "$HOME\\.claude" | Out-Null; Remove-Item -Recurse -Force Q:\\plugins\\cache\\mkt\\skill-sentry',
+    `New-PSDrive -Name Q -PSProvider FileSystem -Root ${h.claude} | Out-Null; Remove-Item -Recurse -Force Q:\\skill-sentry`,
+    'ndr Q FileSystem $HOME\\.claude; ri -r -fo Q:\\skill-sentry',
+    'mount Q FileSystem $HOME\\.claude; ri -r -fo Q:\\skill-sentry',
+    'Remove-Item -Recurse -Force Q:\\skill-sentry', // a later call: Q: is no OS volume here
+  ]) asksSelf('PowerShell', c, h.o);
+  noneSelf('PowerShell', 'New-PSDrive -Name Q -PSProvider FileSystem -Root C:\\data', h.o);
+  for (const c of ['subst Q: C:\\Users\\x\\.claude', 'net use Q: \\\\localhost\\c$\\Users\\x\\.claude', 'pwsh -c \'New-PSDrive Q FileSystem ~/.claude; Remove-Item -Recurse Q:/skill-sentry\'']) asksSelf('Bash', c, h.o);
+});
+
+test('R9 N3: on win32 Bash only the /x/ drive form of a rooted path is exempt', () => {
+  if (process.platform !== 'win32') return;
+  for (const c of [
+    'rm -rf /tmp/h/.claude/plugins/cache/mkt/skill-sentry',
+    'rm -rf /usr/x/skill-sentry',
+    'rm -rf /q/x/skill-sentry', // /q/ is a drive form, but Q: is no volume
+  ]) asksSelf('Bash', c);
+  noneSelf('Bash', 'cat /c/Users/x/skill-sentry/README.md');
+});
+
+test('R13: relink verbs with non-literal operands or under xargs / find -exec ask', () => {
+  for (const [tool, c] of [
+    ['Bash', 'mv "$X" ~/y'],
+    ['Bash', 'echo a | xargs mv -t ~/y'],
+    ['Bash', 'echo ~/.cl""aude | xargs -I % mv % ~/y'],
+    ['Bash', 'find ~ -maxdepth 1 -name ".cl*" -exec mv {} ~/y \\;'],
+    ['Bash', 'cmd //c mklink /J %TEMP%\\h %USERPROFILE%'],
+    ['Bash', 'ln -s "$(echo ~)" /tmp/h'],
+    ['PowerShell', 'Move-Item $env:CLAUDE_HOME ~/y'],
+    ['PowerShell', 'Rename-Item (Resolve-Path ~/.cl*) y'],
+  ]) {
+    const r = dc(tool, c);
+    assert.equal(r.decision, 'ask', `${tool}: ${c}`);
+    assert.equal(r.ruleId, 'SELF_PROTECT', `${tool}: ${c}`);
+  }
+  for (const [tool, c] of [
+    ['Bash', 'mv a.md b.md'],
+    ['Bash', 'git mv a.md b.md'],
+    ['Bash', 'mount'],
+    ['Bash', 'find . -name "*.tmp" -delete'],
+    ['Bash', 'echo a | xargs rm'],
+  ]) noneSelf(tool, c);
 });
 
 test('non-local UNC paths are matched by string only (no network I/O)', () => {
