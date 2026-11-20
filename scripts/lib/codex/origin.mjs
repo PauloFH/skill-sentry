@@ -18,11 +18,14 @@ import { readTail } from '../origin.mjs';
 const DEFAULT_MAX_BYTES = 1024 * 1024;
 // Raw-text reads: a read verb in command position-ish and a path ending in SKILL.md.
 const READ_VERB = /(?:^|[\s;|&(`'"{])(?:cat|sed|head|tail|less|more|bat|nl|awk|type|get-content|gc)\s/i;
-const SKILL_PATH = /([^\s'"`<>|;&(){}[\],=*?]*[\\/])?SKILL\.md(?![\w.])/gi;
 const SKILL_FILE = /(?:^|[\\/])SKILL\.md$/i;
+// Characters that end a path token in command/code text.
+const DELIM = new Set([...' \t\r\n\v\f\'"`<>|;&(){}[],=*?']);
+const MAX_PATH = 4096;
 // Only lines that can matter are parsed (tool outputs can be large).
 const INTERESTING = /"(?:UserMessage|user_message)"|skill\.md|"role"\s*:\s*"user"/i;
-const MAX_TEXT = 256 * 1024;
+// Text examined per entry: the most recent part of a longer command/code text.
+const MAX_TEXT = 64 * 1024;
 
 const base = p => String(p).split(/[\\/]+/).filter(Boolean);
 
@@ -39,12 +42,35 @@ function skillFromPath(p, cwd) {
   return { skill: name };
 }
 
-/** Last SKILL.md path read in a raw command/code text, or null. */
+/**
+ * Last `…/SKILL.md` path token in a raw command/code text, or null. Linear: scans backwards with lastIndexOf
+ * and walks back at most MAX_PATH characters once, for the match it returns.
+ */
+export function lastSkillPath(text) {
+  const lower = text.toLowerCase();
+  let pos = lower.length;
+  while (pos >= 0) {
+    const i = lower.lastIndexOf('skill.md', pos);
+    if (i === -1) return null;
+    pos = i - 1;
+    const after = text[i + 8];
+    if (after !== undefined && /[\w.\\/-]/.test(after)) continue;   // SKILL.mdx, SKILL.md.bak, SKILL.md/ (a directory)
+    const before = text[i - 1];
+    if (before !== undefined && !DELIM.has(before) && before !== '/' && before !== '\\') continue;   // mySKILL.md
+    let s = i;
+    while (s > 0 && i - s < MAX_PATH && !DELIM.has(text[s - 1])) s--;
+    return text.slice(s, i + 8);
+  }
+  return null;
+}
+
+/** Last SKILL.md path read in a raw command/code text (its last MAX_TEXT characters), or null. */
 function fromText(text, cwd) {
-  if (typeof text !== 'string' || text.length > MAX_TEXT || !READ_VERB.test(text)) return null;
-  let last = null;
-  for (const m of text.matchAll(SKILL_PATH)) last = m[0];
-  return last ? skillFromPath(last, cwd) : null;
+  if (typeof text !== 'string') return null;
+  const t = text.length > MAX_TEXT ? text.slice(-MAX_TEXT) : text;
+  if (!READ_VERB.test(t)) return null;
+  const p = lastSkillPath(t);
+  return p ? skillFromPath(p, cwd) : null;
 }
 
 /** A CommandExecution item (or legacy exec_command_* event): parsed reads first, raw text when unparsed. */
@@ -62,7 +88,7 @@ function fromCommand(it) {
 
 /** Legacy function_call arguments (shell / shell_command / exec_command / read-like tools). */
 function fromFunctionCall(p) {
-  if (typeof p.arguments !== 'string' || p.arguments.length > MAX_TEXT) return null;
+  if (typeof p.arguments !== 'string' || p.arguments.length > 4 * MAX_TEXT) return null;
   let a;
   try { a = JSON.parse(p.arguments); } catch { return null; }
   if (!a || typeof a !== 'object') return null;
@@ -109,16 +135,18 @@ function userSkill(content) {
  * - Otherwise scan the rollout tail backwards to the last user turn: the most recent SKILL.md read (parsed
  *   `read` command, or a cat/sed/head/Get-Content/type/... command or code-mode text naming a .../SKILL.md),
  *   a `<skill>` injection, or a skill invoked in that user message, is the origin.
- * Bounded (last `maxBytes`), never throws; null when nothing is attributed.
+ * Bounded (last `maxBytes`; all scans linear; stops at `deadline`, epoch ms), never throws; null when nothing
+ * is attributed or the deadline passed.
  * @returns {{ skill: string } | { mcpPlugin: string } | null}
  */
-export function findCodexOrigin(transcriptPath, maxBytes = DEFAULT_MAX_BYTES, toolName = null) {
+export function findCodexOrigin(transcriptPath, maxBytes = DEFAULT_MAX_BYTES, toolName = null, deadline = Infinity) {
   try {
     const mcp = typeof toolName === 'string' && /^mcp__(.+?)__./.exec(toolName);
     if (mcp) return { mcpPlugin: mcp[1] };
-    if (typeof transcriptPath !== 'string' || !transcriptPath) return null;
+    if (typeof transcriptPath !== 'string' || !transcriptPath || Date.now() >= deadline) return null;
     const lines = readTail(transcriptPath, maxBytes).split('\n');
     for (let i = lines.length - 1; i >= 0; i--) {
+      if (Date.now() >= deadline) return null;
       const line = lines[i];
       if (!INTERESTING.test(line)) continue;
       let o;

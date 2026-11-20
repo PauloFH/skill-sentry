@@ -60,7 +60,7 @@ export async function handle({ raw, selfRoot, deadline, write, log }) {
   if (!input || typeof input !== 'object' || Array.isArray(input) || typeof input.tool_name !== 'string') return;
   // OpenAI Codex (Ruling R6): its own tiered policy, since Codex has no "ask".
   if (isCodexInput(input)) {
-    await handleCodex({ input, selfRoot, write, log });
+    await handleCodex({ input, selfRoot, write, log, deadline });
     return;
   }
 
