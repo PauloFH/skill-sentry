@@ -1,28 +1,32 @@
-// Guard policy for OpenAI Codex PreToolUse calls (spec §5, the user's tiered policy).
+// Guard policy for OpenAI Codex PreToolUse calls (spec §5, the user's tiered policy, Rulings R15/R16).
 //
 // Codex has no "ask" (permissionDecision "ask" marks the hook Failed and the tool runs) and hooks fail open, so
 // the Claude decisions are remapped:
 //   1. critical                                  -> deny (as Claude)
-//   2. high signalling malware or exfiltration   -> deny: categories rce/exfil/miner/destructive; a secret plus
-//      network egress in the same call; or session taint (a high `secret` match with an origin earlier in this
-//      session) plus a network-capable call
-//   3. other high with an origin                 -> allow + additionalContext (the "doubt")
+//   2. high signalling malware or exfiltration   -> deny, even without an origin: categories
+//      rce/exfil/miner/destructive; a secret plus network egress in the same call; or session taint (a secret
+//      read earlier in this session by an attributed call) plus a network-capable call
+//   3. other high with an origin                 -> paused (R16): denied the first time with the "doubt" in the
+//      reason and a retry token; the identical call in the same session within 10 minutes runs (token consumed)
 //   4. high without origin                       -> log only
 //   5. SELF_PROTECT / SELF_PROTECT_WRITE (and PATH_UNUSUAL_WRITE, which may alias a protected file) -> deny,
 //      telling the user to run the command themselves in a terminal. Ruling M read-only self invocations pass.
+// Tiers 1, 2 and 5 never get a retry token.
 //
-// Output shape (codex-rs hooks/schema/generated/pre-tool-use.command.output.schema.json + output_parser.rs):
-// deny = {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"…"}};
-// allow-with-doubt = {"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"…"}} with NO
-// permissionDecision: "allow" without updatedInput is rejected as unsupported, which drops the additionalContext.
+// Output (codex-rs hooks/schema/generated/pre-tool-use.command.output.schema.json + engine/output_parser.rs):
+// the only output is deny = {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny",
+// "permissionDecisionReason":"…"}}; anything else prints nothing. (Codex rejects permissionDecision "allow"
+// without updatedInput and "ask"; a decision-less {"hookSpecificOutput":{…,"additionalContext":"…"}} is accepted
+// but only reaches the model after the call ran, which is why tier 3 pauses instead.)
 //
 // Data dir (Ruling Q1): resolved exactly as for Claude Code (SKILL_SENTRY_DATA_DIR or <home>/.claude/skill-sentry
-// of the OS the guard runs on). A Codex running inside WSL therefore keeps its own taint store, baseline and
+// of the OS the guard runs on). A Codex running inside WSL therefore keeps its own session store, baseline and
 // allowlist under the WSL home; nothing is shared across the Windows/WSL boundary.
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { decide, formatReason, isReadOnlySelfInvocation } from '../guardcore.mjs';
-import { dataDirPath, writeJsonAtomic } from '../datadir.mjs';
+import { decide, formatReason } from '../guardcore.mjs';
+import { dataDirPath } from '../datadir.mjs';
 import { loadAllowlist } from '../allowlist.mjs';
 import { escapeInvisible, truncate } from '../text.mjs';
 import { findCodexOrigin } from './origin.mjs';
@@ -70,11 +74,15 @@ export function isNetworkCapable(toolName, toolInput) {
   return false;
 }
 
-// ---------------------------------------------------------------- session taint store
+// ---------------------------------------------------------------- session store (taint + retry tokens)
 
-export const TAINT_LIMITS = Object.freeze({ ttlMs: 24 * 60 * 60 * 1000, maxBytes: 1024, maxFiles: 500 });
+export const TAINT_LIMITS = Object.freeze({
+  ttlMs: 24 * 60 * 60 * 1000, maxBytes: 1024, maxFiles: 500, retryMs: 10 * 60 * 1000, maxRetries: 8,
+});
+const SKEW_MS = 60_000;
 // No separators, dots or drive letters; 8+ characters also rules out Windows device names (CON, NUL, COM1).
 const SESSION_ID = /^[A-Za-z0-9_-]{8,128}$/;
+const HASH = /^[0-9a-f]{64}$/;
 
 /** `<dataDir>/guard-sessions/<session_id>.json`, or null for an unusable session id. */
 export function taintFile(dataDir, sessionId) {
@@ -82,19 +90,52 @@ export function taintFile(dataDir, sessionId) {
   return path.join(dataDir, 'guard-sessions', `${sessionId}.json`);
 }
 
-/** True when this session read a secret (high `secret` match with an origin) within the TTL. Never throws. */
-export function readTaint(dataDir, sessionId, now = Date.now()) {
+/**
+ * Retry-token key: sha256 of tool_name, NUL, canonical JSON of tool_input (object keys sorted, arrays in
+ * order). Only this hash is stored, never the call text. Null when the input cannot be serialized.
+ */
+export function retryHash(toolName, toolInput) {
+  try {
+    const canon = JSON.stringify(toolInput, (k, v) => (v && typeof v === 'object' && !Array.isArray(v)
+      ? Object.fromEntries(Object.keys(v).sort().map(x => [x, v[x]])) : v));
+    if (typeof canon !== 'string') return null;
+    return crypto.createHash('sha256').update(`${toolName}\0${canon}`).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+const fresh = (t, now, maxAge) => typeof t === 'number' && t <= now + SKEW_MS && now - t <= maxAge;
+
+/** `{ secretReadAt, retry }` with expired entries dropped; empty on any problem. Never throws. */
+function readSession(dataDir, sessionId, now) {
+  const empty = { secretReadAt: null, retry: [] };
   try {
     const f = taintFile(dataDir, sessionId);
-    if (!f) return false;
+    if (!f) return empty;
     const st = fs.lstatSync(f, { throwIfNoEntry: false });
-    if (!st || !st.isFile() || st.size > TAINT_LIMITS.maxBytes) return false;
+    if (!st || !st.isFile() || st.size > TAINT_LIMITS.maxBytes) return empty;
     const v = JSON.parse(fs.readFileSync(f, 'utf8'));
-    const t = v && v.secretReadAt;
-    return typeof t === 'number' && t <= now + 60_000 && now - t <= TAINT_LIMITS.ttlMs;
+    if (!v || typeof v !== 'object') return empty;
+    return {
+      secretReadAt: fresh(v.secretReadAt, now, TAINT_LIMITS.ttlMs) ? v.secretReadAt : null,
+      retry: Array.isArray(v.retry)
+        ? v.retry.filter(r => r && typeof r.h === 'string' && HASH.test(r.h) && fresh(r.t, now, TAINT_LIMITS.retryMs)).map(r => ({ h: r.h, t: r.t }))
+        : [],
+    };
   } catch {
-    return false;
+    return empty;
   }
+}
+
+/** True when this session read a secret through an attributed call within the TTL. Never throws. */
+export function readTaint(dataDir, sessionId, now = Date.now()) {
+  return readSession(dataDir, sessionId, now).secretReadAt !== null;
+}
+
+/** True when an unexpired retry token for `hash` exists in this session. Never throws. */
+export function hasRetry(dataDir, sessionId, hash, now = Date.now()) {
+  return typeof hash === 'string' && HASH.test(hash) && readSession(dataDir, sessionId, now).retry.some(r => r.h === hash);
 }
 
 /** Drop expired files, then the oldest beyond maxFiles (never `keep`). */
@@ -120,12 +161,30 @@ function prune(dir, keep, now) {
   }
 }
 
-/** Record the taint fact and timestamp (never the matched text). Returns false on any failure. */
-export function markTaint(dataDir, sessionId, now = Date.now()) {
+/** Read-modify-write of one session file (compact JSON, at most maxBytes, atomic rename). False on any failure. */
+function updateSession(dataDir, sessionId, now, change) {
   try {
     const f = taintFile(dataDir, sessionId);
     if (!f) return false;
-    writeJsonAtomic(f, { v: 1, secretReadAt: now });
+    const s = change(readSession(dataDir, sessionId, now));
+    const out = { v: 1 };
+    if (s.secretReadAt !== null) out.secretReadAt = s.secretReadAt;
+    let retry = s.retry.slice(-TAINT_LIMITS.maxRetries);
+    let text;
+    for (;;) {
+      if (retry.length) out.retry = retry; else delete out.retry;
+      text = JSON.stringify(out);
+      if (Buffer.byteLength(text) <= TAINT_LIMITS.maxBytes || !retry.length) break;
+      retry = retry.slice(1); // oldest token first
+    }
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    const tmp = `${f}.${process.pid}-${crypto.randomBytes(4).toString('hex')}.tmp`;
+    try {
+      fs.writeFileSync(tmp, text);
+      fs.renameSync(tmp, f);
+    } finally {
+      try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
+    }
     try { prune(path.dirname(f), f, now); } catch { /* pruning is best effort */ }
     return true;
   } catch {
@@ -133,37 +192,58 @@ export function markTaint(dataDir, sessionId, now = Date.now()) {
   }
 }
 
+/** Record the taint fact and timestamp (never the matched text). */
+export function markTaint(dataDir, sessionId, now = Date.now()) {
+  return updateSession(dataDir, sessionId, now, s => ({ ...s, secretReadAt: now }));
+}
+
+/** Store a retry token (hash only) for a paused call. */
+export function issueRetry(dataDir, sessionId, hash, now = Date.now()) {
+  if (typeof hash !== 'string' || !HASH.test(hash)) return false;
+  return updateSession(dataDir, sessionId, now, s => ({ ...s, retry: [...s.retry.filter(r => r.h !== hash), { h: hash, t: now }] }));
+}
+
+/** Remove a used retry token; `taint` also records that the retried call read a secret. */
+export function consumeRetry(dataDir, sessionId, hash, now = Date.now(), { taint = false } = {}) {
+  return updateSession(dataDir, sessionId, now, s => ({ secretReadAt: taint ? now : s.secretReadAt, retry: s.retry.filter(r => r.h !== hash) }));
+}
+
 // ---------------------------------------------------------------- decision
 
 const TIER2 = new Set(['rce', 'exfil', 'miner', 'destructive']);
 const SELF_RULES = new Set(['SELF_PROTECT', 'SELF_PROTECT_WRITE', 'PATH_UNUSUAL_WRITE']);
-const RUN_YOURSELF = 'skill-sentry protects its own data and install directories, and Codex cannot ask for confirmation. '
+const NO_ASK = 'Codex cannot ask for confirmation.';
+const RUN_YOURSELF = `skill-sentry protects its own data and install directories, and ${NO_ASK} `
   + 'Tell the user: if they want this, they must run this command themselves in a terminal.';
-const MALWARE = 'Under Codex, high-risk matches that signal malware execution or data exfiltration are blocked. '
-  + 'Do not retry it in another form; tell the user what was blocked and why.';
-const SECRET_EGRESS = 'This call touches secret material and can send data off this machine. '
-  + 'Do not retry it in another form; tell the user what was blocked and why.';
+const UNUSUAL_WRITE = `The write target uses an unusual path form that may alias a skill-sentry file, and ${NO_ASK} `
+  + 'Tell the user: if they want this, they must run this command themselves in a terminal.';
+const OWN_TERMINAL = 'If the user asked for exactly this, they can run it themselves in their own terminal; '
+  + 'otherwise do not retry it in another form, and tell the user what was blocked and why.';
+const MALWARE = 'Under Codex, high-risk matches that signal malware execution or data exfiltration are always blocked, '
+  + `even when no skill or plugin is attributed. ${OWN_TERMINAL}`;
+const SECRET_EGRESS = `This call touches secret material and can send data off this machine. ${OWN_TERMINAL}`;
 const TAINT = 'A skill or plugin read secret material earlier in this Codex session and this call can send data off this machine. '
-  + 'Do not retry it in another form; tell the user what was blocked. If they intended it, they can run it themselves in a terminal.';
+  + OWN_TERMINAL;
 
 const originName = o => (o ? o.skill ?? o.mcpPlugin ?? null : null);
 const show = s => truncate(escapeInvisible(String(s ?? '')), 200)
   .replace(/[\x00-\x1f\x7f"]/g, ch => '\\x' + ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'));
 
-function doubtText(d, label) {
-  return `skill-sentry: this call matched rule ${d.ruleId} (high): "${show(d.snippet)}"; likely source: ${show(label)}. `
-    + 'Codex has no confirmation prompt, so it was allowed. Before taking any further step, verify that '
-    + '(1) the user explicitly asked for this action, (2) it does not download and run code, and '
-    + '(3) it will not send credentials, keys, tokens or other restricted data off this machine. '
-    + 'If any of this is in doubt, stop and tell the user what was done and why instead of continuing.';
+/** Tier-3 pause (R16): the doubt travels in the deny reason, before the call runs. */
+function pauseText(d, label) {
+  return `skill-sentry paused this ${d.ruleId} (high) call from ${show(label)}: "${show(d.snippet)}". `
+    + 'Before retrying, confirm that the user explicitly asked for it, that it does not execute downloaded code, '
+    + 'and that it will not send restricted data off this machine. If any of that is uncertain, stop and tell the user. '
+    + 'If it is legitimate, re-run the exact same command (within 10 minutes).';
 }
 
 /**
- * Map a guardcore decision onto the Codex tiers. Never returns "ask".
+ * Map a guardcore decision onto the Codex tiers. Never returns "ask"; only "deny" produces output.
  * @param {{ decision: string, ruleId?: string, severity?: string, snippet?: string, highs?: object[] }} base
- * @param {{ origin: object|null|(() => object|null), net: boolean, tainted: () => boolean, patchTruncated?: boolean, snippet?: string }} ctx
- * @returns {{ decision: 'deny'|'allow-doubt'|'log'|'none', ruleId?: string, severity?: string, snippet?: string,
- *   label?: string|null, reason?: string, additionalContext?: string, markTaint?: boolean }}
+ * @param {{ origin: object|null|(() => object|null), net: boolean, tainted: () => boolean, retry?: () => boolean,
+ *   patchTruncated?: boolean, snippet?: string }} ctx
+ * @returns {{ decision: 'deny'|'log'|'none', ruleId?: string, severity?: string, snippet?: string, label?: string|null,
+ *   reason?: string, retry?: 'issued'|'consumed', markTaint?: boolean }}
  */
 export function codexDecision(base, ctx) {
   const origin = () => (typeof ctx.origin === 'function' ? ctx.origin() : ctx.origin) ?? null;
@@ -175,8 +255,10 @@ export function codexDecision(base, ctx) {
   const tainted = () => !!(ctx.net && ctx.tainted && ctx.tainted());
 
   if (!base || base.decision === 'none') return !ctx.patchTruncated && tainted() ? taintDeny() : { decision: 'none' };
-  if (base.decision === 'deny') return deny(base, '');                                    // tier 1
-  if (base.decision === 'ask' && SELF_RULES.has(base.ruleId)) return deny(base, RUN_YOURSELF); // tier 5
+  if (base.decision === 'deny') return deny(base, '');                                     // tier 1
+  if (base.decision === 'ask' && SELF_RULES.has(base.ruleId)) {                             // tier 5
+    return deny(base, base.ruleId === 'PATH_UNUSUAL_WRITE' ? UNUSUAL_WRITE : RUN_YOURSELF);
+  }
   if (base.decision !== 'ask' && base.decision !== 'log') return { decision: 'none' };
   // A patch past the scan cap was not fully inspected: only self-protection (above) still counts.
   if (ctx.patchTruncated) return { decision: 'none' };
@@ -187,34 +269,55 @@ export function codexDecision(base, ctx) {
   const secret = highs.find(h => h.category === 'secret');
   if (secret && ctx.net) return deny({ ...secret, severity: 'high' }, SECRET_EGRESS);      // tier 2
   if (tainted()) return taintDeny();                                                       // tier 2
-  const label = base.decision === 'ask' ? originName(origin()) : null;
-  if (base.decision === 'ask') {                                                           // tier 3
-    return { decision: 'allow-doubt', ruleId: base.ruleId, severity: 'high', snippet: base.snippet, label,
-      additionalContext: doubtText(base, label), markTaint: !!secret };
+  if (base.decision === 'ask') {                                                           // tier 3 (R16)
+    const label = originName(origin());
+    const common = { ruleId: base.ruleId, severity: 'high', snippet: base.snippet, label };
+    if (ctx.retry && ctx.retry()) return { decision: 'log', ...common, retry: 'consumed', markTaint: !!secret };
+    return { decision: 'deny', ...common, reason: pauseText(base, label), retry: 'issued' };
   }
   return { decision: 'log', ruleId: base.ruleId, severity: 'high', snippet: base.snippet, label: null };  // tier 4
+}
+
+/**
+ * Ruling R15: Codex on Windows runs `Bash` tool calls through PowerShell. Self-protection follows the
+ * PowerShell reading only; critical and tier-2 matches take the union of both readings. (guardcore's rule
+ * matching does not depend on the reading today, so the union is defensive.)
+ */
+export function mergeWin32Readings(bash, ps) {
+  if (ps.decision === 'deny') return ps;
+  if (bash.decision === 'deny') return bash;
+  if (ps.decision === 'ask' && SELF_RULES.has(ps.ruleId)) return ps;
+  const extra = (bash.decision === 'ask' || bash.decision === 'log') && !SELF_RULES.has(bash.ruleId) && Array.isArray(bash.highs)
+    ? bash.highs.filter(h => TIER2.has(h.category) || h.category === 'secret') : [];
+  if (!extra.length) return ps;
+  if (ps.decision === 'ask' || ps.decision === 'log') {
+    const have = new Set((ps.highs ?? []).map(h => h.ruleId));
+    return { ...ps, highs: [...(ps.highs ?? []), ...extra.filter(h => !have.has(h.ruleId))] };
+  }
+  const first = extra.find(h => TIER2.has(h.category)) ?? extra[0];
+  return { decision: 'log', ruleId: first.ruleId, severity: 'high', reason: 'high-risk rule match', snippet: first.snippet, highs: extra };
 }
 
 // ---------------------------------------------------------------- hook handling
 
 const safe = s => (s == null ? null : truncate(escapeInvisible(String(s)), 200));
-// deny > a self-protection ask > other ask > log > none
-const rank = d => (d.decision === 'deny' ? 4 : d.decision === 'ask' ? (SELF_RULES.has(d.ruleId) ? 3 : 2) : d.decision === 'log' ? 1 : 0);
 
 function readAllowlist(dir) {
   try { return loadAllowlist(dir); } catch { return { version: 1, entries: [] }; }
 }
 
 /**
- * Handle one Codex PreToolUse payload. The decision is written first; the taint mark and the log line follow
- * (Ruling L1). Unknown or malformed shapes produce no output (fail open).
- * @param {{ input: object, selfRoot: string, write: (s: string) => void, log: (entry: object) => void }} io
+ * Handle one Codex PreToolUse payload. The decision is written first; the session-store write (retry token,
+ * consumption, taint) and the log line follow (Ruling L1). Unknown or malformed shapes produce no output.
+ * @param {{ input: object, selfRoot: string, write: (s: string) => void, log: (entry: object) => void, now?: () => number }} io
  */
-export async function handleCodex({ input, selfRoot, write, log }) {
+export async function handleCodex({ input, selfRoot, write, log, now = Date.now }) {
   const toolName = input.tool_name;
   const toolInput = input.tool_input;
   if (!toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) return;
   const dir = dataDirPath();
+  const t = now();
+  const sid = input.session_id;
 
   let extraWritePaths = null;
   let patchTruncated = false;
@@ -226,26 +329,28 @@ export async function handleCodex({ input, selfRoot, write, log }) {
   let originMemo;
   const origin = () => (originMemo === undefined ? (originMemo = findCodexOrigin(input.transcript_path, undefined, toolName)) : originMemo);
   const args = { toolName, toolInput, origin, allowlist: () => readAllowlist(dir), selfRoot, dataDir: dir, cwd: input.cwd, extraWritePaths };
-  let base = decide(args);
-  // Codex on Windows runs `Bash` commands through PowerShell: check the PowerShell reading too, stricter wins,
-  // except that an exact read-only self invocation in PowerShell form (backslash path, Ruling M) uses that reading.
-  if (process.platform === 'win32' && toolName === 'Bash') {
-    const ps = decide({ ...args, toolName: 'PowerShell' });
-    if (rank(ps) > rank(base) || isReadOnlySelfInvocation(toolInput.command, selfRoot, 'PowerShell')) base = ps;
-  }
+  const base = process.platform === 'win32' && toolName === 'Bash'
+    ? mergeWin32Readings(decide(args), decide({ ...args, toolName: 'PowerShell' }))
+    : decide(args);
 
-  const net = isNetworkCapable(toolName, toolInput);
+  let hashMemo;
+  const hash = () => (hashMemo === undefined ? (hashMemo = retryHash(toolName, toolInput)) : hashMemo);
   const d = codexDecision(base, {
-    origin, net, patchTruncated, tainted: () => readTaint(dir, input.session_id),
+    origin, net: isNetworkCapable(toolName, toolInput), patchTruncated,
+    tainted: () => readTaint(dir, sid, t),
+    retry: () => hasRetry(dir, sid, hash(), t),
     snippet: typeof toolInput.command === 'string' && toolName !== 'apply_patch' ? toolInput.command : toolName,
   });
   if (d.decision === 'none') return;
 
   if (d.decision === 'deny') {
     write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: d.reason } }));
-  } else if (d.decision === 'allow-doubt') {
-    write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: d.additionalContext } }));
   }
-  log({ agent: 'codex', tool: safe(toolName), ruleId: d.ruleId, severity: d.severity, snippet: safe(d.snippet), origin: safe(d.label), decision: d.decision });
-  if (d.markTaint) markTaint(dir, input.session_id);
+  log({
+    agent: 'codex', tool: safe(toolName), ruleId: d.ruleId, severity: d.severity, snippet: safe(d.snippet), origin: safe(d.label),
+    decision: d.decision, ...(d.retry ? { retry: d.retry } : {}),
+  });
+  if (d.retry === 'issued') issueRetry(dir, sid, hash(), t);
+  else if (d.retry === 'consumed') consumeRetry(dir, sid, hash(), t, { taint: !!d.markTaint });
+  else if (d.markTaint) markTaint(dir, sid, t);
 }
