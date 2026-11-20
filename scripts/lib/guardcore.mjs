@@ -250,131 +250,180 @@ function normCommandText(cmd) {
   return lowerOnWin(s);
 }
 
-// `skill-sentry` path segment (any spelling: absolute, relative after `cd ~/.claude`, bare), not
-// `some-skill-sentry-fork`. Boundary on both sides = start/end or any character outside [\w.-] (same
-// notion as `mentions`). Trailing dots/spaces are accepted (Ruling K): Win32 strips them, so
-// `skill-sentry.\x` is the same dir. Groups: 1 = left boundary, 2 = trailing dots/spaces.
-const SELF_SEGMENT = /(^|[^\w.-])skill-sentry([. ]*)(?=$|[^\w.-])/gi;
-const SEG_LEN = 'skill-sentry'.length;
+// `skill-sentry` path segment, not `some-skill-sentry-fork`. Boundary on both sides = start/end or any
+// character outside [\w.-] (same notion as `mentions`). Trailing dots/spaces are accepted (Ruling K):
+// Win32 strips them, so `skill-sentry.\x` is the same dir.
+const SELF_SEGMENT = /(?:^|[^\w.-])skill-sentry[. ]*(?=$|[^\w.-])/i;
 
-// ---- Ruling R9: a `skill-sentry` segment asks only when it can name the data or install dir ----
-
-// Rule 4: a data-dir file name right after the segment.
-const DATA_FILE_AFTER = /^["']*\/["']*(?:allowlist\.json|baseline\.json|guard\.log|guard-sessions|reports)/i;
-// Rule 1: parents that can hold the data dir (`.claude`) or the install dir (`plugins/cache/<mkt>/<name>`).
-const PROTECTED_PARENTS = new Set(['.claude', 'cache', 'plugins', 'skill-sentry']);
-// Rule 2: a path prefix is literal only if made of these characters (quotes removed first). Anything else
-// (`$`, `%`, `*`, `?`, `[`, `{`, backtick, `(`, `~user`/`~-`/8.3 `~`, control or exotic spaces) asks.
-const LITERAL_PREFIX = /^[\p{L}\p{N}_.:/-]*$/u;
-// Rule 2: a glob, brace or expansion character touching the segment itself (`skill-sentry*`, `{a,skill-sentry}`).
-const GLOB_NEIGHBOR = /[*?[\]{},$%`]/;
-// Rule 3 contexts: the text names Claude's home, or computes paths (variables, substitutions, grouping).
-const CLAUDE_TEXT = /\.claude|plugins/i;
-const DYNAMIC_TEXT = /[$%`({@]/;
-// Any segment asks when the same command can make a literal path point at Claude's home: it names a
-// `.claude` path segment (not `.claude-plugin`) or links/moves something (`ln -s ~/.cl?ude /tmp/j &&
-// rm -rf /tmp/j/skill-sentry`). Links made by an earlier command are caught by realpath instead.
-const CLAUDE_SEGMENT = /(?:^|[^\w.-])\.claude[. ]*(?=$|[^\w.-])/i;
-const LINK_OR_MOVE = /(?:^|[\s;&|({])(?:ln|mklink|subst|mount|mv|move|ren|rename|robocopy|new-item|ni|move-item|mi|rename-item|rni)(?=$|[\s;&|)])/i;
-// Ruling K in shell text: a UNC/device path token (collapsed later by normCommandText).
-const UNC_TOKEN = /(?:^|[\s'"=(<>|;&,])[\\/]{2}(?![\\/])/;
-// Characters that end a path token when walking back from the segment.
-const TOKEN_BOUNDARY = /[\s=<>|;&]/;
-// Directory changes; group 1 = command, group 2 = its argument text up to the next statement end.
-const CD_COMMAND = /(?:^|[\s;&|({])(cd|chdir|pushd|popd|sl|set-location|push-location|pop-location)(?=$|[\s;&|)])([^;&|\n)]*)/gi;
-const CD_LITERAL = /^[\p{L}\p{N}_.:/ "'-]*$/u;
+// ---- Ruling R9 (revised): one narrow exemption from the segment rule ----
+// Every `skill-sentry` segment asks (Ruling J) unless its shell word is a literal absolute path that
+// resolves (as written and through realpath) outside `~/.claude` and away from every protected root.
 
 /**
- * Directory changes in normalized shell text: `nonLiteral` when any target is computed, globbed,
- * `-`, or a stack pop; otherwise the literal targets (quotes and parameter names removed).
+ * Shell words of a command, quote-aware: `value` is the word as the shell would pass it (quotes
+ * removed, escapes applied, `\` -> `/` where it is a separator), `raw` the source text with `\` -> `/`,
+ * `literal` false when the word uses an escape (bash `\`, PowerShell backtick, cmd `^`) or an
+ * unbalanced quote, and `cmd` true for a word in command position (statement start, or after
+ * `;`, `&`, `|` or a newline). Never throws.
  */
-function cdTargets(text) {
-  const out = { nonLiteral: false, literal: [] };
-  for (const m of text.matchAll(CD_COMMAND)) {
-    const cmd = m[1].toLowerCase();
-    let arg = m[2].trim();
-    if (cmd === 'popd' || cmd === 'pop-location' || arg === '-' || arg.startsWith('- ') || !CD_LITERAL.test(arg)) {
-      out.nonLiteral = true;
+function shellWords(cmd, ps) {
+  const words = [];
+  const s = String(cmd);
+  let cur = null;
+  let quote = null;
+  let atCommand = true;
+  let afterRedirect = false;
+  const begin = i => { if (!cur) cur = { value: '', raw: '', start: i, literal: true, cmd: atCommand && !afterRedirect }; };
+  const end = i => {
+    if (cur) {
+      cur.raw = s.slice(cur.start, i).replace(/\\/g, '/');
+      words.push(cur);
+      if (cur.cmd) atCommand = false;
+      afterRedirect = false;
+      cur = null;
+    }
+  };
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    const next = s[i + 1];
+    if (quote === "'") {
+      if (ch === "'" && ps && next === "'") { cur.value += "'"; i++; } else if (ch === "'") quote = null;
+      else cur.value += ch === '\\' ? '/' : ch;
       continue;
     }
-    while (/^--?[a-z][\w-]*(?:\s+|$)|^--(?:\s+|$)/i.test(arg)) arg = arg.replace(/^--?[\w-]*\s*/, '');
-    const q = /^["']/.test(arg) ? arg[0] : null;
-    const close = q ? arg.indexOf(q, 1) : -1;
-    const target = q ? arg.slice(1, close === -1 ? undefined : close) : arg.split(/\s+/)[0];
-    if (target) out.literal.push(target);
+    if (quote === '"') {
+      if (ch === '"') { if (ps && next === '"') { cur.value += '"'; i++; } else quote = null; continue; }
+      if (ch === '`' && ps) { cur.literal = false; if (next !== undefined) { cur.value += next; i++; } continue; }
+      if (ch === '\\' && !ps && next !== undefined && '$`"\\\n'.includes(next)) { cur.literal = false; cur.value += next; i++; continue; }
+      cur.value += ch === '\\' ? '/' : ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      end(i);
+      if (ch === '\n') atCommand = true;
+      continue;
+    }
+    if (ch === ';' || ch === '&' || ch === '|') { end(i); atCommand = true; continue; }
+    if (ch === '<' || ch === '>') { end(i); afterRedirect = true; continue; }
+    begin(i);
+    if (ch === "'" || ch === '"') { quote = ch; continue; }
+    if (ch === '^') { cur.literal = false; continue; }
+    if (ch === '`') {
+      cur.literal = false;
+      if (ps && (next === '\n' || next === '\r')) { end(i); continue; } // line continuation
+      if (ps && next !== undefined) { cur.value += next; i++; }
+      continue;
+    }
+    if (ch === '\\') {
+      if (ps) { cur.value += '/'; continue; }
+      cur.literal = false;
+      if (next === '\n') { i++; continue; } // line continuation joins the word
+      if (next !== undefined) { cur.value += next; i++; }
+      continue;
+    }
+    cur.value += ch;
   }
-  return out;
+  if (cur && quote) cur.literal = false;
+  end(s.length);
+  return words;
 }
 
+// A literal path: letters, digits and `_ . - : /`, plus spaces from quoting; `~` only as a leading `~/`.
+const LITERAL_PATH = /^[\p{L}\p{N}_.\-:/ ]*$/u;
+// Realpath resolutions per decision for segment words; one more fails safe (asks).
+const MAX_SEGMENT_REALPATHS = 16;
+
 /**
- * Whether a normalized shell text names the data or install dir through a `skill-sentry` segment
- * (Ruling R9). `ctx` supplies lazily computed facts shared by every text of one command.
+ * Absolute form of a literal absolute path word, or null when the word cannot be exempt: not literal,
+ * not absolute (`X:/`, Git Bash `/x/`, `/`, `~/`), an unusual form (Ruling K), a driveless root under
+ * PowerShell (`Join-Path`/`+` can append it to any directory), or the segment right under a root.
  */
-function segmentAsks(text, ctx) {
-  for (const m of text.matchAll(SELF_SEGMENT)) {
-    const start = m.index + m[1].length;
-    const end = start + SEG_LEN + m[2].length;
-    if (DATA_FILE_AFTER.test(text.slice(end))) return true; // rule 4
-    if (ctx.unc || ctx.relinks()) return true; // Ruling K; same-command link, move or `.claude` path
-    const prev = text[start - 1] ?? '';
-    if (GLOB_NEIGHBOR.test(prev) || GLOB_NEIGHBOR.test(text[end] ?? '')) return true; // rule 2 (segment)
-    let token = 'skill-sentry';
-    let relative = true; // bare
-    if (prev === '/') {
-      let s = start - 1;
-      while (s > 0 && !TOKEN_BOUNDARY.test(text[s - 1])) s--;
-      const prefix = text.slice(s, start).replace(/["']/g, '');
-      if (!LITERAL_PREFIX.test(prefix)) return true; // rule 2 (parent)
-      const comps = prefix.split('/').slice(0, -1).map(c => (c === '.' || c === '..' ? c : c.replace(/[. ]+$/, '').toLowerCase()));
-      if (PROTECTED_PARENTS.has(comps[comps.length - 1]) || comps.includes('.claude')) return true; // rule 1
-      relative = comps.includes('.') || comps.includes('..');
-      token = prefix + token;
+function exemptCandidate(w, ps) {
+  if (!w.literal) return null;
+  const v = w.value;
+  const body = v.startsWith('~/') ? v.slice(2) : v;
+  if (!LITERAL_PATH.test(body) || isUnusualPath(v)) return null;
+  if (/^\/+skill-sentry(?:[. ]*)(?:\/|$)/i.test(v)) return null;
+  let p;
+  if (/^[a-z]:\//i.test(v)) p = v;
+  else if (v.startsWith('~/')) p = os.homedir() + v.slice(1);
+  else if (!ps && process.platform === 'win32' && /^\/[a-z](?:\/|$)/i.test(v)) p = `${v[1]}:/${v.slice(3)}`;
+  else if (!ps && v.startsWith('/')) p = v;
+  else return null;
+  try { return path.resolve(p); } catch { return null; }
+}
+
+/** Per-decision checker: does a `skill-sentry` word need confirmation? Caps and dedupes realpath. */
+function makeSegmentCheck(roots) {
+  let claude;
+  const claudeForms = () => (claude ??= rootForms(path.join(os.homedir(), '.claude')));
+  const hits = f => claudeForms().some(c => isUnder(f, c)) || roots.some(r => isUnder(f, r) || isUnder(r, f));
+  const canon = new Map();
+  return (w, ps) => {
+    const abs = exemptCandidate(w, ps);
+    if (abs === null) return true;
+    const key = lowerOnWin(slashes(abs));
+    if (hits(key)) return true;
+    if (!canon.has(key)) {
+      if (canon.size >= MAX_SEGMENT_REALPATHS) return true;
+      let c;
+      try { c = normForCompare(realpathish(abs)); } catch { return true; }
+      canon.set(key, c);
     }
-    if (relative && ctx.risky()) return true; // rule 3
-    if (ctx.resolvesProtected(token)) return true; // literal spelling of a protected dir (junction, cwd)
+    return hits(canon.get(key));
+  };
+}
+
+// ---- moves and links of Claude's home (independent of any skill-sentry mention) ----
+
+// `mv ~/.claude ~/y` then `rm -rf ~/y/skill-sentry` (two calls) would leave a literal, unprotected-looking
+// path; links made earlier are seen by realpath, but a moved directory is not. So these ask up front.
+const RELINK_VERBS = new Set(['mv', 'ln', 'mklink', 'subst', 'rename-item', 'ren', 'rename', 'rni', 'move-item', 'move', 'mi']);
+const SHELL_WRAPPERS = new Set(['sudo', 'command', 'exec', 'nohup', 'time', 'env', 'nice', 'xargs', 'call', 'start']);
+const CLAUDE_SEGMENT = /(?:^|[^\w.-])\.claude[. ]*(?=$|[^\w.-])/i;
+
+/** A glob component (`.cl*`, `.c?aude`, `.cl{a,}ude`, `[.]claude`) that can match `.claude`. */
+function globMatchesClaude(text) {
+  for (const comp of text.split(/[/\s]+/)) {
+    if (!/[*?[{]/.test(comp)) continue;
+    const re = comp.replace(/\{[^}]*\}/g, '\u0000').replace(/[.+^$()|\\]/g, '\\$&')
+      .replace(/\*/g, '.*').replace(/\?/g, '.').replace(/\u0000/g, '.*');
+    try { if (new RegExp(`^${re}$`, 'i').test('.claude')) return true; } catch { return true; }
   }
   return false;
 }
 
-/** Lazily computed context for segmentAsks over the texts of one command. */
-function segmentContext(raw, texts, { roots, cwd }) {
-  const base = str(cwd) ? cwd : process.cwd();
-  let claude;
-  const claudeForms = () => (claude ??= rootForms(path.join(os.homedir(), '.claude')));
-  const hits = f => roots.some(r => isUnder(f, r) || isUnder(r, f)) || claudeForms().some(c => isUnder(f, c));
-  let cds;
-  const cdInfo = () => {
-    if (!cds) {
-      cds = { nonLiteral: false, literal: [] };
-      for (const t of texts) {
-        const c = cdTargets(t);
-        cds.nonLiteral ||= c.nonLiteral;
-        cds.literal.push(...c.literal);
-      }
+const namesClaude = w => [w.value, w.raw].some(t => CLAUDE_SEGMENT.test(t) || /claude_config_dir/i.test(t) || globMatchesClaude(t));
+
+/** A move/link/rename verb in command position whose operands name `.claude` (nested `-c` scripts too). */
+function relinksClaude(cmd, ps, depth = 0) {
+  const words = shellWords(cmd, ps);
+  for (let i = 0; i < words.length; i++) {
+    if (!words[i].cmd) continue;
+    let j = i;
+    const verbAt = k => words[k]?.value.toLowerCase().replace(/^.*\//, '').replace(/\.exe$/, '') ?? '';
+    while (j < words.length && (SHELL_WRAPPERS.has(verbAt(j)) || /^\w+=/.test(words[j].value) || (j > i && words[j].value.startsWith('-')))) j++;
+    let verb = verbAt(j);
+    const stmtEnd = (() => { let k = j + 1; while (k < words.length && !words[k].cmd) k++; return k; })();
+    const args = words.slice(j + 1, stmtEnd);
+    if (verb === 'cmd' && args.length && /^\/+[ck]$/i.test(args[0].value)) {
+      if (depth < 2 && relinksClaude(args.slice(1).map(a => a.raw).join(' '), false, depth + 1)) return true;
+      continue;
     }
-    return cds;
-  };
-  let risky;
-  let relinks;
-  let bases;
-  const seen = new Map();
-  return {
-    unc: UNC_TOKEN.test(raw),
-    relinks: () => (relinks ??= texts.some(t => CLAUDE_SEGMENT.test(t) || LINK_OR_MOVE.test(t))),
-    risky: () => (risky ??= rootForms(base).some(f => [...roots, ...claudeForms()].some(r => isUnder(f, r)))
-      || texts.some(t => CLAUDE_TEXT.test(t) || DYNAMIC_TEXT.test(t))
-      || cdInfo().nonLiteral),
-    resolvesProtected: token => {
-      bases ??= [base, ...cdInfo().literal.map(c => path.resolve(base, c))];
-      for (const b of bases) {
-        let abs;
-        try { abs = path.resolve(b, token); } catch { return true; }
-        if (!seen.has(abs)) seen.set(abs, [lowerOnWin(slashes(abs)), canonRoot(abs)].some(hits));
-        if (seen.get(abs)) return true;
-      }
-      return false;
-    },
-  };
+    const shell = /^(?:ba|z|da|k)?sh$/.test(verb) ? 'sh' : /^(?:pwsh|powershell)$/.test(verb) ? 'ps' : null;
+    const inner = shell && args.findIndex(a => (shell === 'sh' ? /^-[a-z]*c[a-z]*$/i : /^-c(?:o(?:m(?:m(?:a(?:n(?:d)?)?)?)?)?)?$/i).test(a.value));
+    if (shell && inner !== -1 && args[inner + 1]) {
+      if (depth < 2 && relinksClaude(args.slice(inner + 1).map(a => a.value).join(' '), shell === 'ps', depth + 1)) return true;
+      continue;
+    }
+    const vals = args.map(a => a.value.toLowerCase());
+    if (verb === 'new-item' || verb === 'ni') verb = vals.some(v => /(?:^|:)(?:junction|symboliclink|hardlink)$/.test(v)) ? 'ln' : '';
+    else if (verb === 'robocopy') verb = vals.some(v => /^\/mov(?:e)?$/.test(v)) ? 'mv' : '';
+    else if (verb === 'cp') verb = vals.some(v => /^-[a-z]*[ls][a-z]*$|^--(?:link|symbolic-link)$/.test(v)) ? 'ln' : '';
+    else if (verb === 'fsutil') verb = vals.includes('hardlink') ? 'ln' : '';
+    if (RELINK_VERBS.has(verb) && args.some(namesClaude)) return true;
+  }
+  return false;
 }
 
 /**
@@ -514,18 +563,25 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
 
   // Shell commands that mention the data dir or the install dir (any access, read or write) always ask:
   // a redirect like `echo ... > ~/.claude/skill-sentry/allowlist.json` must not slip through (§6.2).
-  // Other `skill-sentry` segments ask only when they can name one of those dirs (Ruling R9).
+  // Any other `skill-sentry` segment asks too (Ruling J), unless its word is a literal absolute path
+  // that resolves away from Claude's home and the protected roots (Ruling R9 revised).
   if (t.commands.length) {
+    const ps = toolName === 'PowerShell';
     const roots = [dataDir, selfRoot].filter(str).flatMap(rootForms);
     const needles = [...roots, lowerOnWin('.claude/skill-sentry')];
+    const segmentAsks = makeSegmentCheck(roots);
     for (const c of t.commands) {
+      const ask = reason => ({ decision: 'ask', ruleId: 'SELF_PROTECT', severity: 'high', reason, snippet: snip(c) });
+      if (relinksClaude(c, ps)) return ask('shell command moves or links the Claude config directory');
       if (isReadOnlySelfInvocation(c, selfRoot, toolName)) continue; // Rulings L2, L3
       // Line continuations (bash `\`, PowerShell backtick) are joined in the de-obfuscated copy.
       const joined = String(c).replace(/\\\r?\n/g, '').replace(/`\r?\n/g, ' ');
       const texts = [normCommandText(c), normCommandText(deobfuscate(joined))];
-      const ctx = segmentContext(c, texts, { roots, cwd });
-      if (texts.some(text => needles.some(n => mentions(text, n)) || segmentAsks(text, ctx))) {
-        return { decision: 'ask', ruleId: 'SELF_PROTECT', severity: 'high', reason: 'shell command touches skill-sentry data or install directory', snippet: snip(c) };
+      const segWords = shellWords(c, ps).filter(w => SELF_SEGMENT.test(w.value) || SELF_SEGMENT.test(w.raw));
+      if (texts.some(text => needles.some(n => mentions(text, n)))
+        || segWords.some(w => segmentAsks(w, ps))
+        || (!segWords.length && texts.some(text => SELF_SEGMENT.test(text)))) {
+        return ask('shell command touches skill-sentry data or install directory');
       }
     }
   }
