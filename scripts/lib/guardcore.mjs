@@ -404,7 +404,8 @@ function makeSegmentCheck(roots) {
   };
   return (w, ps, afterScriptFlag) => {
     if (!w.literal || isUnusualPath(w.value) || /^\s/.test(w.value)) return true;
-    if (!/\s/.test(w.value)) return pieceAsks(w.value, w.raw.startsWith('~'), ps);
+    // `~` is home only when unquoted and followed directly by a separator (`~"/x"`, `~''/x` are not).
+    if (!/\s/.test(w.value)) return pieceAsks(w.value, /^~\//.test(w.raw), ps);
     if (afterScriptFlag) return true;
     const segs = w.value.split(/\s+/).filter(v => SELF_SEGMENT.test(v));
     return !segs.length || segs.some(v => pieceAsks(v, false, ps));
@@ -421,8 +422,15 @@ function makeSegmentCheck(roots) {
 // such as `[IO.Directory]::Move(...)` or an interpreter's `fs.renameSync(...)`.
 const RELINK_VERBS = new Set(['mv', 'ln', 'mklink', 'subst', 'rename-item', 'ren', 'rename', 'rni', 'move-item', 'move', 'mi', 'new-psdrive', 'ndr', 'mount']);
 const RELINK_RUNNERS = new Set(['-exec', '-execdir', '-ok', '-okdir', '-x', '-X', '--exec', '--exec-batch']);
-const NON_LITERAL = /[$%`(]/;
-const SHELL_WRAPPERS = new Set(['sudo', 'command', 'exec', 'nohup', 'time', 'env', 'nice', 'xargs', 'call', 'start']);
+// Non-literal relink operand (after a leading `~/`): expansions, substitutions, and `~` (8.3 `.CLAUD~1`, `~user`).
+const NON_LITERAL = /[$%`(~]/;
+const SHELL_WRAPPERS = new Set(['sudo', 'doas', 'command', 'exec', 'nohup', 'time', 'timeout', 'env', 'nice', 'ionice', 'stdbuf', 'busybox', 'xargs', 'call', 'start']);
+const GROUPING_TOKENS = new Set(['{', '(', '&', '.']);
+
+// Ruling R14: PowerShell resolves `C:\…` through the session's drive table, so a PowerShell command (or a
+// `pwsh -c` script) that creates or removes a drive can redefine even a real letter. Any such token asks.
+const PS_DRIVE_TOKEN = /^[({@&.]*(?:new-psdrive|ndr|mount|remove-psdrive|rdr)[)};]*$/i;
+const changesPsDrive = script => shellWords(script, true).some(w => w.value.split(/[\s;|&]+/).some(t => PS_DRIVE_TOKEN.test(t)));
 const CLAUDE_SEGMENT = /(?:^|[^\w.-])\.claude[. ]*(?=$|[^\w.-])/i;
 
 /** A glob component (`.cl*`, `.c?aude`, `.cl{a,}ude`, `[.]claude`) that can match `.claude`. */
@@ -444,8 +452,11 @@ function relinksClaude(cmd, ps, depth = 0) {
   for (let i = 0; i < words.length; i++) {
     if (!words[i].cmd) continue;
     let j = i;
-    const verbAt = k => words[k]?.value.toLowerCase().replace(/^.*\//, '').replace(/\.exe$/, '') ?? '';
-    while (j < words.length && (SHELL_WRAPPERS.has(verbAt(j)) || /^\w+=/.test(words[j].value) || (j > i && words[j].value.startsWith('-')))) j++;
+    const verbAt = k => words[k]?.value.toLowerCase().replace(/^[({]+/, '').replace(/^.*\//, '').replace(/\.exe$/, '') ?? '';
+    // Skip grouping (`{ … }`, `( … )`, `& { … }`, `. x`), wrappers, assignments, and wrapper flags/counts.
+    const skip = k => GROUPING_TOKENS.has(words[k].value) || SHELL_WRAPPERS.has(verbAt(k)) || /^\w+=/.test(words[k].value)
+      || (k > i && (words[k].value.startsWith('-') || /^\d+(?:\.\d+)?[smhd]?$/.test(words[k].value)));
+    while (j < words.length && skip(j)) j++;
     let verb = verbAt(j);
     const stmtEnd = (() => { let k = j + 1; while (k < words.length && !words[k].cmd) k++; return k; })();
     const args = words.slice(j + 1, stmtEnd);
@@ -461,7 +472,9 @@ function relinksClaude(cmd, ps, depth = 0) {
     const shell = /^(?:ba|z|da|k)?sh$/.test(verb) ? 'sh' : /^(?:pwsh|powershell)$/.test(verb) ? 'ps' : null;
     const inner = shell && args.findIndex(a => (shell === 'sh' ? /^-[a-z]*c[a-z]*$/i : /^-c(?:o(?:m(?:m(?:a(?:n(?:d)?)?)?)?)?)?$/i).test(a.value));
     if (shell && inner !== -1 && args[inner + 1]) {
-      if (depth < 2 && relinksClaude(args.slice(inner + 1).map(a => a.value).join(' '), shell === 'ps', depth + 1)) return true;
+      const script = args.slice(inner + 1).map(a => a.value).join(' ');
+      if (shell === 'ps' && changesPsDrive(script)) return true;
+      if (depth < 2 && relinksClaude(script, shell === 'ps', depth + 1)) return true;
       continue;
     }
     const vals = args.map(a => a.value.toLowerCase());
@@ -470,7 +483,7 @@ function relinksClaude(cmd, ps, depth = 0) {
     else if (verb === 'cp') verb = vals.some(v => /^-[a-z]*[ls][a-z]*$|^--(?:link|symbolic-link)$/.test(v)) ? 'ln' : '';
     else if (verb === 'fsutil') verb = vals.includes('hardlink') ? 'ln' : '';
     else if (verb === 'net') verb = vals[0] === 'use' ? 'mount' : '';
-    if (RELINK_VERBS.has(verb) && args.some(a => namesClaude(a) || NON_LITERAL.test(a.raw))) return true;
+    if (RELINK_VERBS.has(verb) && args.some(a => namesClaude(a) || NON_LITERAL.test(a.raw.replace(/^~\//, '')))) return true;
   }
   return false;
 }
@@ -621,6 +634,7 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
     const segmentAsks = makeSegmentCheck(roots);
     for (const c of t.commands) {
       const ask = reason => ({ decision: 'ask', ruleId: 'SELF_PROTECT', severity: 'high', reason, snippet: snip(c) });
+      if (ps && changesPsDrive(c)) return ask('PowerShell command creates or removes a drive (Ruling R14)');
       if (relinksClaude(c, ps)) return ask('shell command moves or links the Claude config directory');
       if (isReadOnlySelfInvocation(c, selfRoot, toolName)) continue; // Rulings L2, L3
       // Line continuations (bash `\`, PowerShell backtick) are joined in the de-obfuscated copy.

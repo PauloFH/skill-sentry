@@ -648,7 +648,7 @@ test('R9 N2: PowerShell drives are not real volumes, and creating one is a link'
     'mount Q FileSystem $HOME\\.claude; ri -r -fo Q:\\skill-sentry',
     'Remove-Item -Recurse -Force Q:\\skill-sentry', // a later call: Q: is no OS volume here
   ]) asksSelf('PowerShell', c, h.o);
-  noneSelf('PowerShell', 'New-PSDrive -Name Q -PSProvider FileSystem -Root C:\\data', h.o);
+  asksSelf('PowerShell', 'New-PSDrive -Name Q -PSProvider FileSystem -Root C:\\data', h.o); // Ruling R14
   for (const c of ['subst Q: C:\\Users\\x\\.claude', 'net use Q: \\\\localhost\\c$\\Users\\x\\.claude', 'pwsh -c \'New-PSDrive Q FileSystem ~/.claude; Remove-Item -Recurse Q:/skill-sentry\'']) asksSelf('Bash', c, h.o);
 });
 
@@ -684,6 +684,56 @@ test('R13: relink verbs with non-literal operands or under xargs / find -exec as
     ['Bash', 'find . -name "*.tmp" -delete'],
     ['Bash', 'echo a | xargs rm'],
   ]) noneSelf(tool, c);
+});
+
+// ---------------------------------------------------------------- R9 fix round 3
+test('R14 X1: any PowerShell drive create/remove token asks, even for a real letter', () => {
+  const h = r9Home();
+  const home = path.dirname(h.claude);
+  for (const [tool, c] of [
+    ['PowerShell', `& { New-PSDrive -Name C -PSProvider FileSystem -Root ${home} -Scope Local | Out-Null; Remove-Item -Recurse -Force C:\\.claude\\plugins\\cache\\mkt\\skill-sentry }`],
+    ['PowerShell', `sl HKCU:\\; rdr C -Force; ndr C FileSystem ${home}; ri -r -fo C:\\.claude\\plugins\\cache\\mkt\\skill-sentry`],
+    ['PowerShell', 'Set-Location HKCU:\\; Remove-PSDrive C -Force'],
+    ['PowerShell', `&{New-PSDrive C FileSystem ${home}}`],
+    ['PowerShell', `(NEW-PSDRIVE C FileSystem ${home}) | Out-Null`],
+    ['PowerShell', `iex "ndr C FileSystem ${home}"`],
+    ['Bash', `pwsh -NoProfile -Command "Remove-PSDrive C -Force; ndr C FileSystem ${fwdSlash(home)}"`],
+    ['Bash', 'cmd //c powershell -c "rdr C -Force"'],
+  ]) {
+    const r = dc(tool, c, h.o);
+    assert.equal(r.decision, 'ask', `${tool}: ${c}`);
+    assert.equal(r.ruleId, 'SELF_PROTECT', `${tool}: ${c}`);
+  }
+  noneSelf('Bash', 'mount', h.o);
+  noneSelf('PowerShell', 'Get-PSDrive C', h.o);
+});
+
+test('R14 X2: `~` is home only when unquoted and directly followed by a separator', () => {
+  const h = r9Home();
+  const cwd = path.join(h.claude, 'plugins', 'cache');
+  asksSelf('Bash', 'find ~"/mkt"/skill-sentry -delete', { ...h.o, cwd });
+  asksSelf('Bash', "mv ~''/mkt/skill-sentry /c/zz", { ...h.o, cwd });
+  asksSelf('Bash', 'ls ~"/mkt/skill-sentry"', { ...h.o, cwd });
+  noneSelf('Bash', 'ls ~/skill-sentry', h.o);
+  noneSelf('PowerShell', 'Get-ChildItem ~\\skill-sentry', h.o);
+});
+
+test('R14 X3: relink verbs behind grouping, wrappers and 8.3 operands ask', () => {
+  for (const c of [
+    '{ mv ~/.claude ~/y; }',
+    '(mv ~/.claude ~/y)',
+    'timeout 5 mv ~/.claude ~/y',
+    'busybox mv ~/.claude ~/y',
+    'stdbuf -o0 mv ~/.claude ~/y',
+    'ionice -c 3 nice -n 10 mv ~/.claude ~/y',
+    'doas mv ~/.claude ~/y',
+    'mv ~/.CLAUD~1 ~/y',
+  ]) {
+    const r = dc('Bash', c);
+    assert.equal(r.decision, 'ask', c);
+    assert.equal(r.ruleId, 'SELF_PROTECT', c);
+  }
+  for (const c of ['mv ~/a.md ~/b.md', 'timeout 5 git status', '{ ls; }', '(cd ~/skill-sentry && git log --oneline -3)']) noneSelf('Bash', c);
 });
 
 test('non-local UNC paths are matched by string only (no network I/O)', () => {
