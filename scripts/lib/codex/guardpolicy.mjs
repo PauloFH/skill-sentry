@@ -21,7 +21,7 @@
 // allowlist under the WSL home; nothing is shared across the Windows/WSL boundary.
 import fs from 'node:fs';
 import path from 'node:path';
-import { decide, formatReason } from '../guardcore.mjs';
+import { decide, formatReason, isReadOnlySelfInvocation } from '../guardcore.mjs';
 import { dataDirPath, writeJsonAtomic } from '../datadir.mjs';
 import { loadAllowlist } from '../allowlist.mjs';
 import { escapeInvisible, truncate } from '../text.mjs';
@@ -227,10 +227,11 @@ export async function handleCodex({ input, selfRoot, write, log }) {
   const origin = () => (originMemo === undefined ? (originMemo = findCodexOrigin(input.transcript_path, undefined, toolName)) : originMemo);
   const args = { toolName, toolInput, origin, allowlist: () => readAllowlist(dir), selfRoot, dataDir: dir, cwd: input.cwd, extraWritePaths };
   let base = decide(args);
-  // Codex on Windows runs `Bash` commands through PowerShell: check the PowerShell reading too, stricter wins.
+  // Codex on Windows runs `Bash` commands through PowerShell: check the PowerShell reading too, stricter wins,
+  // except that an exact read-only self invocation in PowerShell form (backslash path, Ruling M) uses that reading.
   if (process.platform === 'win32' && toolName === 'Bash') {
     const ps = decide({ ...args, toolName: 'PowerShell' });
-    if (rank(ps) > rank(base)) base = ps;
+    if (rank(ps) > rank(base) || isReadOnlySelfInvocation(toolInput.command, selfRoot, 'PowerShell')) base = ps;
   }
 
   const net = isNetworkCapable(toolName, toolInput);

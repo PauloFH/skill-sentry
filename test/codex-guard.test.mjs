@@ -547,6 +547,16 @@ test('codex on Windows: Bash commands are also checked as PowerShell (drive rede
   const r = await runGuard(codex('Bash', { command: 'New-PSDrive -Name Q -PSProvider FileSystem -Root C:\\ | Out-Null' }));
   assert.match(assertDeny(JSON.parse(r.stdout)), RUN_YOURSELF);
 });
+test('codex on Windows: Ruling M self invocations with backslash paths (pwsh form) still pass', { skip: process.platform !== 'win32' }, async () => {
+  const scan = path.join(SELF, 'scripts', 'scan.mjs');
+  const harden = path.join(SELF, 'scripts', 'harden.mjs');
+  for (const command of [`node ${scan} --json`, `node "${scan}" --json`, `node '${scan}' --diff-only`, `node "${harden}" check`]) {
+    const r = await runGuard(codex('Bash', { command }));
+    assert.equal(r.stdout, '', command);
+  }
+  const r = await runGuard(codex('Bash', { command: `node "${scan}" --update-baseline` }));
+  assert.match(assertDeny(JSON.parse(r.stdout)), RUN_YOURSELF);
+});
 test('codex guard p50 under 150ms for a none decision', async () => {
   const input = JSON.stringify(codex('Bash', { command: 'git status' }, { transcript_path: R('cmdexec-read.jsonl') }));
   await runGuard(input); // warm-up
