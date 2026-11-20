@@ -736,6 +736,36 @@ test('R14 X3: relink verbs behind grouping, wrappers and 8.3 operands ask', () =
   for (const c of ['mv ~/a.md ~/b.md', 'timeout 5 git status', '{ ls; }', '(cd ~/skill-sentry && git log --oneline -3)']) noneSelf('Bash', c);
 });
 
+// ---------------------------------------------------------------- R9 fix round 4
+test('R14 X5: dynamic PowerShell gets no exemption (drive made via alias, call operator or API)', () => {
+  const h = r9Home();
+  const home = path.dirname(h.claude);
+  const RI = 'Remove-Item -Recurse -Force C:\\.claude\\plugins\\cache\\mkt\\skill-sentry';
+  for (const [tool, c] of [
+    ['PowerShell', `sal zq ('New-PS' + 'Drive'); & { zq C FileSystem ${home} -Scope Local | Out-Null; ${RI} }`],
+    ['PowerShell', `Set-Alias -Name zq -Value ("New-PS" + "Drive"); & { zq C FileSystem ${home} -Scope Local | Out-Null; ${RI} }`],
+    ['PowerShell', `& { & ('New-PS'+'Drive') C FileSystem ${home} -Scope Local | Out-Null; ${RI} }`],
+    ['PowerShell', `& { & (gcm New-PSD*) C FileSystem ${home} -Scope Local | Out-Null; ${RI} }`],
+    ['PowerShell', `& { iex ('New-PS'+'Drive C FileSystem ${home} -Scope Local') | Out-Null; ${RI} }`],
+    ['PowerShell', `& { $d = New-Object Management.Automation.PSDriveInfo 'C', (Get-PSProvider FileSystem), '${home}', '', $null; $null = $executionContext.SessionState.Drive.New($d,'local'); ${RI} }`],
+    // module-qualified verb, dot-source, escaped iex, and a multi-word pwsh script from Bash
+    ['PowerShell', `Microsoft.PowerShell.Management\\New-PSDrive C FileSystem ${home} -Scope Local | Out-Null; ${RI}`],
+    ['PowerShell', `. C:\\tmp\\x.ps1; ${RI}`],
+    ['PowerShell', `Get-Content C:\\tmp\\x.txt | i\`ex; ${RI}`],
+    ['Bash', `pwsh -c "& ('New-PS'+'Drive') C FileSystem ${fwdSlash(home)}" ';' Remove-Item -Recurse -Force C:/.claude/plugins/cache/mkt/skill-sentry`],
+  ].filter(([, c]) => onThisOs(c))) asksSelf(tool, c, h.o);
+  for (const c of [
+    'Get-Content C:\\Users\\x\\skill-sentry\\x.md',
+    "node 'C:\\Users\\x\\.claude\\plugins\\cache\\context-mode\\context-mode\\2.2.1\\search.mjs' s5h 'C:\\Users\\x\\skill-sentry\\.superpowers\\sdd\\r.md' 'C:\\Users\\x'",
+    'git -C C:\\Users\\x\\skill-sentry status',
+    'Set-Location C:\\Users\\x\\skill-sentry; npm test',
+    'Remove-Item -Recurse C:\\Users\\x\\skill-sentry\\tmp',
+    'Get-Content C:\\Users\\x\\skill-sentry\\x.md 2>&1',
+    'git -C C:\\Users\\x\\skill-sentry status && npm test',
+    '$x = 1; Write-Output (Get-Date)',
+  ].filter(onThisOs)) noneSelf('PowerShell', c, h.o);
+});
+
 test('non-local UNC paths are matched by string only (no network I/O)', () => {
   const timed = fn => { const t0 = performance.now(); const r = fn(); return { r, ms: performance.now() - t0 }; };
   // Ruling K: any UNC path is an unusual form -> PATH_UNUSUAL_READ (log without origin, ask with one).

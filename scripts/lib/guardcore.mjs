@@ -428,9 +428,23 @@ const SHELL_WRAPPERS = new Set(['sudo', 'doas', 'command', 'exec', 'nohup', 'tim
 const GROUPING_TOKENS = new Set(['{', '(', '&', '.']);
 
 // Ruling R14: PowerShell resolves `C:\…` through the session's drive table, so a PowerShell command (or a
-// `pwsh -c` script) that creates or removes a drive can redefine even a real letter. Any such token asks.
-const PS_DRIVE_TOKEN = /^[({@&.]*(?:new-psdrive|ndr|mount|remove-psdrive|rdr)[)};]*$/i;
+// `pwsh -c` script) that creates or removes a drive can redefine even a real letter. Any such token asks,
+// module-qualified too (`Microsoft.PowerShell.Management\New-PSDrive`).
+const PS_DRIVE_TOKEN = /^[({@&.]*(?:microsoft\.powershell\.management\/)?(?:new-psdrive|ndr|mount|remove-psdrive|rdr)[)};]*$/i;
 const changesPsDrive = script => shellWords(script, true).some(w => w.value.split(/[\s;|&]+/).some(t => PS_DRIVE_TOKEN.test(t)));
+
+// Ruling R14 (X5): a drive can also be made with no drive token in sight: an alias or `iex` of a name built
+// at run time (`sal zq ('New-PS'+'Drive')`), the call operator, `gcm` wildcards, dot-sourcing, or the .NET
+// API (`$executionContext.SessionState.Drive.New`). So a PowerShell command, or one that runs `pwsh` /
+// `powershell`, with any dynamic construct gets no exemption at all (`~` neither: the FileSystem provider's
+// Home can be reassigned). Residual (documented): a `-Scope Global` drive made by a `.ps1` script or module
+// planted in an earlier call and run or imported here.
+const RUNS_PWSH = /(?:^|[\s;|&('"/\\])(?:pwsh|powershell)(?:\.exe)?(?=$|[\s;|&)'"])/i;
+const PS_DYNAMIC_CHAR = /[$({[@+`]/;
+const PS_DOT_SOURCE = /(?:^|[;|{(\r\n]|&&)\s*\.(?=[\s'"])/;
+const PS_DYNAMIC_WORD = /(?<![\w-])(?:iex|invoke-expression|invoke-command|icm|sal|set-alias|nal|new-alias|gcm|get-command|new-object|add-type)(?![\w-])/i;
+/** PowerShell text that can build a command at run time (call operator `&`, not `&&` or `2>&1`). */
+const psDynamic = c => PS_DYNAMIC_CHAR.test(c) || /(?<!>)&/.test(c.replace(/&&/g, '  ')) || PS_DOT_SOURCE.test(c) || PS_DYNAMIC_WORD.test(c);
 const CLAUDE_SEGMENT = /(?:^|[^\w.-])\.claude[. ]*(?=$|[^\w.-])/i;
 
 /** A glob component (`.cl*`, `.c?aude`, `.cl{a,}ude`, `[.]claude`) that can match `.claude`. */
@@ -644,8 +658,9 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
       const words = shellWords(c, ps);
       const scriptAt = words.findIndex(w => SCRIPT_FLAG.test(w.value));
       const segAt = words.flatMap((w, k) => (SELF_SEGMENT.test(w.value) || SELF_SEGMENT.test(w.raw) ? [k] : []));
+      const dynamicPs = segAt.length > 0 && (ps || RUNS_PWSH.test(c)) && psDynamic(String(c));
       if (texts.some(text => needles.some(n => mentions(text, n)))
-        || segAt.some(k => segmentAsks(words[k], ps, scriptAt !== -1 && k > scriptAt))
+        || segAt.some(k => dynamicPs || segmentAsks(words[k], ps, scriptAt !== -1 && k > scriptAt))
         || (!segAt.length && texts.some(text => SELF_SEGMENT.test(text)))) {
         return ask('shell command touches skill-sentry data or install directory');
       }
