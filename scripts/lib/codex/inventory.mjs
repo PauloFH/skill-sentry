@@ -21,6 +21,7 @@ const sha256 = s => crypto.createHash('sha256').update(s).digest('hex');
 const snake = e => String(e).replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
 const DEFAULT_MAX_DIRS = 2000;
 const MAX_TOML_BYTES = 4 * 1024 * 1024;
+const MAX_TRUSTED_PROJECTS = 50;
 const PLUGIN_MANIFESTS = ['.codex-plugin/plugin.json', 'plugin.json', '.claude-plugin/plugin.json', '.cursor-plugin/plugin.json'];
 
 // --- redaction ---
@@ -225,7 +226,7 @@ function inventoryHome({ home, projectDir, homes, components, configFindings, la
     if (typeof mif === 'string' && mif) {
       const id = `instructions:model_instructions_file${sfx}`;
       if (!confine) addInstructions(mapPath(mif), id, scope);
-      else {
+      else if (!confine.skipInstructions) {
         const tilde = mif.startsWith('~');
         const f = tilde ? mapPath(mif) : path.resolve(confine.base, mif);
         if (tilde || !isInsideRoot(confine.top, f)) unreadable(f, 'path outside project');
@@ -386,6 +387,7 @@ function inventoryHome({ home, projectDir, homes, components, configFindings, la
       const v2 = readIn(f);
       if (isObj(v2)) addMcp(isObj(v2.mcpServers) ? v2.mcpServers : v2, `plugin:${key}`, 'plugin', proot, f, policies);
     }
+    addAppFile(proot, key, readIn);
     if (!isObj(manifest)) return;
     const manifestFile = path.join(proot, ...manifestRel.split('/'));
     const h = manifest.hooks;
@@ -403,6 +405,24 @@ function inventoryHome({ home, projectDir, homes, components, configFindings, la
       const v2 = readIn(f);
       if (isObj(v2)) addMcp(isObj(v2.mcpServers) ? v2.mcpServers : v2, `plugin:${key}`, 'plugin', proot, f, policies);
     }
+    const a = manifest.apps;
+    if (isObj(a)) addApp(a, `plugin:${key}:manifest`, manifestFile);
+    else for (const s of [].concat(typeof a === 'string' || Array.isArray(a) ? a : [])) {
+      if (typeof s !== 'string') continue;
+      const f = resolveRel(s);
+      addApp(readIn(f), `plugin:${key}:${relKey(f)}`, f);
+    }
+  }
+
+  // Plugin app/connector declarations (`.app.json`, manifest `apps`): shape unverified, so the whole
+  // JSON is kept as one config-only component (redacted; raw for the rules).
+  function addAppFile(proot, key, readIn) {
+    const f = path.join(proot, '.app.json');
+    addApp(readIn(f), `plugin:${key}:.app.json`, f);
+  }
+  function addApp(value, id, file) {
+    if (!isObj(value)) return;
+    add({ id: `app:${id}`, kind: 'app', name: path.basename(file), scope: 'plugin', root: null, files: [], config: redactConfig(value), meta: {} }, file);
   }
 
   // --- system layer (/etc/codex, %ProgramData%\OpenAI\Codex): default and WSL homes only ---
@@ -423,8 +443,11 @@ function inventoryHome({ home, projectDir, homes, components, configFindings, la
   }
 
   // --- project chain (first home only) ---
+  const homeRoots = new Set(homes.map(h => realDir(h.root)));
+  const currentDirs = new Set();
   if (projectDir) step(() => {
     const chain = projectChain(projectDir, homes);
+    for (const d of chain) currentDirs.add(realDir(d));
     const top = chain[0];
     const trustOf = () => {
       const projects = isObj(cfg?.projects) ? cfg.projects : {};
@@ -436,7 +459,6 @@ function inventoryHome({ home, projectDir, homes, components, configFindings, la
       return undefined;
     };
     const trust = trustOf();
-    const homeRoots = new Set(homes.map(h => realDir(h.root)));
     const userSkillDirs = new Set(homes.filter(h => h.userHome).map(h => realDir(path.join(h.userHome, '.agents', 'skills'))));
     const before = components.length;
     for (const d of chain) {
@@ -458,6 +480,48 @@ function inventoryHome({ home, projectDir, homes, components, configFindings, la
       if (isDir(sk) && !userSkillDirs.has(realDir(sk))) addSkills(sk, 'project', 'project');
     }
     if (trust !== undefined) for (const c of components.slice(before)) c.meta.trust = trust;
+  });
+
+  // `[projects.'<key>']` -> local dir, or null when it cannot be read safely (relative, `..`, network).
+  const projectPath = k => {
+    const s = String(k);
+    if (home.distroRoot) {
+      const segs = s.split('/').filter(Boolean);
+      return s.startsWith('/') && !segs.includes('..') ? path.join(home.distroRoot, ...segs) : null;
+    }
+    if (isRemoteLinkText(s) || !path.isAbsolute(s) || s.split(/[\\/]/).includes('..')) return null;
+    return path.resolve(s);
+  };
+
+  // --- other trusted projects of this home: their .codex hooks, config (MCP...) and rules execute ---
+  // Instruction files and skills of non-current projects are not listed. In a WSL home, project keys
+  // are Linux paths and are mapped into the distro. Missing dirs are skipped silently.
+  step(() => {
+    const projects = isObj(cfg?.projects) ? cfg.projects : {};
+    let count = 0;
+    for (const [k, v] of Object.entries(projects)) {
+      if (!isObj(v) || v.trust_level !== 'trusted') continue;
+      if (late()) {
+        configFindings.push({ ruleId: 'SCAN_TRUNCATED', category: 'config', severity: 'info', line: 0, file: cfgFile, snippet: 'scan time budget exhausted; some trusted projects were not inventoried' });
+        return;
+      }
+      if (++count > MAX_TRUSTED_PROJECTS) {
+        configFindings.push({ ruleId: 'SCAN_TRUNCATED', category: 'config', severity: 'info', line: 0, file: cfgFile, snippet: `more than ${MAX_TRUSTED_PROJECTS} trusted projects; the rest were not inspected` });
+        return;
+      }
+      const pdir = projectPath(k);
+      if (pdir === null || remoteLinkTarget(pdir) !== null || !isDir(pdir) || currentDirs.has(realDir(pdir))) continue;
+      const dotCodex = path.join(pdir, '.codex');
+      if (!isDir(dotCodex) || homeRoots.has(realDir(dotCodex))) continue;
+      const T = `trusted:${k}`;
+      const before = components.length;
+      const f = path.join(dotCodex, 'config.toml');
+      fromLayer(tomlComponent(f, `config:${T}`, 'config', 'project'), T, 'project', f, { base: dotCodex, top: pdir, skipInstructions: true });
+      const hf = path.join(dotCodex, 'hooks.json');
+      addHooks(hooksIn(readJson(hf)), T, 'project', null, hf);
+      addRules(path.join(dotCodex, 'rules'), `${T}:`, 'project');
+      for (const c of components.slice(before)) c.meta = { ...c.meta, trust: 'trusted', project: pdir };
+    }
   });
 }
 

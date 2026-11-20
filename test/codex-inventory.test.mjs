@@ -10,7 +10,7 @@ import { discover, rawConfigOf } from '../scripts/lib/inventory.mjs';
 import { scanComponent } from '../scripts/lib/scanner.mjs';
 import { fileMap } from '../scripts/lib/baseline.mjs';
 import { tmpFactory } from './helpers/tmp.mjs';
-import { SENTINEL, buildCodexFixture, buildWslTree, buildBrokenCodexHome } from './helpers/codexfixtures.mjs';
+import { SENTINEL, buildCodexFixture, buildWslTree, buildBrokenCodexHome, buildWslCandidates } from './helpers/codexfixtures.mjs';
 
 const SCAN = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'scan.mjs');
 const tmp = tmpFactory('ss-cx-');
@@ -107,6 +107,10 @@ test('codexHomes: an unlistable WSL root is a problem line, never a throw', () =
 
 // --- discoverCodex ---
 
+const expected = fx => [...EXPECTED,
+  'codex[win]:app:plugin:p@mkt:.app.json', 'codex[win]:app:plugin:p@mkt:custom.app.json',
+  ...['config', 'mcp:{}:om', 'hook:{}:Stop:0', 'rules:{}:o.rules'].map(s => `codex[win]:${s.includes('{}') ? s.replace('{}', `trusted:${fx.other}`) : `${s}:trusted:${fx.other}`}`),
+];
 const EXPECTED = [
   'config', 'config:profile:work', 'config:system', 'config:system:requirements', 'config:project',
   'notify', 'mcp:user:pad', 'mcp:user:remote', 'mcp:profile:work:w', 'mcp:project:projmcp',
@@ -126,8 +130,9 @@ test('discoverCodex: inventories every surface of the fake home', () => {
   const fx = fixture();
   const { components } = run(fx);
   const ids = components.map(c => c.id);
-  for (const id of EXPECTED) assert.ok(ids.includes(id), `missing ${id}\n${ids.join('\n')}`);
-  assert.deepEqual([...ids].sort(), [...EXPECTED].sort(), 'no unexpected component');
+  const want = expected(fx);
+  for (const id of want) assert.ok(ids.includes(id), `missing ${id}\n${ids.join('\n')}`);
+  assert.deepEqual([...ids].sort(), [...want].sort(), 'no unexpected component');
   assert.equal(new Set(ids).size, ids.length, 'ids unique');
   for (const c of components) {
     assert.equal(c.agent, 'codex', c.id);
@@ -298,6 +303,84 @@ test('discoverCodex: past the deadline nothing throws and the cut is reported', 
 test('discoverCodex: a missing or empty home yields nothing and never throws', () => {
   const r = discoverCodex({ homes: [{ label: 'h0', root: path.join(tmp('nx'), 'nope') }, { label: 'h1', root: tmp('empty') }], projectDir: null, selfRoot: null });
   assert.deepEqual(r.components, []);
+});
+
+test('discoverCodex: plugin .app.json files (default and manifest `apps` path) are app components', () => {
+  const fx = fixture();
+  const by = byId(run(fx).components);
+  const a = by['codex[win]:app:plugin:p@mkt:.app.json'];
+  assert.equal(a.kind, 'app');
+  assert.equal(a.scope, 'plugin');
+  assert.equal(a.meta.source, path.join(fx.plug, '.app.json'));
+  assert.equal(a.config.apps.gh.token, '<redacted>');
+  assert.equal(rawConfigOf(a.config).apps.gh.token, SENTINEL);
+  const b = by['codex[win]:app:plugin:p@mkt:custom.app.json'];
+  assert.equal(b.config.apps.docs.url, 'https://apps.example.com/docs');
+  assert.deepEqual(b.files, []);
+});
+
+test('discoverCodex: trusted projects from [projects] get their .codex hooks/config/MCP/rules inventoried', () => {
+  const fx = fixture();
+  const { components } = run(fx);
+  const by = byId(components);
+  const T = `trusted:${fx.other}`;
+  const h = by[`codex[win]:hook:${T}:Stop:0`];
+  assert.equal(h.config.command, 'echo other');
+  assert.equal(h.scope, 'project');
+  assert.equal(h.meta.trust, 'trusted');
+  assert.equal(h.meta.project, fx.other);
+  assert.equal(by[`codex[win]:config:${T}`].meta.trust, 'trusted');
+  assert.equal(by[`codex[win]:rules:${T}:o.rules`].config.rules[0].pattern[0], 'make');
+  // not listed: instruction files and skills of non-current projects, untrusted/missing projects,
+  // the current project again, and a trusted dir whose .codex is the Codex home itself.
+  const ids = components.map(c => c.id);
+  assert.ok(!ids.some(id => id.includes('other-skill') || id.includes('model_instructions_file:trusted')), ids.join('\n'));
+  assert.ok(!components.some(c => (c.files ?? []).some(f => f.startsWith(fx.other))));
+  assert.ok(!ids.some(id => id.includes('untrusted') || id.includes(path.join(fx.base, 'gone'))));
+  assert.ok(!ids.some(id => id.includes(`trusted:${fx.project}`)));
+  assert.ok(!ids.some(id => id.includes(`trusted:${fx.userHome}`)));
+});
+
+test('discoverCodex: a WSL home maps trusted Linux project paths into its distro', () => {
+  const { wslRoot } = buildWslTree(tmp('wsl'));
+  const homes = codexHomes({ env: {}, homeDir: tmp('nohome'), platform: 'win32', includeWsl: true, wslRoot });
+  const by = byId(discoverCodex({ homes, projectDir: null, selfRoot: null }).components);
+  const h = by['codex[wsl:Ubuntu:alice]:hook:trusted:/home/alice/proj:Stop:0'];
+  assert.ok(h, Object.keys(by).join('\n'));
+  assert.equal(h.meta.project, path.join(wslRoot, 'Ubuntu', 'home', 'alice', 'proj'));
+});
+
+test('codexHomes: WSL candidates come from env, Windows Terminal profiles and a common list (R7)', () => {
+  const { localAppData, wslRoot, roots } = buildWslCandidates(tmp('cand'));
+  const problems = [];
+  const homes = codexHomes({
+    env: { SKILL_SENTRY_WSL_DISTROS: 'Custom, Missing' }, homeDir: tmp('nohome'), platform: 'win32',
+    includeWsl: true, wslRoot, listRoot: false, localAppData, deadline: Date.now() + 10_000, problems,
+  });
+  const got = Object.fromEntries(homes.map(h => [h.label, h.root]));
+  assert.deepEqual(got, {
+    'wsl:Custom:frank': roots.custom, 'wsl:Arch:dave': roots.arch, 'wsl:Old:erin': roots.old, 'wsl:Debian:carol': roots.debian,
+  });
+  assert.equal(problems.length, 1, problems.join('\n'));
+  assert.match(problems[0], /Missing/);
+});
+
+test('codexHomes: without LOCALAPPDATA, env or a listable root only the common list is probed', () => {
+  const { wslRoot, roots } = buildWslCandidates(tmp('cand'));
+  const problems = [];
+  const homes = codexHomes({ env: {}, homeDir: tmp('nohome'), platform: 'win32', includeWsl: true, wslRoot, listRoot: false, problems });
+  assert.deepEqual(homes.map(h => h.root), [roots.debian]);
+  assert.deepEqual(problems, []);
+});
+
+test('codexHomes: unreadable or broken Terminal settings are ignored silently', () => {
+  const { localAppData, wslRoot } = buildWslCandidates(tmp('cand'));
+  const f = path.join(localAppData, 'Packages', 'Microsoft.WindowsTerminal_8wekyb3d8bbwe', 'LocalState', 'settings.json');
+  fs.writeFileSync(f, '{ "profiles": { "list": [ { "name": "Arch", "source": "Microsoft.WSL" ');
+  const problems = [];
+  const homes = codexHomes({ env: {}, homeDir: tmp('nohome'), platform: 'win32', includeWsl: true, wslRoot, listRoot: false, localAppData, problems });
+  assert.deepEqual(homes.map(h => h.label).sort(), ['wsl:Debian:carol', 'wsl:Old:erin']);
+  assert.deepEqual(problems, []);
 });
 
 test('discoverCodex: a model_instructions_file on a network path is never opened', () => {

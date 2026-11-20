@@ -67,6 +67,18 @@ export function buildCodexFixture(base) {
     `[projects.${lit(project)}]`,
     'trust_level = "trusted"',
     '',
+    `[projects.${lit(path.join(base, 'other'))}]`,
+    'trust_level = "trusted"',
+    '',
+    `[projects.${lit(path.join(base, 'untrusted'))}]`,
+    'trust_level = "untrusted"',
+    '',
+    `[projects.${lit(path.join(base, 'gone'))}]`,
+    'trust_level = "trusted"',
+    '',
+    `[projects.${lit(userHome)}]`,
+    'trust_level = "trusted"',
+    '',
     '[apps.github]',
     'enabled = true',
     '',
@@ -112,7 +124,9 @@ export function buildCodexFixture(base) {
   write(codexHome, 'sessions/rollout.jsonl', `{"secret":"${SENTINEL}"}\n`);
 
   const plug = path.join(codexHome, 'plugins', 'cache', 'mkt', 'p', '1.0.0');
-  write(plug, '.claude-plugin/plugin.json', JSON.stringify({ name: 'p', version: '1.0.0', description: 'Test plugin' }));
+  write(plug, '.claude-plugin/plugin.json', JSON.stringify({ name: 'p', version: '1.0.0', description: 'Test plugin', apps: './custom.app.json' }));
+  write(plug, '.app.json', JSON.stringify({ apps: { gh: { id: 'gh', token: SENTINEL } } }));
+  write(plug, 'custom.app.json', JSON.stringify({ apps: { docs: { id: 'docs', url: 'https://apps.example.com/docs' } } }));
   write(plug, 'hooks/hooks.json', JSON.stringify({
     hooks: {
       PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `node \${PLUGIN_ROOT}/scripts/h.js --token ${SENTINEL}` }] }],
@@ -140,8 +154,18 @@ export function buildCodexFixture(base) {
   write(projectDir, 'AGENTS.md', '# Sub agents\n');
   skill(path.join(projectDir, '.agents', 'skills'), 'sub-skill');
 
+  // Trusted (non-current) project: its .codex layer executes; its instructions and skills are not listed.
+  const other = path.join(base, 'other');
+  write(other, '.codex/hooks.json', JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo other' }] }] } }));
+  write(other, '.codex/config.toml', "model_instructions_file = 'x.md'\n[mcp_servers.om]\ncommand = \"node\"\nargs = [\"om.js\"]\n");
+  write(other, '.codex/x.md', '# x\n');
+  write(other, '.codex/rules/o.rules', 'prefix_rule(pattern=["make"])\n');
+  write(other, 'AGENTS.md', '# Other\n');
+  skill(path.join(other, '.agents', 'skills'), 'other-skill');
+  write(base, 'untrusted/.codex/hooks.json', JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo u' }] }] } }));
+
   const home = { label: 'win', root: codexHome, userHome, systemDir };
-  return { base, userHome, codexHome, systemDir, project, projectDir, plug, home };
+  return { base, userHome, codexHome, systemDir, project, projectDir, plug, other, home };
 }
 
 /** Fake `\\wsl.localhost\` tree: Ubuntu/alice has a Codex home, Ubuntu/bob and Debian have none. */
@@ -151,7 +175,9 @@ export function buildWslTree(base) {
   write(alice, '.codex/config.toml', [
     'approval_policy = "never"', 'sandbox_mode = "danger-full-access"', 'notify = ["node", "/home/alice/n.js"]',
     'model_instructions_file = "/home/alice/.codex/instr.md"', '',
+    "[projects.'/home/alice/proj']", 'trust_level = "trusted"', '',
   ].join('\n'));
+  write(alice, 'proj/.codex/hooks.json', JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo wp' }] }] } }));
   write(alice, '.codex/AGENTS.md', '# WSL agents\n');
   write(alice, '.codex/instr.md', '# WSL model instructions\n');
   skill(path.join(alice, '.agents', 'skills'), 'wsl-skill');
@@ -159,6 +185,45 @@ export function buildWslTree(base) {
   fs.mkdirSync(path.join(wslRoot, 'Ubuntu', 'home', 'bob'), { recursive: true });
   fs.mkdirSync(path.join(wslRoot, 'Debian'), { recursive: true });
   return { wslRoot, aliceCodex: path.join(alice, '.codex') };
+}
+
+/**
+ * Fake %LOCALAPPDATA% with Windows Terminal settings (JSON with comments and trailing commas) naming WSL
+ * profiles, plus a fake WSL root whose top level is NOT listed by the code under test (listRoot: false),
+ * like the real `\\wsl.localhost\`.
+ */
+export function buildWslCandidates(base) {
+  const localAppData = path.join(base, 'lad');
+  write(localAppData, 'Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json', [
+    '// Windows Terminal settings',
+    '{',
+    '  /* block comment with "quotes" */',
+    '  "help": "see https://aka.ms/terminal // not a comment",',
+    '  "profiles": {',
+    '    "defaults": {},',
+    '    "list": [',
+    '      { "name": "Arch", "source": "Microsoft.WSL", }, // trailing comma',
+    '      { "name": "cmd", "commandline": "cmd.exe" },',
+    '      { "name": "..\\\\evil", "source": "Microsoft.WSL" },',
+    '    ],',
+    '  },',
+    '}',
+    '',
+  ].join('\n'));
+  write(localAppData, 'Packages/Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe/LocalState/settings.json',
+    JSON.stringify({ profiles: [{ name: 'Old', source: 'Windows.Terminal.Wsl' }] }));
+  write(localAppData, 'Packages/Other.App_x/LocalState/settings.json', JSON.stringify({ profiles: [{ name: 'Nope', source: 'Microsoft.WSL' }] }));
+
+  const wslRoot = path.join(base, 'wsl');
+  const codexHome = (distro, user) => {
+    write(wslRoot, `${distro}/home/${user}/.codex/AGENTS.md`, '# a\n');
+    return path.join(wslRoot, distro, 'home', user, '.codex');
+  };
+  const roots = {
+    arch: codexHome('Arch', 'dave'), old: codexHome('Old', 'erin'), debian: codexHome('Debian', 'carol'),
+    custom: codexHome('Custom', 'frank'), cmd: codexHome('cmd', 'x'), nope: codexHome('Nope', 'y'),
+  };
+  return { localAppData, wslRoot, roots };
 }
 
 /** Codex home whose config.toml does not parse. */
