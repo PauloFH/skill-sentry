@@ -345,10 +345,10 @@ test('discoverCodex: unparseable config.toml is still a component with a parse-e
   assert.equal(c.meta.parseError.line, 3);
   assert.match(c.meta.parseError.message, /duplicate key/);
   assert.ok(!JSON.stringify(components).includes(SENTINEL));
-  // Reported once: as a CONFIG_UNREADABLE finding on the component (codex rules), not also as a problem line.
-  assert.ok(!configFindings.some(f => f.ruleId === 'CONFIG_UNREADABLE' && f.file === path.join(root, 'config.toml')));
+  // Reported once: as a CONFIG_UNREADABLE problem line (same channel as Claude configs), not also on the component.
+  assert.equal(configFindings.filter(f => f.ruleId === 'CONFIG_UNREADABLE' && f.file === path.join(root, 'config.toml')).length, 1);
   const scanned = scanComponent(c);
-  assert.equal(scanned.findings.filter(f => f.ruleId === 'CONFIG_UNREADABLE').length, 1);
+  assert.equal(scanned.findings.filter(f => f.ruleId === 'CONFIG_UNREADABLE').length, 0);
   assert.match(fileMap(scanned)['<config>'], /^[0-9a-f]{64}$/);
 });
 

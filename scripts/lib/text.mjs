@@ -52,10 +52,18 @@ const P_FLAG = /(^|\s)(-p)(=|\s+)("[^"]*"|'[^']*'|\S+)/g;
 const SECRET_ASSIGN = /(^|\s)([A-Za-z_][\w.-]*)=("[^"]*"|'[^']*'|\S+)/g;
 const SECRET_NAME = /token|secret|key|pass|auth/i;
 const URL_RE = /[a-z][\w+.-]*:\/\/[^\s"'<>]+/gi;
+/** Well-known credential shapes (Anthropic/OpenAI, GitHub, Slack, AWS, Google, GitLab). */
+export const TOKEN_SHAPES = /\b(?:sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|glpat-[A-Za-z0-9_-]{20,})/;
+const TOKEN_SHAPES_G = new RegExp(TOKEN_SHAPES.source, 'g');
+// `Name: value` where Name names a credential (X-Api-Key, Authorization, Cookie, ...); not `scheme://`.
+const HEADER_FORM = /\b((?=[\w-]*(?:key|token|auth|secret|cookie|session|passw))[A-Za-z][\w-]*)(["']?)(\s*:\s*)(?!\/\/)((?:(?:Bearer|Basic|Token)\s+)?[^\s"',;]+)/gi;
+// Bot API token in a URL path: /bot<digits>:<token>.
+const BOT_TOKEN = /(\/bot)\d{5,}:[A-Za-z0-9_-]{20,}/g;
 
 /**
  * Hide credentials in config text before it is stored or shown: URL `user:password@` and query values,
- * values after credential flags, `KEY=value` when KEY names a secret, and `Bearer`/`Basic` tokens.
+ * values after credential flags, `KEY=value` when KEY names a secret, `Bearer`/`Basic` tokens,
+ * `Name: value` credential headers, bot tokens in URL paths and well-known token shapes.
  */
 export function redactSecrets(str) {
   let s = String(str ?? '');
@@ -66,6 +74,14 @@ export function redactSecrets(str) {
   if (pIsPasswordIn(s)) s = s.replace(P_FLAG, (_, pre, flag, sep) => `${pre}${flag}${sep}${R}`);
   s = s.replace(SECRET_ASSIGN, (m, pre, key) => (SECRET_NAME.test(key) ? `${pre}${key}=${R}` : m));
   s = s.replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/g, `$1 ${R}`);
+  s = s.replace(BOT_TOKEN, `$1${R}`);
+  s = s.replace(HEADER_FORM, (m, name, q, sep, val) => {
+    const scheme = /^(?:Bearer|Basic|Token)\s+/i.exec(val)?.[0] ?? '';
+    const rest = val.slice(scheme.length);
+    if (rest === R || rest.startsWith(R) || /^(?:Bearer|Basic|Token)$/i.test(val)) return m;
+    return `${name}${q}${sep}${scheme}${R}`;
+  });
+  s = s.replace(TOKEN_SHAPES_G, R);
   return s;
 }
 

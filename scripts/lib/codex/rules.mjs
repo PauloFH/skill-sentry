@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { rawConfigOf } from '../inventory.mjs';
 import { matchText } from '../rules.mjs';
-import { redactSecrets, redactArgs, truncate } from '../text.mjs';
+import { redactSecrets, redactArgs, TOKEN_SHAPES } from '../text.mjs';
 import { CONFIG_FILE, finding, commandFindings, urlFindings } from '../cmdfindings.mjs';
 
 /**
@@ -34,6 +34,7 @@ export const CODEX_RULES = [
   rule('CODEX_HOOKS_DISABLED', 'config', 'medium', '[features] hooks = false: no hook runs, including the skill-sentry guard'),
   rule('CODEX_ENV_SECRETS_PASSED', 'config', 'info',
     'shell_environment_policy.ignore_default_excludes is true or unset (default true): secret-looking env vars reach commands'),
+  rule('CODEX_RULES_ERROR', 'config', 'info', 'The Codex config rules failed on this component; it was not evaluated (verdict at least review)'),
 ];
 const RULE = Object.fromEntries(CODEX_RULES.map(r => [r.id, r]));
 
@@ -52,15 +53,15 @@ const keyPath = parts => parts.reduce((s, p) => {
 
 // ---------------------------------------------------------------- secrets
 
-const SECRET_NAME = /token|secret|passw|pwd|api[_-]?key|access[_-]?key|private[_-]?key|auth|credential|cookie|bearer|session[_-]?id|(?:^|[_-])key$/i;
+// Env names are matched on whole `_`/`-` segments: ANTHROPIC_AUTH_TOKEN, PAD_KEY, MY_API_KEY; never
+// GIT_AUTHOR_NAME, MAX_TOKENS, TOKENIZERS_PARALLELISM or OAUTHLIB_*.
+const SECRET_NAME = /(?:^|[_-])(?:token|secret|passw(?:or)?d|pwd|api[_-]?key|access[_-]?key|private[_-]?key|credentials?|cookie|auth(?:[_-]?token)?|bearer|session[_-]?id|key)(?:[_-]|$)/i;
 const SECRET_HEADER = /authorization|token|api[_-]?key|secret|cookie|auth|session/i;
 const SECRET_ANYWHERE = /^(?:(?:experimental_)?bearer(?:_token)?|api[_-]?key|password|passwd|client_secret|access_token|auth_token)$/i;
 const SECRET_PARENT = /^(?:oauth|auth|credentials?|secrets?)$/i;
 const SECRET_UNDER_PARENT = /token|secret|passw|pwd|api[_-]?key|private[_-]?key|credential|cookie|^value$/i;
 const NAME_ONLY = /env_var$|^env_key$/i; // values are names of env vars, not credentials
 const ENV_REF = /^\s*(?:\$\{(?:env:)?[A-Za-z_]\w*(?::?-[^}]*)?\}|\$[A-Za-z_]\w*|%[A-Za-z_]\w*%|env:[A-Za-z_]\w*)\s*$/;
-const TOKEN = /\b(?:sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|glpat-[A-Za-z0-9_-]{20,})/;
-const TOKEN_G = new RegExp(TOKEN.source, 'g');
 // Loose form only where a credential is expected (headers, env, set); elsewhere (prose such as
 // developer_instructions) the token must look like one: 16+ chars with a digit.
 const BEARER = /\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/;
@@ -69,9 +70,21 @@ const URL_USERINFO = /[a-z][\w+.-]*:\/\/[^/?#@\s:]*:[^/?#@\s]+@/i;
 // Query parameter NAMED like a credential (`key`, `api_key`, `access_token`), not `author`/`keyword`.
 const URL_SECRET_QUERY = /[?&](?:[\w-]*[_-])?(?:token|key|apikey|secret|sig|signature|password|passwd|auth)=[^&#\s]+/i;
 
-const secretValue = (v, loose) => TOKEN.test(v) || (loose ? BEARER : BEARER_STRICT).test(v) || URL_USERINFO.test(v) || URL_SECRET_QUERY.test(v);
-/** redactSecrets plus well-known token shapes (for text that is shown). */
-const hide = s => redactSecrets(s).replace(TOKEN_G, '<redacted>');
+const secretValue = (v, loose) => TOKEN_SHAPES.test(v) || (loose ? BEARER : BEARER_STRICT).test(v) || URL_USERINFO.test(v) || URL_SECRET_QUERY.test(v);
+/**
+ * A value that could be a credential, for name-based decisions: 8+ chars without spaces (after an auth
+ * scheme), not a boolean, number, plain short word, filesystem path or plain URL.
+ */
+function credentialLike(v) {
+  const s = v.trim().replace(/^(?:Bearer|Basic|Token)\s+/i, '');
+  if (s.length < 8 || /\s/.test(s)) return false;
+  if (/^(?:true|false|yes|no|on|off|null|none)$/i.test(s) || /^[-+]?\d+(?:\.\d+)?$/.test(s)) return false;
+  if (/^[A-Za-z]+$/.test(s) && s.length < 20) return false;
+  if (/^(?:[A-Za-z]:[\\/]|[\\/~.])/.test(s) || /^[a-z][\w+.-]*:\/\//i.test(s)) return false;
+  return true;
+}
+/** Text that is shown: redactSecrets also masks well-known token shapes and credential headers. */
+const hide = s => redactSecrets(s);
 
 function isSecretLeaf(parts, v) {
   if (typeof v !== 'string' || !v.trim() || ENV_REF.test(v)) return false;
@@ -82,6 +95,7 @@ function isSecretLeaf(parts, v) {
   const inEnv = parent === 'env' || (parent === 'set' && keys.at(-3) === 'shell_environment_policy');
   const inHeaders = parent === 'http_headers' || parent === 'headers';
   if (secretValue(v, inEnv || inHeaders)) return true;
+  if (!credentialLike(v)) return false;
   if (inEnv) return SECRET_NAME.test(k);
   if (inHeaders) return SECRET_HEADER.test(k);
   if (keys.slice(0, -1).some(a => SECRET_PARENT.test(a))) return SECRET_UNDER_PARENT.test(k);
@@ -163,15 +177,26 @@ function approveFindings(server, parts, high) {
 // ---------------------------------------------------------------- execpolicy rules
 
 const INTERPRETER = /^(?:pwsh|powershell|cmd|bash|sh|zsh|python(?:\d+(?:\.\d+)*)?w?|node|ruby|perl)$/;
-const CODE_FLAGS = new Set(['-command', '-c', '/c', '-e', '-noprofile', '-lc', '-encodedcommand']);
+// Code / startup flags of shells and interpreters (compared lowercased). A tail of only these still
+// lets the caller supply the code. `-executionpolicy` takes a value (the next element, any word).
+const CODE_FLAGS = new Set([
+  '-command', '--command', '-c', '/c', '-e', '--eval', '-p', '-i', '-l', '-lc',
+  '-noprofile', '-nologo', '-noninteractive', '-encodedcommand', '-enc', '-ec', '-executionpolicy',
+]);
+const VALUE_FLAGS = new Set(['-executionpolicy']);
 const alts = e => (Array.isArray(e) ? e : [e]).map(String);
 const exeName = s => s.replace(/^.*[\\/]/, '').toLowerCase().replace(/\.exe$/, '');
 
 /** Allows any code: first element an interpreter, every later element only a code flag (any alternative). */
 export function isBroadAllow(pattern) {
   if (!Array.isArray(pattern) || !pattern.length) return false;
-  return alts(pattern[0]).some(a => INTERPRETER.test(exeName(a)))
-    && pattern.slice(1).every(e => alts(e).some(a => CODE_FLAGS.has(a.toLowerCase())));
+  if (!alts(pattern[0]).some(a => INTERPRETER.test(exeName(a)))) return false;
+  for (let i = 1; i < pattern.length; i++) {
+    const flags = alts(pattern[i]).map(a => a.toLowerCase());
+    if (!flags.some(a => CODE_FLAGS.has(a))) return false;
+    if (flags.some(a => VALUE_FLAGS.has(a))) i++; // skip the flag's value (e.g. Bypass)
+  }
+  return true;
 }
 
 /** The pattern as shown: credential flags' values, bearer tokens and token shapes redacted. */
@@ -240,10 +265,8 @@ const SCANNED_KINDS = new Set(['config', 'agent', 'rules', 'mcp', 'hook', 'notif
  */
 export function codexConfigFindings(c) {
   try {
-    if (c?.meta?.parseError) {
-      const { message, line } = c.meta.parseError;
-      return [finding('CONFIG_UNREADABLE', 'config', 'info', CONFIG_FILE, `TOML parse error: ${truncate(String(message ?? 'unparseable'))}`, Number.isInteger(line) ? line : 0)];
-    }
+    // Unparseable TOML: reported once by the inventory as a CONFIG_UNREADABLE problem line.
+    if (c?.meta?.parseError) return [];
     if (!c || !SCANNED_KINDS.has(c.kind)) return [];
     const raw = rawConfigOf(c.config);
     if (!isObj(raw)) return [];
@@ -286,8 +309,8 @@ export function codexConfigFindings(c) {
     }
     return out;
   } catch {
-    // A rule bug must never read as a clean component.
-    return [finding('CONFIG_UNREADABLE', 'config', 'info', CONFIG_FILE, 'Codex config rules could not evaluate this component; review it by hand', 0)];
+    // A rule bug must never read as a clean component: the report forces `review` on this rule id.
+    return [emit('CODEX_RULES_ERROR', 'Codex config rules could not evaluate this component; review it by hand')];
   }
 }
 

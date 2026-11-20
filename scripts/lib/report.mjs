@@ -9,6 +9,8 @@ const VERDICTS = ['malicious', 'suspicious', 'review', 'ok'];
 const AGENTS = ['claude', 'codex'];
 const AGENT_LABEL = { claude: 'Claude Code', codex: 'Codex' };
 const agentOf = c => (c.agent === 'codex' ? 'codex' : 'claude');
+// Info findings saying the component was not evaluated: never better than `review` (like incomplete).
+const FORCES_REVIEW = new Set(['CODEX_RULES_ERROR']);
 
 /** Idempotent: escape invisible characters first, then cap the length (ids, names, paths, snippets). */
 const safe = untrusted;
@@ -57,7 +59,8 @@ export function buildReport({ results, diff, allowlist, meta = {} }) {
       const out = flags[i] ? f : scored.findings[k++];
       return { ...out, file: safe(out.file), snippet: safe(out.snippet), allowlisted: flags[i] };
     });
-    const verdict = r.incomplete && scored.verdict === 'ok' ? 'review' : scored.verdict;
+    const notEvaluated = raw.some((f, i) => !flags[i] && FORCES_REVIEW.has(f.ruleId));
+    const verdict = (r.incomplete || notEvaluated) && scored.verdict === 'ok' ? 'review' : scored.verdict;
     return {
       id: safe(c.id), kind: c.kind, name: safe(c.name), scope: c.scope, agent: agentOf(c),
       scannerVerdict: verdict, score: scored.score,
