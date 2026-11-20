@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 // skill-sentry scan CLI. Env: SKILL_SENTRY_DATA_DIR (data dir), SKILL_SENTRY_CLAUDE_HOME (default ~/.claude),
-// SKILL_SENTRY_HOME_DIR (default os.homedir(); where ~/.claude.json is read from).
+// SKILL_SENTRY_HOME_DIR (default os.homedir(); where ~/.claude.json and ~/.codex are read from),
+// SKILL_SENTRY_CODEX_HOME (scan this Codex home instead of $CODEX_HOME / ~/.codex),
+// SKILL_SENTRY_NO_WSL=1 (do not look for Codex homes inside WSL distributions).
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { discover } from './lib/inventory.mjs';
+import { codexHomes } from './lib/codex/homes.mjs';
+import { discoverCodex } from './lib/codex/inventory.mjs';
 import { scanComponent } from './lib/scanner.mjs';
 import { loadBaseline, baselineLoadError, saveBaseline, diffBaseline, fileMap } from './lib/baseline.mjs';
 import { loadAllowlist, allowlistLoadError, addAllowEntry } from './lib/allowlist.mjs';
@@ -83,9 +87,14 @@ if (opts.path) {
 } else {
   // Same deadline as the scan: skills the inventory could not walk in time are reported as incomplete.
   const inv = discover({ claudeHome, homeDir, projectDir, selfRoot, deadline });
+  const homes = codexHomes({
+    env: process.env, homeDir, platform: process.platform, deadline,
+    includeWsl: process.env.SKILL_SENTRY_NO_WSL !== '1', problems,
+  });
+  const cx = discoverCodex({ homes, projectDir, selfRoot, deadline });
   // CONFIG_UNREADABLE findings are surfaced as report-level problems (not attached to a component).
-  for (const f of inv.configFindings) problems.push(`${f.ruleId}: ${f.file}: ${f.snippet}`);
-  components = inv.components;
+  for (const f of [...inv.configFindings, ...cx.configFindings]) problems.push(`${f.ruleId}: ${f.file}: ${f.snippet}`);
+  components = [...inv.components, ...cx.components];
   if (opts.component) {
     // Accept the id as the report shows it (escaped) as well as the raw id.
     const want = opts.component;

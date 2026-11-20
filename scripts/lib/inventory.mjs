@@ -15,7 +15,7 @@ function canonJson(v) {
 }
 
 /** Canonical directory key: realpath when it exists (symlinks/junctions resolved), case-insensitive on win32. */
-function realDir(p) {
+export function realDir(p) {
   let r = path.resolve(p);
   try { r = fs.realpathSync.native(r); } catch { /* missing: compare the resolved form */ }
   return normDir(r);
@@ -46,7 +46,7 @@ export function isRemoteLinkText(text) {
 }
 
 /** Link text of `p` when it is a symlink/junction to a remote path, else null (no I/O beyond lstat/readlink). */
-function remoteLinkTarget(p) {
+export function remoteLinkTarget(p) {
   try {
     if (!fs.lstatSync(p).isSymbolicLink()) return null;
     const t = fs.readlinkSync(p);
@@ -120,6 +120,23 @@ export function listFiles(dir, limits, { deadline } = {}) {
   return { files, truncated, skipped, timedOut, outside };
 }
 
+/**
+ * True when `rp` stays inside `root`: lexically first (no fs call on an outside or UNC path), then
+ * with no remote link on the way, then by real path (a link may point out). A missing file that is
+ * lexically inside counts as inside (the caller's read reports it).
+ */
+export function isInsideRoot(root, rp) {
+  let inside = isInside(normDir(rp), normDir(root));
+  if (inside) {
+    const rel = path.relative(root, rp).split(/[\\/]/).filter(Boolean);
+    for (let i = 1; inside && i <= rel.length; i++) if (remoteLinkTarget(path.join(root, ...rel.slice(0, i))) !== null) inside = false;
+  }
+  if (inside) {
+    try { inside = isInside(realKey(rp), realDir(root)); } catch { /* missing */ }
+  }
+  return inside;
+}
+
 // Stored config -> unredacted copy, for the scanner's rules only (never serialized: a WeakMap entry
 // survives `{ ...component }` copies and is invisible to JSON.stringify).
 const RAW_CONFIG = new WeakMap();
@@ -127,6 +144,12 @@ const RAW_CONFIG = new WeakMap();
 /** Unredacted config of a discovered component (falls back to the stored config). */
 export function rawConfigOf(config) {
   return (config && RAW_CONFIG.get(config)) ?? config;
+}
+
+/** Attach the unredacted `raw` copy to a stored (redacted) config object; returns `stored`. */
+export function bindRawConfig(stored, raw) {
+  RAW_CONFIG.set(stored, raw);
+  return stored;
 }
 
 /**
@@ -164,6 +187,7 @@ export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits, de
   // Never drop a colliding entry: later ones get a deterministic "#2", "#3" ... suffix.
   const add = (c, source) => {
     if (source) c.meta = { ...c.meta, source };
+    c.agent = 'claude';
     const base = c.id;
     for (let n = 2; seen.has(c.id); n++) c.id = `${base}#${n}`;
     seen.add(c.id);
@@ -273,16 +297,7 @@ export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits, de
     // Manifest-referenced files must stay inside the plugin root: lexically first (no fs call on an
     // outside or UNC path), then no remote link on the way, then by real path (a link may point out).
     const readInside = rp => {
-      const rootN = normDir(root);
-      let inside = isInside(normDir(rp), rootN);
-      if (inside) {
-        const rel = path.relative(root, rp).split(/[\\/]/).filter(Boolean);
-        for (let i = 1; inside && i <= rel.length; i++) if (remoteLinkTarget(path.join(root, ...rel.slice(0, i))) !== null) inside = false;
-      }
-      if (inside) {
-        try { inside = isInside(realKey(rp), realDir(root)); } catch { /* missing: read() stays silent */ }
-      }
-      if (!inside) {
+      if (!isInsideRoot(root, rp)) {
         configFindings.push({ ruleId: 'CONFIG_UNREADABLE', category: 'config', severity: 'info', line: 0, snippet: 'path outside plugin root', file: rp });
         return null;
       }

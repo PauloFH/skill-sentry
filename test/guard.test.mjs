@@ -794,7 +794,10 @@ test('scanSummary wording', () => {
 
 function runGuard(stdin, extraEnv = {}, script = GUARD) {
   const data = extraEnv.SKILL_SENTRY_DATA_DIR ?? tmp('gdata');
-  const env = { ...process.env, SKILL_SENTRY_DATA_DIR: data, SKILL_SENTRY_CLAUDE_HOME: tmp('nohome'), SKILL_SENTRY_HOME_DIR: tmp('nohome'), ...extraEnv };
+  const env = {
+    ...process.env, SKILL_SENTRY_DATA_DIR: data, SKILL_SENTRY_CLAUDE_HOME: tmp('nohome'), SKILL_SENTRY_HOME_DIR: tmp('nohome'),
+    SKILL_SENTRY_CODEX_HOME: tmp('nocodex'), SKILL_SENTRY_NO_WSL: '1', ...extraEnv,
+  };
   return new Promise((resolve, reject) => {
     const t0 = process.hrtime.bigint();
     const child = spawn(process.execPath, [script], { env, stdio: ['pipe', 'pipe', 'pipe'] });

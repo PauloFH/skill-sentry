@@ -81,7 +81,7 @@ test('self-scan: shipped skills, hooks and manifests pass the plugin\'s own rule
   const data = tmpDir('selfdata');
   for (const d of ['skills', 'hooks', '.claude-plugin']) fs.cpSync(path.join(ROOT, d), path.join(tmp, d), { recursive: true });
   const r = spawnSync(process.execPath, [SCAN, '--path', tmp, '--json'], {
-    encoding: 'utf8', env: { ...process.env, SKILL_SENTRY_DATA_DIR: data },
+    encoding: 'utf8', env: { ...process.env, SKILL_SENTRY_DATA_DIR: data, SKILL_SENTRY_CODEX_HOME: tmpDir('codex'), SKILL_SENTRY_NO_WSL: '1' },
   });
   assert.equal(r.status, 0, r.stderr);
   const report = JSON.parse(r.stdout);
