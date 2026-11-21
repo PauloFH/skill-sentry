@@ -121,18 +121,29 @@ function extractTargetsEx(toolName, toolInput, cwd) {
 
 // ---- self-protection: canonical, case-insensitive (win32) comparison ----
 
-function realpathish(abs) {
+// Windows device names resolve whatever their directory (`C:\missing\NUL` -> `\\.\NUL`): always looked up.
+const WIN_DEVICE_NAME = /^(?:con|prn|aux|nul|com\d|lpt\d|conin\$|conout\$)(?:\..*)?$/i;
+
+/**
+ * Realpath of `abs`, or of its deepest existing ancestor joined with the rest. With `memo` (one decision's
+ * Map of path -> realpath, or null when missing), a path whose parent is known to be missing is not looked up:
+ * on macOS `/home/x/...` waits on the automounter at every lookup (CI: 6 s for 65 sibling paths).
+ */
+function realpathish(abs, memo) {
   const rest = [];
   let cur = abs;
   for (let n = 0; n < 64; n++) {
-    try {
-      return path.join(fs.realpathSync.native(cur), ...rest);
-    } catch {
-      const parent = path.dirname(cur);
-      if (parent === cur) return abs;
-      rest.unshift(path.basename(cur));
-      cur = parent;
+    const parent = path.dirname(cur);
+    let r = memo?.get(cur);
+    if (r === undefined && memo && parent !== cur && memo.get(parent) === null && !WIN_DEVICE_NAME.test(path.basename(cur))) r = null;
+    if (r === undefined) {
+      try { r = fs.realpathSync.native(cur); } catch { r = null; }
+      memo?.set(cur, r);
     }
+    if (r !== null) return path.join(r, ...rest);
+    if (parent === cur) return abs;
+    rest.unshift(path.basename(cur));
+    cur = parent;
   }
   return abs;
 }
@@ -167,6 +178,8 @@ export function isUnusualPath(p) {
 
 // Distinct ordinary paths that get realpath + stat in one decision (covers MAX_MCP_STRINGS read+write).
 const MAX_IO_PATHS = MAX_MCP_STRINGS * 2;
+// Path lookup time per decision (a slow or automounted file system); the guard must answer well inside Codex's ~5 s.
+const IO_BUDGET_MS = 1000;
 
 const normForCompare = s => {
   let out = String(s).replace(/\\/g, '/');
@@ -194,7 +207,9 @@ const fileId = p => {
  */
 function makeResolver(cwd, mcp) {
   const io = new Map();
-  const state = { left: MAX_IO_PATHS, unresolved: false };
+  const dirs = new Map(); // realpathish memo, this decision only
+  // `ioMs`: time spent in path lookups; past IO_BUDGET_MS new paths are left unresolved (PATH_UNRESOLVED, fail safe).
+  const state = { left: MAX_IO_PATHS, unresolved: false, ioMs: 0 };
   // The trusted base (the hook cwd) is canonicalised once: realpath expands 8.3 short names (`C:\Users\RUNNER~1`),
   // so a path is never flagged as unusual only because the cwd it is relative to is spelled in 8.3 form. A path
   // written as `<cwd spelling>/rest` counts the same way: only `rest` (what the caller wrote) is form-checked.
@@ -232,10 +247,12 @@ function makeResolver(cwd, mcp) {
     const key = normForCompare(abs);
     let e = io.get(key);
     if (!e) {
-      if (state.left <= 0) { state.unresolved = true; return { abs, long: null, unusual, io: null }; }
+      if (state.left <= 0 || state.ioMs > IO_BUDGET_MS) { state.unresolved = true; return { abs, long: null, unusual, io: null }; }
       state.left--;
       let long = null;
-      try { long = realpathish(abs); } catch { long = null; }
+      const t0 = Date.now();
+      try { long = realpathish(abs, dirs); } catch { long = null; }
+      state.ioMs += Date.now() - t0;
       e = { long, parentId: undefined };
       io.set(key, e);
     }

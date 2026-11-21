@@ -961,6 +961,36 @@ test('round 4: more real path strings than the cap still fail safe', () => {
   assert.equal(r.ruleId, 'PATH_UNRESOLVED');
   assert.equal(timedD('mcp__plugin_x_fs__read_files', { paths }).decision, 'log');
 });
+// CI (macOS): the test above took 6 s. `/home` is an autofs mount there, so every realpath of `/home/x/...` waits
+// on the automounter, once per path string. A decision now remembers missing dirs (a child of a missing dir is not
+// looked up) and stops resolving new paths after 1 s of path I/O (the rest count as PATH_UNRESOLVED, fail safe).
+function countRealpaths(slowMs, fn) {
+  const orig = fs.realpathSync.native;
+  let calls = 0;
+  fs.realpathSync.native = (p, ...a) => {
+    calls++;
+    if (slowMs && /slowfs/.test(String(p))) { const t = Date.now() + slowMs; while (Date.now() < t) { /* a slow mount */ } }
+    return orig(p, ...a);
+  };
+  try { return { r: fn(), calls }; } finally { fs.realpathSync.native = orig; }
+}
+test('CI macOS: sibling paths under a missing dir cost one lookup of that dir per decision', () => {
+  const missing = path.join(tmp('autofs'), 'home', 'x', 'proj');
+  const paths = Array.from({ length: 60 }, (_, i) => path.join(missing, `f${i}.txt`));
+  const { r, calls } = countRealpaths(0, () => d('mcp__plugin_x_fs__read_files', { paths }, { mcpPlugin: 'x' }));
+  assert.equal(r.decision, 'none');
+  assert.ok(calls < 20, `realpath calls: ${calls}`);
+});
+test('CI macOS: a slow file system cannot stall a decision (path I/O budget, then PATH_UNRESOLVED)', () => {
+  const root = path.join(tmp('slowfs'), 'slowfs');
+  const paths = Array.from({ length: 40 }, (_, i) => path.join(root, `d${i}`, 'f.txt'));
+  const t0 = performance.now();
+  const { r } = countRealpaths(60, () => d('mcp__plugin_x_fs__read_files', { paths }, { mcpPlugin: 'x' }));
+  const ms = performance.now() - t0;
+  assert.equal(r.decision, 'ask');
+  assert.equal(r.ruleId, 'PATH_UNRESOLVED');
+  assert.ok(ms < 1800, `decision took ${ms.toFixed(0)} ms`);
+});
 test('round 4: secret paths hidden behind many URLs are still matched', () => {
   const urls = Object.fromEntries(Array.from({ length: 130 }, (_, i) => [`u${i}`, `https://example.com/item/${i}`]));
   // Repeated cells count once; a MIME-shaped string that a path rule matches is still matched.
