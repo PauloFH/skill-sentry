@@ -51,7 +51,7 @@ jobs:
         run: |
           git tag -l 'v*'
           git rev-parse --verify --quiet refs/tags/v0.1.1 >/dev/null || { echo "::error::tag v0.1.1 is missing from the checkout"; exit 1; }
-      - name: Unit tests
+      - name: Unit tests (npm test, no tag-related skips)
         run: node tools/ci/run-tests.mjs
 
   e2e:
