@@ -141,11 +141,13 @@ jobs:
     # push access with `git push --dry-run` even in a dry run (fork PRs get a read-only token: see fork-notice).
     # On a pull request semantic-release sees the base branch (main) and analyses the merge commit, so the summary
     # shows what merging would release.
+    # It runs even when a check failed (always()), so the next version is visible on every PR; the summary states
+    # the check results, and a push to main publishes only when they all passed.
     name: release (dry run)
     needs: [ci, model-e2e]
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+      always() && (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -172,6 +174,8 @@ jobs:
       - name: semantic-release --dry-run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CI_RESULT: ${{ needs.ci.result }}
+          MODEL_RESULT: ${{ needs.model-e2e.result }}
         run: |
           set -o pipefail
           args=(--extends "$RUNNER_TEMP/semrel/release.config.cjs" --dry-run --no-ci)
@@ -183,6 +187,8 @@ jobs:
           next="$(printf '%s\n' "$log" | sed -nE 's/.*The next release version is ([^ ]+).*/\1/p' | tail -n1)"
           {
             if [ -n "$next" ]; then echo "### next release: $next"; else echo "### no release"; fi
+            echo
+            echo "checks: CI \`$CI_RESULT\`, model e2e \`$MODEL_RESULT\`. A push to main publishes only when both succeeded."
             echo
             echo "semantic-release --dry-run ($GITHUB_EVENT_NAME, $GITHUB_REF_NAME):"
             echo '```'
