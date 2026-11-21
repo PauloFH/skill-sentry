@@ -52,9 +52,11 @@ export function setVersion(root, version) {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
   const rootIdx = args.indexOf('--root');
-  const root = rootIdx !== -1 ? path.resolve(args[rootIdx + 1]) : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const rootArg = rootIdx !== -1 ? args[rootIdx + 1] : undefined;
   const version = args.find((a, i) => !a.startsWith('--') && (rootIdx === -1 || i !== rootIdx + 1));
   try {
+    if (rootIdx !== -1 && (!rootArg || rootArg.startsWith('--'))) throw new Error('--root needs a directory');
+    const root = rootArg ? path.resolve(rootArg) : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
     console.log(`version ${version}: ${setVersion(root, version ?? '').join(', ')}`);
   } catch (e) {
     console.error(`set-version: ${e.message}`);

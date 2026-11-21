@@ -50,4 +50,9 @@ test('set-version CLI: exit 0 with a version, exit 1 without one', () => {
   assert.equal(JSON.parse(fs.readFileSync(path.join(d, 'package.json'), 'utf8')).version, '1.2.3');
   const bad = spawnSync(process.execPath, [SCRIPT, '--root', d], { encoding: 'utf8' });
   assert.equal(bad.status, 1);
+  for (const args of [['1.2.3', '--root'], ['1.2.3', '--root', '--x']]) {
+    const r = spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8' });
+    assert.equal(r.status, 1, args.join(' '));
+    assert.equal(r.stderr.trim(), 'set-version: --root needs a directory');
+  }
 });
