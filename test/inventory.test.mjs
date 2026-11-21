@@ -479,7 +479,9 @@ test('readJsonSafe: only regular files up to 5 MB are read', () => {
   const dev = process.platform === 'win32' ? '\\\\.\\NUL' : '/dev/null';
   const devR = readJsonSafe(dev);
   assert.equal(devR.ok, false);
-  assert.match(devR.error, /not a regular file/);
+  // Node 20+ stats `\\.\NUL` as a character device; Node 18 on Windows refuses the stat itself (EINVAL).
+  // Either way the device is never read.
+  assert.match(devR.error, /not a regular file|^EINVAL: invalid argument, stat/);
   assert.deepEqual(readJsonSafe(path.join(d, 'nope.json')), { ok: false, error: 'missing' });
 });
 

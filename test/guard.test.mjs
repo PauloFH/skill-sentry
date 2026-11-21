@@ -271,7 +271,9 @@ test('Ruling L3: read-only self invocation is a positive ASCII allow-list (word-
     Bash: [
       // bash merges `x\ --project` into one word and unescapes `\--update-baseline` into a flag
       `node ${scanFwd} --json --project x\\ --project \\${UB}`,
-      `node "${scanWin}" --json`, // any backslash under Bash
+      // any backslash under Bash (built explicitly: on POSIX path.join gives no backslash, and the plain path is a
+      // legitimate Ruling M invocation there)
+      `node "${scanFwd.replace(/\//g, '\\')}" --json`,
       `node "${scanFwd}" --path "C:\\x"`,
     ],
     PowerShell: [
