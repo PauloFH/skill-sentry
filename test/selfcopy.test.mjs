@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { tmpFactory, copyTree } from './helpers/tmp.mjs';
-import { matchSelf, loadSelfManifest, markSkillSentryCopy, MANIFEST_REL } from '../skills/audit/scripts/lib/selfcopy.mjs';
+import { matchSelf, loadSelfManifest, markSkillSentryCopy, manifestByteCap, MANIFEST_REL } from '../skills/audit/scripts/lib/selfcopy.mjs';
 import { KNOWN_RELEASES } from '../skills/audit/scripts/lib/releases.mjs';
 import { roots } from '../skills/audit/scripts/lib/roots.mjs';
 import { discover } from '../skills/audit/scripts/lib/inventory.mjs';
@@ -135,6 +135,59 @@ test('a standalone skill copy matching the manifest subset is self', () => {
   const cx = discoverCodex({ homes: [{ label: 'h0', root: path.join(userHome, '.codex'), userHome }], projectDir: null, selfRoot: self, selfManifest: manifest, releases: NO_RELEASES });
   const cs = cx.components.find(c => c.kind === 'skill' && c.name === 'skill-sentry');
   assert.equal(cs.self, true);
+});
+
+test('final review M3: a skill copy missing a file the copy check requires still gets the manifest check', () => {
+  // A manifest whose skills/audit subset has no scripts/guard.mjs (which the copy check requires): before the fix the
+  // missing file threw inside the copy check and the manifest was never consulted.
+  const self = devTree();
+  const copy = path.join(tmp('m3'), '.agents', 'skills', 'skill-sentry-audit');
+  write(copy, 'SKILL.md', '---\nname: skill-sentry-audit\ndescription: audit\n---\nRun.\n');
+  write(copy, 'scripts/scan.mjs', '// scan\n');
+  const files = hashTree(copy);
+  const body = `${JSON.stringify({ version: '9.9.9', files: Object.fromEntries(Object.entries(files).map(([k, v]) => [`skills/audit/${k}`, v]).sort()) }, null, 2)}\n`;
+  write(copy, SKILL_MANIFEST, body);
+  const manifest = loadSelfManifest(path.join(copy, ...SKILL_MANIFEST.split('/')));
+  assert.ok(manifest);
+  assert.deepEqual(matchSelf(copy, 'skill', { selfRoot: self, selfManifest: manifest, releases: NO_RELEASES }), { self: true, version: '9.9.9', via: 'manifest' });
+});
+
+test('final review M2: the manifest check reads no more than about twice the running tree', () => {
+  const { dir: rel, manifest } = buildRelease(tmp('rel'));
+  const self = buildRelease(tmp('self')).dir;
+  const expected = new Map(Object.entries(manifest.files).filter(([k]) => k.startsWith('skills/audit/')).map(([k, v]) => [k.slice('skills/audit/'.length), v]));
+  const known = [...expected.keys()].reduce((a, k) => a + fs.statSync(path.join(self, 'skills', 'audit', ...k.split('/'))).size, 0);
+  assert.equal(manifestByteCap(expected, path.join(self, 'skills', 'audit')), 2 * known, 'every file known: twice its running size');
+  // A file the running tree lacks gets a fixed allowance (larger than any shipped file), not the 64 MB copy limit.
+  const cap = manifestByteCap(new Map([...expected, ['scripts/lib/new.mjs', 'x']]), path.join(self, 'skills', 'audit'));
+  assert.ok(cap > 2 * known && cap <= 2 * known + 1024 * 1024, String(cap));
+  // An oversized file at an allowed path is refused before it is read.
+  const copy = skillCopy(rel);
+  fs.writeFileSync(path.join(copy, 'scripts', 'scan.mjs'), Buffer.alloc(2 * known + 4096, 0x20));
+  assert.equal(matchSelf(copy, 'skill', { selfRoot: self, selfManifest: manifest, releases: NO_RELEASES }).self, false);
+});
+
+test('final review I1: the guard\'s standalone verifier exists only for standalone-shaped commands, verifies content, and is capped', async () => {
+  const { standaloneVerifier, VERIFY_BUDGET_MS } = await import('../skills/audit/scripts/lib/selfverify.mjs');
+  assert.ok(VERIFY_BUDGET_MS <= 250);
+  for (const command of ['git status', 'node scan.mjs --json', `cat ${path.join(ROOT, 'skills', 'audit', 'SKILL.md')}`, null]) {
+    assert.equal(await standaloneVerifier(command, ROOT), null, String(command));
+  }
+  const home = tmp('sv');
+  const good = path.join(home, '.agents', 'skills', 'skill-sentry-audit');
+  copyTree(path.join(ROOT, 'skills', 'audit'), good);
+  const bad = path.join(home, '.agents', 'skills', 'evil-skill-sentry');
+  copyTree(path.join(ROOT, 'skills', 'audit'), bad);
+  fs.appendFileSync(path.join(bad, 'SKILL.md'), '\nextra\n');
+  const command = `node "${good.replace(/\\/g, '/')}/scripts/scan.mjs" --json`;
+  const v = await standaloneVerifier(command, ROOT, { deadline: Date.now() + 10_000 });
+  assert.equal(v(good), true);
+  assert.equal(v(bad), false);
+  assert.equal(v(path.join(home, 'missing')), false);
+  // Past the budget nothing is verified (fail closed), even a good copy.
+  let t = 0;
+  const late = await standaloneVerifier(command, ROOT, { now: () => (t += 1000) });
+  assert.equal(late(good), false);
 });
 
 test('a plugin copy matching the manifest is self', () => {

@@ -30,6 +30,7 @@ import { dataDirPath } from '../datadir.mjs';
 import { loadAllowlist } from '../allowlist.mjs';
 import { escapeInvisible, truncate } from '../text.mjs';
 import { findCodexOrigin } from './origin.mjs';
+import { standaloneVerifier } from '../selfverify.mjs';
 import { scanPatch, shellPatch, PATCH_MAX_BYTES, PATCH_MAX_PATHS } from './patch.mjs';
 
 /** Codex input: has a string turn_id and no prompt_id (Ruling R6 FINAL; environment variables are not used). */
@@ -428,13 +429,15 @@ export async function handleCodex({ input, selfRoot, selfSkill = null, write, lo
   // C3: a shell call whose working directory is inside the data or install dir can touch it with bare
   // relative names. Only an exact Ruling M read-only self invocation is exempt.
   const cwdProtected = shell && cmd !== null && cwdInside(input.cwd, [dir, selfRoot])
-    && !isReadOnlySelfInvocation(cmd, selfRoot, toolName, { agentFlag: true, selfSkill, dataDir: dir })
-    && !(process.platform === 'win32' && isReadOnlySelfInvocation(cmd, selfRoot, 'PowerShell', { agentFlag: true, selfSkill, dataDir: dir }));
+    && !isReadOnlySelfInvocation(cmd, selfRoot, toolName, { agentFlag: true, selfSkill })
+    && !(process.platform === 'win32' && isReadOnlySelfInvocation(cmd, selfRoot, 'PowerShell', { agentFlag: true, selfSkill }));
 
   let originMemo;
   const origin = () => (originMemo === undefined ? (originMemo = findCodexOrigin(input.transcript_path, undefined, toolName, deadline)) : originMemo);
   // P3: the hook cwd is not a base for relative names (a Codex shell call may run in its own `workdir`).
-  const args = { toolName, toolInput, origin, allowlist: () => readAllowlist(dir), selfRoot, selfSkill, dataDir: dir, cwd: input.cwd, extraWritePaths, selfViews: true, shellCwd: false };
+  // Final review I1: a standalone copy's read-only forms are exempt only when verified (never in C3 above).
+  const verifySkill = shell && cmd !== null && !cwdProtected ? await standaloneVerifier(cmd, selfRoot, { deadline }) : null;
+  const args = { toolName, toolInput, origin, allowlist: () => readAllowlist(dir), selfRoot, selfSkill, dataDir: dir, cwd: input.cwd, extraWritePaths, selfViews: true, shellCwd: false, verifySkill };
   const base = process.platform === 'win32' && toolName === 'Bash'
     ? mergeWin32Readings(decide(args), decide({ ...args, toolName: 'PowerShell' }))
     : decide(args);

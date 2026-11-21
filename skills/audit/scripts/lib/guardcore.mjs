@@ -321,7 +321,8 @@ function collapseDotDot(s) {
 // `skill-sentry` path segment, not `some-skill-sentry-fork`. Boundary on both sides = start/end or any
 // character outside [\w.-] (same notion as `mentions`). Trailing dots/spaces are accepted (Ruling K):
 // Win32 strips them, so `skill-sentry.\x` is the same dir.
-const SELF_SEGMENT = /(?:^|[^\w.-])skill-sentry[. ]*(?=$|[^\w.-])/i;
+// Final review I2: `skill-sentry-audit` too, the folder `npx skills add` installs (its frontmatter name).
+const SELF_SEGMENT = /(?:^|[^\w.-])skill-sentry(?:-audit)?[. ]*(?=$|[^\w.-])/i;
 
 // Final review C1: a skill-sentry copy installed for the other agent (or from another marketplace) is not the
 // guard's own install dir, yet tampering with it disables that agent's guard. Any `skill-sentry` segment below a
@@ -852,11 +853,17 @@ const SCAN_FLAGS = new Set(['--json', '--diff-only']);
 // Standalone installs (npx skills add): a skill dir whose one name segment contains `skill-sentry`, directly in a
 // `.claude`, `.agents` or `.codex` skills dir (the dirs STANDALONE_INSTALL protects). Next to the plugin guard, the
 // two read-only forms such a copy needs are exempt from SELF_PROTECT exactly as the plugin's own are: the scan
-// invocation (Ruling M, `scan.mjs` only) and, Codex only, the plain SKILL.md read (T7). The match is on the literal
-// path shape (no `.`/`..` segment), never on content: hashing the copy here would be slow work before the decision
-// (Ruling L1). The exemption skips SELF_PROTECT and nothing else, the treatment any other skill's script gets. A
-// target inside the data dir or the running plugin root never matches.
+// invocation (Ruling M, `scan.mjs` only) and, Codex only, the plain SKILL.md read (T7). The literal path must have
+// that shape (no `.`/`..` segment), lie outside the data dir and the running plugin root, AND the dir must be a
+// verified copy of the running skill (final review I1): `verifySkill(dir)`, supplied by the caller (selfverify.mjs:
+// matchSelf 'skill', loaded lazily only when the command has this shape, capped at ~200 ms; guardcore stays free of
+// inventory code). No verifier, or a copy it cannot vouch for (other content, a newer or dev build, `--rename`):
+// SELF_PROTECT as usual.
 const STANDALONE_SELF_FILE = /\/\.(?:claude|agents|codex)\/skills\/[a-z0-9._-]*skill-sentry[a-z0-9._-]*\/(scripts\/scan\.mjs|skill\.md)$/i;
+// Cheap prefilter on raw command text (either separator, any quoting): may this command name such a file?
+const STANDALONE_SELF_IN_TEXT = /\.(?:claude|agents|codex)[\\/]+skills[\\/]+[^\s'"`\\/]*skill-sentry[^\s'"`\\/]*[\\/]+(?:scripts[\\/]+scan\.mjs|skill\.md)/i;
+/** Whether `text` may name a standalone skill-sentry install's scan.mjs or SKILL.md (callers then build a verifier). */
+export const mayNameStandaloneSelf = text => typeof text === 'string' && STANDALONE_SELF_IN_TEXT.test(text);
 const DOT_SEGMENT = /(?:^|[\\/])\.{1,2}(?:[\\/]|$)/;
 function isStandaloneSelfFile(file, target, which, protectedRoots) {
   if (DOT_SEGMENT.test(file)) return false;
@@ -864,14 +871,19 @@ function isStandaloneSelfFile(file, target, which, protectedRoots) {
   if (!m || m[1].toLowerCase() !== which) return false;
   return !protectedRoots.filter(str).flatMap(rootForms).some(f => target === f || target.startsWith(`${f}/`));
 }
+const verified = (verifySkill, dir) => {
+  if (typeof verifySkill !== 'function') return false;
+  try { return verifySkill(dir) === true; } catch { return false; }
+};
 
 /**
  * Exact read-only self invocation (Ruling M); mutating or parameterized forms return false.
  * `agentFlag` (Codex only, T7) also accepts one `--agent claude|codex|all` pair after `scan.mjs` or `harden.mjs check`:
  * a closed set of values that only narrows what is read (and a partial scan never writes the baseline).
- * The same `scan.mjs` forms of a standalone skill-sentry install pass too (isStandaloneSelfFile; `dataDir` excluded).
+ * The same `scan.mjs` forms of a standalone skill-sentry install pass too when `verifySkill` vouches for its dir
+ * (isStandaloneSelfFile; `dataDir` excluded). Codex C3 passes no verifier: there only the guard's own forms count.
  */
-export function isReadOnlySelfInvocation(cmd, selfRoot, toolName = 'Bash', { agentFlag = false, selfSkill = null, dataDir = null } = {}) {
+export function isReadOnlySelfInvocation(cmd, selfRoot, toolName = 'Bash', { agentFlag = false, selfSkill = null, dataDir = null, verifySkill = null } = {}) {
   if (!str(cmd) || !str(selfRoot)) return false;
   const m = SELF_INVOCATION.exec(cmd);
   if (!m) return false;
@@ -881,7 +893,9 @@ export function isReadOnlySelfInvocation(cmd, selfRoot, toolName = 'Bash', { age
   if (!/^(?:[A-Za-z]:[\\/]|\/(?![\\/]))/.test(script) || isUnusualPath(script)) return false;
   const target = lowerOnWin(slashes(path.resolve(script)));
   const args = m[4].split(' ').filter(Boolean);
-  if (isStandaloneSelfFile(script, target, 'scripts/scan.mjs', [dataDir, selfRoot])) return fixedTokens(args, SCAN_FLAGS, agentFlag);
+  if (isStandaloneSelfFile(script, target, 'scripts/scan.mjs', [dataDir, selfRoot])) {
+    return fixedTokens(args, SCAN_FLAGS, agentFlag) && verified(verifySkill, path.dirname(path.dirname(path.resolve(script))));
+  }
   const scripts = rootForms(path.join(str(selfSkill) ? selfSkill : path.join(selfRoot, 'skills', 'audit'), 'scripts'));
   const is = name => scripts.some(f => target === `${f}/${lowerOnWin(name)}`);
   if (is('harden.mjs')) return args[0] === 'check' && fixedTokens(args.slice(1), new Set(), agentFlag);
@@ -906,9 +920,9 @@ const SELF_VIEWS_POWERSHELL = [
 
 /**
  * Exact read-only view of one of our own skills' SKILL.md (Codex only; callers opt in), or of a standalone
- * skill-sentry install's SKILL.md (isStandaloneSelfFile; `dataDir` excluded).
+ * skill-sentry install's SKILL.md that `verifySkill` vouches for (isStandaloneSelfFile; `dataDir` excluded).
  */
-export function isReadOnlySelfView(cmd, selfRoot, toolName = 'Bash', { dataDir = null } = {}) {
+export function isReadOnlySelfView(cmd, selfRoot, toolName = 'Bash', { dataDir = null, verifySkill = null } = {}) {
   if (!str(cmd) || !str(selfRoot)) return false;
   const m = (toolName === 'PowerShell' ? SELF_VIEWS_POWERSHELL : SELF_VIEWS).map(re => re.exec(cmd)).find(Boolean);
   if (!m) return false;
@@ -917,7 +931,7 @@ export function isReadOnlySelfView(cmd, selfRoot, toolName = 'Bash', { dataDir =
   if (file.includes('\\') && toolName !== 'PowerShell') return false;
   if (!/^(?:[A-Za-z]:[\\/]|\/(?![\\/]))/.test(file) || isUnusualPath(file)) return false;
   const target = lowerOnWin(slashes(path.resolve(file)));
-  if (isStandaloneSelfFile(file, target, 'skill.md', [dataDir, selfRoot])) return true;
+  if (isStandaloneSelfFile(file, target, 'skill.md', [dataDir, selfRoot])) return verified(verifySkill, path.dirname(path.resolve(file)));
   return rootForms(selfRoot).some(f => {
     const rest = target.startsWith(`${f}/skills/`) ? target.slice(f.length + '/skills/'.length) : null;
     return rest !== null && /^[a-z0-9_-]+\/skill\.md$/i.test(rest);
@@ -1001,11 +1015,13 @@ const synthetic = (ruleId, p) => ({ ruleId, category: 'path', severity: 'high', 
  * `selfViews` (Codex only) exempts a plain read of one of our own SKILL.md files from SELF_PROTECT.
  * `shellCwd` (P3): `cwd` is the directory the shell command runs in (Claude Code); Codex passes false.
  * `selfSkill`: the running guard's skill dir (Ruling M); defaults to `<selfRoot>/skills/audit` (a plugin install).
+ * `verifySkill(dir) -> boolean` (sync; see selfverify.mjs): vouches for a standalone skill-sentry copy, whose read-only
+ * forms are then exempt too (final review I1). Null: none is.
  * A `high` decision also carries `highs` (every high match: ruleId, category, snippet) for the Codex tiers.
  * @returns {{ decision: 'deny'|'ask'|'log'|'none', ruleId?: string, severity?: string, reason?: string, snippet?: string,
  *   highs?: { ruleId: string, category: string, snippet: string }[] }}
  */
-export function decide({ toolName, toolInput, origin = null, allowlist = null, selfRoot, selfSkill = null, dataDir, cwd, extraWritePaths = null, selfViews = false, shellCwd = true }) {
+export function decide({ toolName, toolInput, origin = null, allowlist = null, selfRoot, selfSkill = null, dataDir, cwd, extraWritePaths = null, selfViews = false, shellCwd = true, verifySkill = null }) {
   const { targets: t, mcp, truncated } = extractTargetsEx(toolName, toolInput, cwd);
   if (Array.isArray(extraWritePaths)) t.writePaths.push(...extraWritePaths.filter(str));
   const matches = [];
@@ -1040,8 +1056,8 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
       const ask = reason => ({ decision: 'ask', ruleId: 'SELF_PROTECT', severity: 'high', reason, snippet: snip(c) });
       if (ps && changesPsDrive(c)) return ask('PowerShell command creates or removes a drive (Ruling R14)');
       if (relinksClaude(c, ps)) return ask('shell command moves or links the Claude config directory');
-      if (isReadOnlySelfInvocation(c, selfRoot, toolName, { agentFlag: selfViews, selfSkill, dataDir })) continue; // Rulings L2, L3 (+ Codex --agent)
-      if (selfViews && isReadOnlySelfView(c, selfRoot, toolName, { dataDir })) continue; // Codex skill loading (T7)
+      if (isReadOnlySelfInvocation(c, selfRoot, toolName, { agentFlag: selfViews, selfSkill, dataDir, verifySkill })) continue; // Rulings L2, L3 (+ Codex --agent)
+      if (selfViews && isReadOnlySelfView(c, selfRoot, toolName, { dataDir, verifySkill })) continue; // Codex skill loading (T7)
       // Line continuations (bash `\`, PowerShell backtick) are joined in the de-obfuscated copy.
       const joined = String(c).replace(/\\\r?\n/g, '').replace(/`\r?\n/g, ' ');
       const texts = [normCommandText(c), normCommandText(deobfuscate(joined))];
@@ -1125,7 +1141,8 @@ export function formatReason(d, originLabel, summary) {
   parts.push(originLabel ? `likely source: ${show(originLabel)}` : 'no skill/plugin attributed');
   if (summary) parts.push(summary);
   let s = parts.join('; ') + '.';
-  if (originLabel) s += ' Run /skill-sentry:audit for a full report.';
+  // Agent-neutral: `/skill-sentry:audit` is the Claude plugin command only (Codex and the standalone skill differ).
+  if (originLabel) s += ' Run the skill-sentry audit for a full report.';
   return s;
 }
 

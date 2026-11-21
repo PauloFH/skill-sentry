@@ -11,7 +11,7 @@ import {
 } from '../skills/audit/scripts/lib/codex/guardpolicy.mjs';
 import { patchPaths, scanPatch, shellPatch, PATCH_MAX_BYTES, PATCH_MAX_PATHS } from '../skills/audit/scripts/lib/codex/patch.mjs';
 import { findCodexOrigin, lastSkillPath } from '../skills/audit/scripts/lib/codex/origin.mjs';
-import { tmpFactory } from './helpers/tmp.mjs';
+import { tmpFactory, copyTree } from './helpers/tmp.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const GUARD = path.resolve(HERE, '..', 'skills', 'audit', 'scripts', 'guard.mjs');
@@ -56,6 +56,28 @@ function runGuard(stdin, extraEnv = {}) {
     child.on('close', code => resolve({ code, stdout, stderr, data, ms: Number(process.hrtime.bigint() - t0) / 1e6 }));
     child.stdin.end(typeof stdin === 'string' ? stdin : JSON.stringify(stdin));
   });
+}
+/**
+ * The guard's handle() in this process, with a generous deadline and the copy check's module already loaded: the
+ * standalone exemption is capped at ~200 ms (selfverify.mjs), which a spawned guard under a loaded test run can miss
+ * (it then fails closed). Used where a test needs that check to pass; denials are tested through runGuard.
+ */
+async function runHandle(stdin, extraEnv = {}) {
+  const env = {
+    SKILL_SENTRY_DATA_DIR: path.join(tmp('hdata'), 'skill-sentry'), SKILL_SENTRY_CLAUDE_HOME: tmp('nohome'), SKILL_SENTRY_HOME_DIR: tmp('nohome'),
+    SKILL_SENTRY_CODEX_HOME: tmp('nocodex'), SKILL_SENTRY_NO_WSL: '1', ...extraEnv,
+  };
+  const saved = Object.fromEntries(Object.keys(env).map(k => [k, process.env[k]]));
+  Object.assign(process.env, env);
+  try {
+    await import('../skills/audit/scripts/lib/selfcopy.mjs');
+    const { handle } = await import('../skills/audit/scripts/lib/guardmain.mjs');
+    let stdout = '';
+    await handle({ raw: JSON.stringify(stdin), selfRoot: SELF, selfSkill: path.join(SELF, 'skills', 'audit'), deadline: Date.now() + 10_000, write: s => { stdout += s; }, log: () => {} });
+    return { stdout };
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
 }
 const logLines = dir => {
   const f = path.join(dir, 'guard.log');
@@ -974,11 +996,62 @@ test('codex: Get-Content / gc / type reads of our own SKILL.md are exempt only a
     assert.equal(decide({ ...base, toolName: 'Bash', toolInput: { command } }).decision, 'none', `Bash: ${command}`);
   }
 });
+// A standalone install (npx skills add) of the running guard's own audit skill: a byte copy of skills/audit.
+function standaloneCopies() {
+  const home = tmp('sahome');
+  const skills = path.join(home, '.agents', 'skills');
+  const mk = (name, edit) => {
+    const d = path.join(skills, name);
+    copyTree(path.join(SELF, 'skills', 'audit'), d);
+    edit?.(d);
+    return fwdSlash(d);
+  };
+  return {
+    home,
+    good: mk('skill-sentry-audit'),
+    exact: mk('skill-sentry'),
+    // Final review I1: a folder named after skill-sentry is not enough; its content must be a verified copy.
+    evil: mk('evil-skill-sentry', d => fs.appendFileSync(path.join(d, 'scripts', 'scan.mjs'), '\n// changed\n')),
+    extra: mk('skill-sentry-x', d => fs.writeFileSync(path.join(d, 'scripts', 'extra.mjs'), 'export {};\n')),
+    plain: (() => { const d = path.join(skills, 'skill-sentry-notes'); fs.mkdirSync(path.join(d, 'scripts'), { recursive: true }); fs.writeFileSync(path.join(d, 'SKILL.md'), '---\nname: x\ndescription: x\n---\n'); fs.writeFileSync(path.join(d, 'scripts', 'scan.mjs'), 'export {};\n'); return fwdSlash(d); })(),
+  };
+}
+test('codex: a verified standalone skill-sentry copy can be loaded and run next to the plugin guard; unverified copies and other forms deny', async () => {
+  const c = standaloneCopies();
+  for (const dir of [c.good, c.exact]) {
+    for (const command of [`cat ${dir}/SKILL.md`, `sed -n '1,200p' "${dir}/SKILL.md"`, `node "${dir}/scripts/scan.mjs" --json`,
+      `node ${dir}/scripts/scan.mjs --json --agent codex`]) {
+      const r = await runHandle(codex('Bash', { command }));
+      assert.equal(r.stdout, '', command);
+    }
+  }
+  for (const dir of [c.evil, c.extra, c.plain]) {
+    for (const command of [`cat ${dir}/SKILL.md`, `node "${dir}/scripts/scan.mjs" --json`]) {
+      const r = await runGuard(codex('Bash', { command }));
+      assert.match(assertDeny(JSON.parse(r.stdout), command), RUN_YOURSELF, command);
+    }
+  }
+  // C3: a working directory inside the data dir or the plugin root exempts only the guard's own invocation, never a
+  // standalone copy's (verified or not).
+  const data = path.join(tmp('sac3'), 'skill-sentry');
+  fs.mkdirSync(data, { recursive: true });
+  for (const cwd of [data, SELF]) {
+    const command = `node "${c.good}/scripts/scan.mjs" --json`;
+    const r = await runGuard(codex('Bash', { command }, { cwd }), { SKILL_SENTRY_DATA_DIR: data });
+    assert.match(assertDeny(JSON.parse(r.stdout), command), RUN_YOURSELF, `${cwd}: ${command}`);
+  }
+  // Claude Code: the verified scan passes, an unverified one asks, and the SKILL.md read asks (Claude loads skills itself).
+  assert.equal((await runHandle(claude('Bash', { command: `node "${c.good}/scripts/scan.mjs" --json` }))).stdout, '');
+  for (const command of [`node "${c.evil}/scripts/scan.mjs" --json`, `cat ${c.good}/SKILL.md`]) {
+    const r = await runGuard(claude('Bash', { command }));
+    assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'ask', command);
+  }
+});
 test('codex: a standalone skill-sentry install (npx skills add) can be loaded and run next to the plugin guard; other forms deny', async () => {
-  const dir = fwdSlash(path.join(os.homedir(), '.agents', 'skills', 'skill-sentry-audit'));
+  const dir = standaloneCopies().good;
   for (const command of [`cat ${dir}/SKILL.md`, `sed -n '1,200p' "${dir}/SKILL.md"`, `node "${dir}/scripts/scan.mjs" --json`,
     `node ${dir}/scripts/scan.mjs --json --agent codex`]) {
-    const r = await runGuard(codex('Bash', { command }));
+    const r = await runHandle(codex('Bash', { command }));
     assert.equal(r.stdout, '', command);
   }
   for (const command of [`cat ${dir}/SKILL.md > out.txt`, `cat ${dir}/SKILL.md && rm -r x`, `cat ${dir}/SKILL.md ${dir}/scripts/scan.mjs`,
@@ -988,7 +1061,7 @@ test('codex: a standalone skill-sentry install (npx skills add) can be loaded an
     assert.match(assertDeny(JSON.parse(r.stdout), command), RUN_YOURSELF, command);
   }
   // Claude Code: the scan invocation passes, the SKILL.md read still asks (Claude loads skills itself).
-  assert.equal((await runGuard(claude('Bash', { command: `node "${dir}/scripts/scan.mjs" --json` }))).stdout, '');
+  assert.equal((await runHandle(claude('Bash', { command: `node "${dir}/scripts/scan.mjs" --json` }))).stdout, '');
   const r = await runGuard(claude('Bash', { command: `cat ${dir}/SKILL.md` }));
   assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'ask');
 });

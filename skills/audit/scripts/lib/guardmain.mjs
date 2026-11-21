@@ -7,6 +7,7 @@ import { dataDirPath } from './datadir.mjs';
 import { loadAllowlist, isFindingAllowed } from './allowlist.mjs';
 import { escapeInvisible, truncate } from './text.mjs';
 import { isCodexInput, handleCodex } from './codex/guardpolicy.mjs';
+import { standaloneVerifier } from './selfverify.mjs';
 
 const safe = s => (s == null ? null : truncate(escapeInvisible(String(s)), 200));
 const originName = o => (o ? o.skill ?? o.mcpPlugin ?? null : null);
@@ -74,7 +75,10 @@ export async function handle({ raw, selfRoot, selfSkill = null, deadline, write,
   // Lazy: the allowlist file is read only when a critical match is about to be denied.
   const allowlist = () => readAllowlist(dir);
 
-  const d = decide({ toolName, toolInput: input.tool_input, origin, allowlist, selfRoot, selfSkill, dataDir: dir, cwd: input.cwd });
+  // Final review I1: only a verified standalone copy's read-only forms are exempt (null unless the command names one).
+  const command = input.tool_input && typeof input.tool_input === 'object' ? input.tool_input.command : null;
+  const verifySkill = await standaloneVerifier(command, selfRoot, { deadline });
+  const d = decide({ toolName, toolInput: input.tool_input, origin, allowlist, selfRoot, selfSkill, dataDir: dir, cwd: input.cwd, verifySkill });
   if (d.decision === 'none') return;
 
   const o = origin();

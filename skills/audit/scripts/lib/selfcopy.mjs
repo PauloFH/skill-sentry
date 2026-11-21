@@ -175,7 +175,10 @@ const sameUpToEol = (a, b) => Math.max(a, b) <= 2 * Math.min(a, b);
  */
 function sameTree(root, ref, { must, refSkip, rootSkip, limits, deadline }) {
   for (const m of must) {
-    if (!fs.lstatSync(abs(root, m)).isFile()) return false;
+    // Final review M3: a missing file is "not the same tree", never an exception that skips the later checks.
+    let st;
+    try { st = fs.lstatSync(abs(root, m), { throwIfNoEntry: false }); } catch { return false; }
+    if (!st?.isFile()) return false;
   }
   const mine = shippedFiles(ref, { skipDirs: refSkip, limits, deadline });
   if (!mine || !mine.size) return false;
@@ -270,6 +273,7 @@ export const MANIFEST_REL = 'skills/audit/scripts/lib/selfmanifest.json';
 const SKILL_PREFIX = 'skills/audit/';
 const SKILL_MANIFEST_REL = MANIFEST_REL.slice(SKILL_PREFIX.length);
 const DEFAULT_MANIFEST = fileURLToPath(new URL('./selfmanifest.json', import.meta.url));
+const RUNNING_SKILL_DIR = fileURLToPath(new URL('../..', import.meta.url));
 const MANIFEST_MAX_BYTES = 1024 * 1024;
 const VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -325,9 +329,30 @@ function manifestSet(manifest, kind) {
   return out;
 }
 
-/** `root` holds exactly the relpaths of `expected`, each with that LF-normalised SHA-256. Never throws. */
-function matchesHashes(root, expected, { skipDirs, deadline }) {
-  const files = shippedFiles(root, { allowed: new Set(expected.keys()), skipDirs, deadline });
+// Allowance for a manifest file the running tree does not hold (a standalone scanner checking a plugin copy, or a
+// file added since): above any shipped file (the largest, tools/ci/release/package-lock.json, is under 200 KiB),
+// doubled for CRLF.
+const UNKNOWN_FILE_ALLOWANCE = 512 * 1024;
+/**
+ * Final review M2: the most bytes a copy matching `expected` (relpath -> hash) can hold: twice (CRLF) the size of
+ * each file in the running tree at `ref`, or UNKNOWN_FILE_ALLOWANCE for one it lacks. Never throws.
+ */
+export function manifestByteCap(expected, ref) {
+  let cap = 0;
+  for (const rel of expected.keys()) {
+    let st = null;
+    try { st = ref ? fs.lstatSync(abs(ref, rel), { throwIfNoEntry: false }) : null; } catch { st = null; }
+    cap += st?.isFile() ? 2 * st.size : UNKNOWN_FILE_ALLOWANCE;
+  }
+  return cap;
+}
+
+/**
+ * `root` holds exactly the relpaths of `expected`, each with that LF-normalised SHA-256, within `maxBytes` in total
+ * (counted from the directory walk, before any file is read). Never throws.
+ */
+function matchesHashes(root, expected, { skipDirs, deadline, maxBytes }) {
+  const files = shippedFiles(root, { allowed: new Set(expected.keys()), skipDirs, deadline, limits: { maxBytes } });
   if (!files || files.size !== expected.size) return false;
   for (const [rel, size] of files) {
     if (late(deadline)) return false;
@@ -392,7 +417,12 @@ export function matchSelf(dir, kind, { selfRoot = null, selfManifest, releases, 
     }
     const skipDirs = plugin ? OTHER_COPY_SKIP_DIRS : null;
     const expected = manifestSet(manifest, kind);
-    if (expected && matchesHashes(dir, expected, { skipDirs, deadline })) return { self: true, version: manifest.version, via: 'manifest' };
+    if (expected) {
+      // The running tree bounds what is read: its plugin root (when it is one) or its skill dir; else this module's.
+      const ref = selfRoot ? (plugin ? selfRoot : selfSkillDir(selfRoot)) : (plugin ? null : RUNNING_SKILL_DIR);
+      const maxBytes = manifestByteCap(expected, ref);
+      if (matchesHashes(dir, expected, { skipDirs, deadline, maxBytes })) return { self: true, version: manifest.version, via: 'manifest' };
+    }
     let tables = releases ?? { hashes: KNOWN_RELEASES, sizes: KNOWN_RELEASE_SIZES };
     if (!plugin) tables = releases ? skillTables(releases) : (embeddedSkillTables ??= skillTables(tables));
     const version = knownRelease(dir, { releases: tables, deadline, skipDirs });

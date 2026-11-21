@@ -453,7 +453,7 @@ test('Ruling M in a standalone skill install: <skill dir>/scripts/{scan,harden}.
   assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'ask');
 });
 
-test('plugin guard + standalone skill-sentry install: only the fixed scan invocation (and, Codex only, the SKILL.md read) of the standalone dir pass', () => {
+test('plugin guard + standalone skill-sentry install: only the fixed scan invocation (and, Codex only, the SKILL.md read) of a verified standalone dir pass', () => {
   // npx skills add puts the audit at ~/.agents/skills/<name> (+ a link in ~/.claude/skills); <name> contains skill-sentry.
   const H = os.homedir();
   const proj = tmp('saproj');
@@ -465,7 +465,10 @@ test('plugin guard + standalone skill-sentry install: only the fixed scan invoca
     path.join(proj, '.agents', 'skills', 'skill-sentry-audit'),
   ];
   for (const [agent, extra] of [['claude', {}], ['codex', { selfViews: true, shellCwd: false }]]) {
-    const dd = (toolName, command) => decide({ toolName, toolInput: { command }, origin: null, allowlist: EMPTY, selfRoot: SELF, dataDir: DATA, ...extra });
+    // `verifySkill` stands in for the guard's content check (matchSelf 'skill', selfverify.mjs): it vouches here.
+    const asked = [];
+    const verifySkill = d => { asked.push(d); return true; };
+    const dd = (toolName, command, v = verifySkill) => decide({ toolName, toolInput: { command }, origin: null, allowlist: EMPTY, selfRoot: SELF, dataDir: DATA, verifySkill: v, ...extra });
     for (const dir of dirs) {
       const scan = path.join(dir, 'scripts', 'scan.mjs');
       const skillMd = path.join(dir, 'SKILL.md');
@@ -492,7 +495,14 @@ test('plugin guard + standalone skill-sentry install: only the fixed scan invoca
           `Get-Content -LiteralPath "${skillMd}" "${scan}"`, ...(agent === 'claude' ? [`Get-Content -Raw "${skillMd}"`] : [])],
       };
       for (const tool of ['Bash', 'PowerShell']) {
-        for (const command of none[tool]) assert.equal(dd(tool, command).decision, 'none', `${agent} ${tool}: ${command}`);
+        for (const command of none[tool]) {
+          asked.length = 0;
+          assert.equal(dd(tool, command).decision, 'none', `${agent} ${tool}: ${command}`);
+          assert.deepEqual(asked, [path.resolve(dir)], `${agent} ${tool}: the copy checked is the skill dir: ${command}`);
+          // Final review I1: without a verifier, or when the copy is not verified, the same form asks.
+          assert.equal(dd(tool, command, null).ruleId, 'SELF_PROTECT', `${agent} ${tool} unverified: ${command}`);
+          assert.equal(dd(tool, command, () => false).ruleId, 'SELF_PROTECT', `${agent} ${tool} not a copy: ${command}`);
+        }
         for (const command of asks[tool]) assert.equal(dd(tool, command).ruleId, 'SELF_PROTECT', `${agent} ${tool}: ${command}`);
       }
     }
@@ -504,6 +514,33 @@ test('plugin guard + standalone skill-sentry install: only the fixed scan invoca
       }
     }
   }
+});
+
+test('final review I2: a skill-sentry-audit segment (the standalone install name) goes through Ruling J / R9 / P3 like skill-sentry', () => {
+  const fwd2 = s => s.replace(/\\/g, '/');
+  const H = fwd2(os.homedir());
+  // A link to a skills dir: the segment is resolved through it.
+  const base = tmp('i2');
+  const skills = path.join(base, 'home', '.agents', 'skills');
+  fs.mkdirSync(path.join(skills, 'skill-sentry-audit'), { recursive: true });
+  const link = path.join(base, 'lnk');
+  fs.symlinkSync(skills, link, process.platform === 'win32' ? 'junction' : 'dir');
+  for (const [tool, command] of [
+    ['Bash', 'cd ~/.agents/skills && rm -rf skill-sentry-audit'],
+    ['Bash', 'pushd ~/.agents/skills; rm -rf skill-sentry-audit'],
+    ['Bash', 'cd ~/.agents && rm -rf skills/skill-sentry-audit'],
+    ['Bash', 'D=skill-sentry-audit; rm -rf ~/.agents/skills/$D'],
+    ['Bash', `rm -rf ${H}/.agents/skills/skill\\-sentry-audit`],
+    ['Bash', `cd ${H}/.claude/skills && rm -rf skill-sentry-audit`],
+    ['Bash', `rm -rf "${fwd2(link)}/skill-sentry-audit"`],
+    ['PowerShell', 'Set-Location ~\\.agents\\skills; Remove-Item -Recurse skill-sentry-audit'],
+    ['PowerShell', 'Remove-Item -Recurse (Join-Path ~/.agents/skills skill-sentry-audit)'],
+  ]) {
+    assert.equal(d(tool, { command }).ruleId, 'SELF_PROTECT', `${tool}: ${command}`);
+  }
+  // A literal absolute path away from the agent homes and protected roots stays exempt (R9), as for skill-sentry.
+  const far = fwd2(path.join(tmp('i2far'), 'skill-sentry-audit', 'README.md'));
+  assert.equal(d('Bash', { command: `cat ${far}` }).decision, 'none', far);
 });
 
 test('SELF_PROTECT covers standalone skill-sentry installs (~/.claude/skills, ~/.agents/skills, project dirs); other skills stay none', () => {
@@ -1415,7 +1452,9 @@ test('formatReason with origin and scan summary', () => {
   assert.ok(s.includes('RCE_DOWNLOAD_PIPE_SHELL'));
   assert.ok(s.includes('likely source: plugin:evil@mkt'));
   assert.ok(s.includes('component verdict: suspicious (score 45), 3 findings'));
-  assert.ok(s.endsWith('Run /skill-sentry:audit for a full report.'));
+  // Agent-neutral (final review M7): Claude's /skill-sentry:audit is not a Codex command, nor the standalone skill's.
+  assert.ok(s.endsWith('Run the skill-sentry audit for a full report.'));
+  assert.ok(!s.includes('/skill-sentry:audit'));
   assert.ok(!s.includes('a'.repeat(201)));
 });
 test('formatReason without origin', () => {
@@ -1423,7 +1462,7 @@ test('formatReason without origin', () => {
   assert.ok(s.startsWith('skill-sentry: '));
   assert.ok(s.includes('no skill/plugin attributed'));
   assert.ok(s.includes('\\u200B'));
-  assert.ok(!s.includes('/skill-sentry:audit'));
+  assert.ok(!s.includes('skill-sentry audit'));
 });
 test('formatReason escapes quotes, C0 controls and ESC in the snippet and origin', () => {
   const s = formatReason({ decision: 'ask', ruleId: 'X', severity: 'high', snippet: 'a"b\x1b[31mc\nd\x07e\x7f' }, 'evil"\x1b]0;x\x07', null);
@@ -1517,7 +1556,7 @@ test('guard main: high with skill origin asks and runs the component check', asy
   assert.equal(out.permissionDecision, 'ask');
   assert.ok(out.permissionDecisionReason.includes('likely source: plugin:evil@mkt'), out.permissionDecisionReason);
   assert.ok(out.permissionDecisionReason.includes('component verdict: ok (score 0), 0 findings'), out.permissionDecisionReason);
-  assert.ok(out.permissionDecisionReason.endsWith('Run /skill-sentry:audit for a full report.'));
+  assert.ok(out.permissionDecisionReason.endsWith('Run the skill-sentry audit for a full report.'));
   assert.equal(logLines(r.data)[0].origin, 'plugin:evil@mkt');
 });
 test('guard main: write content is never logged, long commands are truncated', async () => {
