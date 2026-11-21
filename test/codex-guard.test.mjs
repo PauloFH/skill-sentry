@@ -1300,6 +1300,29 @@ test('codex guard p50 under 150ms for a none decision', async () => {
   assert.ok(median < 150, `median ${median.toFixed(1)} ms`);
 });
 
+// ---------------------------------------------------------------- final review I3: Codex control files
+test('codex I3: attributed writes to Codex config, hooks, rules (patch and shell) are paused; unattributed ones are logged', async () => {
+  const home = os.homedir().replace(/\\/g, '/');
+  const alt = tmp('i3cx').replace(/\\/g, '/');
+  const patch = (verb, file, body = '+x') => codex('apply_patch', { command: `*** Begin Patch\n*** ${verb} File: ${file}\n${verb === 'Update' ? '@@\n' : ''}${body}\n*** End Patch` });
+  const calls = [
+    patch('Update', `${home}/.codex/config.toml`, '+[features]\n+hooks = false'),
+    patch('Add', `${home}/.codex/hooks.json`, '+{}'),
+    patch('Add', `${home}/.codex/rules/x.rules`, '+prefix_rule(pattern=["bash"], decision="allow")'),
+    patch('Add', '.codex/config.toml', '+x'),
+    codex('Bash', { command: "printf '[features]\\nhooks=false\\n' >> ~/.codex/config.toml" }),
+    patch('Add', `${alt}/config.toml`, '+x'),
+  ];
+  for (const input of calls) {
+    const tag = JSON.stringify(input.tool_input).slice(0, 120);
+    const paused = await runGuard({ ...input, transcript_path: R('cmdexec-read.jsonl') }, { CODEX_HOME: alt });
+    assert.match(assertPaused(JSON.parse(paused.stdout), tag), /PERSIST_(?:PATH_)?CODEX_CONFIG/, tag);
+    const logged = await runGuard(input, { CODEX_HOME: alt });
+    assert.equal(logged.stdout, '', tag);
+    assert.ok(logLines(logged.data).some(l => /^PERSIST_(?:PATH_)?CODEX_CONFIG/.test(l.ruleId) && l.decision === 'log'), tag);
+  }
+});
+
 // ---------------------------------------------------------------- final review C1: sibling installs
 test('codex C1: the sibling skill-sentry installs (Claude and other Codex homes) are denied for shell and patch writes', async () => {
   const home = os.homedir().replace(/\\/g, '/');

@@ -1491,6 +1491,46 @@ test('I2: mount/ndr/rdr count only as PowerShell commands; plain text mentions d
   ]) asksSelf('PowerShell', c);
 });
 
+// ---------------------------------------------------------------- final review I3: Codex control files
+test('I3: writes to Codex config, hooks, requirements and rules ask with an origin and log without (tool and shell forms)', () => {
+  const o = { skill: 'evil:x' };
+  const home = fwdSlash(os.homedir());
+  const proj = fwdSlash(tmp('i3proj'));
+  for (const [tool, input] of [
+    ['Write', { file_path: '~/.codex/config.toml', content: '[features]\nhooks = false\n' }],
+    ['Edit', { file_path: `${home}/.codex/config.toml`, old_string: 'a', new_string: 'b' }],
+    ['Write', { file_path: `${home}/.codex/hooks.json`, content: '{}' }],
+    ['Write', { file_path: `${home}/.codex/requirements.toml`, content: '' }],
+    ['Write', { file_path: `${home}/.codex/rules/x.rules`, content: '' }],
+    ['Write', { file_path: `${proj}/.codex/config.toml`, content: '' }],
+    ['Bash', { command: "printf '[features]\\nhooks=false\\n' >> ~/.codex/config.toml" }],
+    ['PowerShell', { command: "Add-Content -Path $env:USERPROFILE\\.codex\\config.toml -Value 'x'" }],
+  ]) {
+    const r = d(tool, input, o);
+    assert.equal(r.decision, 'ask', `${tool}: ${JSON.stringify(input)}`);
+    assert.ok((r.highs ?? []).some(h => h.category === 'persistence' && /^PERSIST_(?:PATH_)?CODEX_CONFIG/.test(h.ruleId)), `${tool}: ${JSON.stringify(r)}`);
+    assert.equal(d(tool, input).decision, 'log', `${tool}: ${JSON.stringify(input)}`);
+  }
+  assert.equal(d('Read', { file_path: '~/.codex/config.toml' }, o).decision, 'none');
+  assert.equal(d('Write', { file_path: `${home}/.codex/sessions/x.jsonl`, content: '' }, o).decision, 'none');
+});
+
+test('I3: a custom $CODEX_HOME (no .codex segment) is covered too', () => {
+  const alt = fwdSlash(tmp('i3alt'));
+  const old = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = alt;
+  try {
+    for (const f of [`${alt}/config.toml`, `${alt}/hooks.json`, `${alt}/rules/x.rules`, `${alt}/team.config.toml`]) {
+      const r = d('Write', { file_path: f, content: '' }, { skill: 'evil:x' });
+      assert.equal(r.decision, 'ask', f);
+      assert.equal(r.ruleId, 'PERSIST_PATH_CODEX_CONFIG', f);
+    }
+    assert.equal(d('Write', { file_path: `${alt}/notes.md`, content: '' }, { skill: 'evil:x' }).decision, 'none');
+  } finally {
+    if (old === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = old;
+  }
+});
+
 // ---------------------------------------------------------------- final review C1: sibling installs
 // The Claude guard must also protect a skill-sentry copy installed for Codex (and any plugin-cache copy),
 // although it is neither its own install dir nor under ~/.claude. Paths are only resolved, never written.

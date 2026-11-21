@@ -146,6 +146,10 @@ export const RULES = [
   r('PERSIST_CLAUDE_SETTINGS_WRITE', 'persistence', 'high',
     /(?:>>?|\btee\b|\bsed\s+-i|\bset-content\b|\badd-content\b|\bout-file\b)[^\n]{0,300}\.claude[/\\]settings(?:\.local)?\.json/i,
     CODE_CMD, 'Modifies Claude Code settings from a script'),
+  // Final review I3: the Codex control files (see CODEX_CONTROL_TAIL), under `.codex` or `$CODEX_HOME`.
+  r('PERSIST_CODEX_CONFIG_WRITE', 'persistence', 'high',
+    /(?:>>?|\btee\b|\bsed\s+-i|\bset-content\b|\badd-content\b|\bout-file\b|\bcp\b|\bmv\b|\bcopy-item\b|\bmove-item\b)[^\n]{0,300}(?:\.codex|codex_home[}%]?)[/\\](?:(?:[\w-]+\.)?config\.toml|hooks\.json|requirements\.toml|rules\b|\.hook-trust\b)/i,
+    CODE_CMD, 'Modifies Codex config, hooks, requirements or execpolicy rules from a script'),
 
   // ---- PERMISSIONS ----
   r('PERM_SKIP_PERMISSIONS', 'permissions', 'high',
@@ -256,6 +260,14 @@ for (const rule of RULES) if (PROSE_HIGH_ONLY.has(rule.id)) rule.kindSeverity = 
 // ---- Path rules (applied to normalizePath(p)) ----
 const pr = (id, category, severity, pattern, description) => r(id, category, severity, pattern, ['path'], description);
 
+/**
+ * Final review I3: the Codex files that control what runs (config layers, hooks, requirements, execpolicy rules,
+ * hook trust records), relative to a Codex home or project `.codex` dir. The guard also applies it under a custom
+ * `$CODEX_HOME`, which has no `.codex` segment.
+ */
+export const CODEX_CONTROL_TAIL = /^(?:(?:[\w-]+\.)?config\.toml$|hooks\.json$|requirements\.toml$|rules(?:\/|$)|\.hook-trust(?:\/|$))/i;
+const CODEX_CONTROL_PATH = new RegExp(`(?:^|\\/)(?:\\.codex|etc\\/codex|openai\\/codex)\\/(?:${CODEX_CONTROL_TAIL.source.slice(1)})`, 'i');
+
 const PATH_RULES = [
   // Secret path rules also accept a relative form (`.ssh/id_rsa`, `.aws/credentials`) with no leading `/`.
   pr('SECRET_PATH_SSH', 'secret', 'high', /(?:^|\/)\.ssh(?:\/(?![^/]*\.pub$)|$)/i, 'SSH key directory'),
@@ -284,6 +296,7 @@ const PATH_RULES = [
   pr('PERSIST_PATH_CLAUDE_SETTINGS', 'persistence', 'high', /\/\.claude\/(?:settings(?:\.[\w-]+)?\.json|hooks\/)/i,
     'Claude Code settings or hooks'),
   pr('PERSIST_PATH_GIT_HOOKS', 'persistence', 'high', /\/\.git\/hooks\/[^/]+$/i, 'Git hook'),
+  pr('PERSIST_PATH_CODEX_CONFIG', 'persistence', 'high', CODEX_CONTROL_PATH, 'Codex config, hooks, requirements or execpolicy rules'),
 ];
 
 // ---- Matching ----

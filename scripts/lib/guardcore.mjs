@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { matchCommand, matchPath } from './rules.mjs';
+import { matchCommand, matchPath, CODEX_CONTROL_TAIL } from './rules.mjs';
 import { escapeInvisible, truncate } from './text.mjs';
 import { isCommandAllowed } from './allowlist.mjs';
 
@@ -678,14 +678,26 @@ function commandMatches(target) {
   return out;
 }
 
+/** I3: Codex control files under a custom Codex home (`$CODEX_HOME`, SKILL_SENTRY_CODEX_HOME: no `.codex` segment). */
+function underCustomCodexHome(forms) {
+  const homes = [process.env.CODEX_HOME, process.env.SKILL_SENTRY_CODEX_HOME].filter(str);
+  if (!homes.length) return false;
+  const roots = homes.flatMap(rootForms);
+  return forms.some(f => roots.some(r => f.startsWith(r + '/') && CODEX_CONTROL_TAIL.test(f.slice(r.length + 1))));
+}
+
 /** Path rule matches on the path as given plus its resolved long form (symlinks, junctions, subst). */
 function pathMatches(p, keep, R) {
   const out = matchPath(p).filter(keep).map(m => ({ ...m, target: p }));
-  const { long } = R.get(p);
+  const { abs, long } = R.get(p);
   if (long && long !== p) {
     for (const m of matchPath(long)) {
       if (keep(m) && !out.some(x => x.ruleId === m.ruleId)) out.push({ ...m, snippet: snip(p), target: p });
     }
+  }
+  const codex = { ruleId: 'PERSIST_PATH_CODEX_CONFIG', category: 'persistence', severity: 'high', line: 1, snippet: snip(p), target: p };
+  if (keep(codex) && !out.some(x => x.ruleId === codex.ruleId) && underCustomCodexHome([abs, long].filter(str).map(f => lowerOnWin(slashes(f))))) {
+    out.push(codex);
   }
   return out;
 }
