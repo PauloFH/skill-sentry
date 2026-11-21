@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: ['18', '22']
+    steps:
+      # Full history and tags: the known-release tests run `git archive v0.1.1`.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Check that release tags are present
+        shell: bash
+        run: |
+          git tag -l 'v*'
+          git rev-parse --verify --quiet refs/tags/v0.1.1 >/dev/null || { echo "::error::tag v0.1.1 is missing from the checkout"; exit 1; }
+      - name: Unit tests
+        run: node tools/ci/run-tests.mjs
