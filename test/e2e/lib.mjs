@@ -197,4 +197,30 @@ export function guardLog(home) {
   return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)) : [];
 }
 
+/**
+ * Install `dist` as a local marketplace in both isolated homes and trust the Codex hook (start once, then
+ * hooks/list + config/batchWrite). Returns { claudeRoot, codexRoot }. Throws on any failed step; install.test.mjs
+ * asserts each step in detail, this is the short path for the model e2e.
+ */
+export async function installBoth(cli, { env, cwd, dist, id = 'skill-sentry@skill-sentry' }) {
+  const ok = (r, what) => { if (r.code !== 0) throw new Error(`${what} failed (${r.code}): ${r.stdout}${r.stderr}`); return r; };
+  ok(await run(cli.claude, ['plugin', 'marketplace', 'add', dist, '--json'], { env, cwd }), 'claude marketplace add');
+  ok(await run(cli.claude, ['plugin', 'install', id, '--json'], { env, cwd }), 'claude plugin install');
+  const list = JSON.parse(ok(await run(cli.claude, ['plugin', 'list', '--json'], { env, cwd }), 'claude plugin list').stdout);
+  const claudeRoot = list.find(p => p.id === id)?.installPath;
+  ok(await run(cli.codex, ['plugin', 'marketplace', 'add', dist, '--json'], { env, cwd }), 'codex marketplace add');
+  const codexRoot = lastJson(ok(await run(cli.codex, ['plugin', 'add', id, '--json'], { env, cwd }), 'codex plugin add').stdout).installedPath;
+  const first = await appServer(cli.codex, { env, cwd });
+  await new Promise(r => setTimeout(r, 3000));
+  await first.close();
+  const s = await appServer(cli.codex, { env, cwd });
+  try {
+    const hooks = (await s.request('hooks/list', { cwds: [cwd] })).data.flatMap(d => d.hooks).filter(h => h.pluginId === id);
+    if (hooks.length !== 1) throw new Error(`expected one skill-sentry hook, got ${hooks.length}`);
+    const value = { [hooks[0].key]: { trusted_hash: hooks[0].currentHash } };
+    await s.request('config/batchWrite', { edits: [{ keyPath: 'hooks.state', value, mergeStrategy: 'upsert' }], reloadUserConfig: true });
+  } finally { await s.close(); }
+  return { claudeRoot, codexRoot };
+}
+
 export const tmpBase = () => fs.mkdtempSync(path.join(process.env.RUNNER_TEMP || os.tmpdir(), 'ss-e2e-'));
