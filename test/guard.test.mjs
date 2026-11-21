@@ -851,8 +851,9 @@ test('Ruling K: everyday paths stay none', () => {
 // ---------------------------------------------------------------- fix round 4
 // `C://Users/...` is a filesystem path (Node resolves it to `C:\Users\...`), never a URL.
 const driveSlashes = p => p.replace(/^([A-Za-z]):\\/, '$1://').replace(/\\/g, '/');
-function junctionFixture(t) {
-  if (process.platform !== 'win32') { t.skip('win32 only'); return null; }
+/** `posix`: the case needs only directory links, which `symlinkSync(…, 'junction')` makes as symlinks on POSIX. */
+function junctionFixture(t, { posix = false } = {}) {
+  if (process.platform !== 'win32' && !posix) { t.skip('win32 only (C:// drive spelling)'); return null; }
   const root = tmp('jn');
   const claude = path.join(root, 'home', '.claude');
   const data = path.join(claude, 'skill-sentry');
@@ -874,7 +875,7 @@ function junctionFixture(t) {
   return { work, D };
 }
 test('round 4: MIME- or date-shaped relative strings are resolved when their first segment exists', t => {
-  const f = junctionFixture(t);
+  const f = junctionFixture(t, { posix: true });
   if (!f) return;
   const r = f.D('mcp__plugin_x_s__read', { p: 'text/id_rsa' }, { mcpPlugin: 'x' });
   assert.equal(r.decision, 'ask');
