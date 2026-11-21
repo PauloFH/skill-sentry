@@ -46,13 +46,18 @@ jobs:
     needs: ci
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # The keys are handed over only for a push to main or a dispatch: pull request code never gets them, and PR
+    # pushes never spend model calls (the job then reports the keys as missing and skips).
     env:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ github.event_name != 'pull_request' && secrets.ANTHROPIC_API_KEY || '' }}
+      OPENAI_API_KEY: ${{ github.event_name != 'pull_request' && secrets.OPENAI_API_KEY || '' }}
     steps:
       - name: Check for model API keys
         id: keys
         run: |
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            echo "::notice title=model e2e::not run on pull requests (the API keys are only used for a push to main or a dispatch)"
+          fi
           missing=""
           [ -n "$ANTHROPIC_API_KEY" ] || missing="$missing ANTHROPIC_API_KEY"
           [ -n "$OPENAI_API_KEY" ] || missing="$missing OPENAI_API_KEY"
