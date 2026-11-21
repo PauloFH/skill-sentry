@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { rawConfigOf } from '../inventory.mjs';
-import { matchText } from '../rules.mjs';
+import { matchText, findInvisible } from '../rules.mjs';
 import { redactSecrets, redactArgs, TOKEN_SHAPES } from '../text.mjs';
 import { CONFIG_FILE, finding, commandFindings, urlFindings } from '../cmdfindings.mjs';
 
@@ -130,6 +130,13 @@ function layerFindings(c, raw, src) {
     else if (never) out.push(emit('CODEX_APPROVAL_NEVER', `${where}approval_policy = "never" in ${src}`));
     else if (full) out.push(emit('CODEX_SANDBOX_FULL_ACCESS', `${where}sandbox_mode = "danger-full-access" in ${src}`));
     if (isObj(v.features) && v.features.hooks === false) out.push(emit('CODEX_HOOKS_DISABLED', `${where}features.hooks = false in ${src}`));
+    // Final review I4: developer_instructions reach the model like an AGENTS.md, so they get the same text rules
+    // (as markdown); snippets redacted. The trust-bypass flag is reported by the leaf loop, not here.
+    if (typeof v.developer_instructions === 'string') {
+      for (const m of [...matchText(v.developer_instructions, 'markdown'), ...findInvisible(v.developer_instructions, 'markdown')]) {
+        out.push({ ...m, snippet: `${where}developer_instructions: ${redactSecrets(m.snippet)}`, file: CONFIG_FILE });
+      }
+    }
     const sep = isObj(v.shell_environment_policy) ? v.shell_environment_policy.ignore_default_excludes : undefined;
     if (sep === true) out.push(emit('CODEX_ENV_SECRETS_PASSED', `${where}shell_environment_policy.ignore_default_excludes = true in ${src}`));
     else if (sep === undefined && where === '' && isMainConfig(c)) {
