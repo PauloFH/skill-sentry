@@ -208,6 +208,50 @@ test('shellPatch: command position after quotes, backticks, $( and wrappers (N2)
     assert.deepEqual([r.paths, r.inline], [['notes.txt'], true], command);
   }
 });
+const R3_BODY = "*** Begin Patch\n*** Add File: notes.txt\n+hi\n*** End Patch";
+test('shellPatch R18-b: a later "*** Begin Patch" text does not make a file-sourced call inline', () => {
+  for (const command of [
+    'apply_patch < p.txt # *** Begin Patch', "apply_patch < p.txt; echo '*** Begin Patch'",
+    'apply_patch "$(cat p.txt)" # *** Begin Patch', "cat p.txt | apply_patch; printf '%s\\n' '*** Begin Patch' '*** Add File: x' '*** End Patch'",
+    `cat p.txt | apply_patch <<'EOF'\n${R3_BODY}\nEOF`,
+    `apply_patch < p.txt <<'EOF'\n${R3_BODY}\nEOF`,
+  ]) {
+    const r = shellPatch(command);
+    assert.ok(r, command);
+    assert.equal(r.inline, false, command);
+  }
+  assert.equal(shellPatch(`apply_patch '${R3_BODY}'`).inline, true, 'first quoted argument holding the patch is inline');
+  assert.equal(shellPatch(`apply_patch <<-EOF\n\t${R3_BODY.replace(/\n/g, '\n\t')}\n\tEOF`).inline, true, '<<- heredoc');
+});
+test('shellPatch R19 hardening: .bat/.cmd, keywords, unquoted -c//c/-Command scripts, quoted or obfuscated names, cd separators', () => {
+  for (const command of [
+    'apply_patch.bat < p.txt', 'applypatch.cmd < p.txt', 'if true; then apply_patch < p.txt; fi', 'for f in a; do apply_patch < $f; done',
+    'if false; then :; else apply_patch < p.txt; fi', 'while read l; do applypatch < p; done', 'until apply_patch < p; do :; done',
+    'cmd /c apply_patch < p.txt', 'powershell -Command apply_patch (Get-Content p.txt)', 'bash -c apply_patch',
+    '"apply_patch" < p.txt', "'apply_patch' < p.txt", 'a""pply_patch < p.txt', "& 'apply_patch' (Get-Content p.txt -Raw)", 'ap^ply_patch < p.txt',
+    '! apply_patch < p.txt', '{ apply_patch < p.txt; }', '(apply_patch < p.txt)',
+  ]) {
+    const r = shellPatch(command);
+    assert.ok(r, command);
+    assert.equal(r.inline, false, command);
+  }
+  for (const command of [`"apply_patch" <<'EOF'\n${R3_BODY}\nEOF`, `if true; then apply_patch <<'EOF'\n${R3_BODY}\nEOF\nfi`, `cmd /c "apply_patch <<'EOF'\n${R3_BODY}\nEOF"`]) {
+    const r = shellPatch(command);
+    assert.deepEqual([r.inline, r.paths], [true, ['notes.txt']], command);
+  }
+  assert.equal(shellPatch(`cd sub; apply_patch <<'EOF'\n${R3_BODY}\nEOF`).workdir, 'sub');
+  assert.equal(shellPatch(`cd sub\napply_patch <<'EOF'\n${R3_BODY}\nEOF`).workdir, 'sub');
+});
+test('shellPatch false positives stay null: quoted text, other heredoc bodies, help/version, non-shell -c flags', () => {
+  for (const command of [
+    "rg 'apply_patch|applypatch' src", 'grep -E "(apply_patch|x)" -r .', "Select-String -Pattern 'apply_patch|applypatch' -Path *.md",
+    'echo "a; apply_patch"', 'git commit -m "fix guard\n\napply_patch now checked"', "cat > notes.md <<'EOF'\napply_patch < p.txt is denied\nEOF",
+    'apply_patch --help', 'applypatch --version', 'grep -c apply_patch log.txt', 'git -c core.x=1 log --grep apply_patch',
+    "echo 'x' # apply_patch < p.txt", 'printf "%s" "$(echo apply_patch)"',
+  ]) {
+    assert.equal(shellPatch(command), null, JSON.stringify(command));
+  }
+});
 test('shellPatch R18: invocation without an inline patch is not inline; arguments and other words are not invocations', () => {
   for (const command of ['apply_patch < p.txt', 'cat p.txt | apply_patch', 'apply_patch "$(cat p.txt)"', 'applypatch < p.txt',
     'sudo apply_patch < p.txt', "bash -c 'apply_patch < p.txt'", 'x=$(apply_patch < p.txt)',
@@ -849,6 +893,26 @@ test('codex R18: apply_patch in command position without an inline patch → PAT
   assert.ok(!fs.existsSync(taintFile(data, SID_A)), 'no token stored');
   for (const command of ['grep -rn apply_patch src', 'echo apply_patch', 'git log --grep apply_patch', 'my_apply_patch_helper --x']) {
     assert.equal((await runGuard(codex('Bash', { command }), env)).stdout, '', command);
+  }
+});
+test('codex round 3: R18-b and R19 forms deny end to end; false positives stay none; quoted/keyword inline forms get header findings', async () => {
+  const data = path.join(tmp('r3'), 'skill-sentry');
+  const env = { SKILL_SENTRY_DATA_DIR: data };
+  for (const command of ['apply_patch < p.txt # *** Begin Patch', "apply_patch < p.txt; echo '*** Begin Patch'", 'apply_patch "$(cat p.txt)" # *** Begin Patch',
+    "cat p.txt | apply_patch; printf '%s' '*** Begin Patch'", 'apply_patch.bat < p.txt', 'if true; then apply_patch < p.txt; fi', 'cmd /c apply_patch < p.txt',
+    'powershell -Command apply_patch (Get-Content p.txt)', '"apply_patch" < p.txt', 'a""pply_patch < p.txt', "& 'apply_patch' (Get-Content p.txt -Raw)"]) {
+    assert.match(assertDeny(JSON.parse((await runGuard(codex('Bash', { command }), env)).stdout), command), /PATCH_UNINSPECTABLE/, command);
+  }
+  for (const command of ["rg 'apply_patch|applypatch' src", 'grep -E "(apply_patch|x)" -r .', "Select-String -Pattern 'apply_patch|applypatch' -Path x.md",
+    'echo "a; apply_patch"', 'git commit -m "fix guard\n\napply_patch now checked"', "cat > notes.md <<'EOF'\napply_patch < p.txt is denied\nEOF",
+    'apply_patch --help', 'applypatch --version']) {
+    assert.equal((await runGuard(codex('Bash', { command }), env)).stdout, '', JSON.stringify(command));
+  }
+  const rc = path.join(os.homedir(), '.bashrc');
+  const body = `*** Begin Patch\n*** Add File: ${rc}\n+x\n*** End Patch`;
+  for (const command of [`"apply_patch" <<'EOF'\n${body}\nEOF`, `if true; then apply_patch <<'EOF'\n${body}\nEOF\nfi`]) {
+    const r = await runGuard(codex('Bash', { command }, { transcript_path: R('cmdexec-read.jsonl') }), env);
+    assert.match(assertPaused(JSON.parse(r.stdout), command), /PERSIST_PATH_SHELL_RC/, command);
   }
 });
 test('codex R17: a taint deny never writes the command to stdout or guard.log', async () => {
