@@ -32,6 +32,7 @@ const isDir = p => { try { return fs.statSync(p).isDirectory(); } catch { return
  *   3. Windows Terminal WSL profile names (`<localAppData>\Packages\Microsoft.WindowsTerminal*\LocalState\
  *      settings.json`, `<localAppData>\Microsoft\Windows Terminal\settings.json`);
  *   4. COMMON_DISTROS. Failing probes of 2-4 are skipped silently.
+ * When `env.SystemRoot` is set and has no `System32\wsl.exe` (WSL not installed), only 1. is probed.
  *
  * Each entry: `{ label, root, userHome?, systemDir?, distroRoot? }`. `userHome` (where `~/.agents/skills`
  * lives) and `systemDir` (system config layer) are set for the default and WSL homes only: an explicit
@@ -125,8 +126,7 @@ function terminalDistros(localAppData) {
 }
 
 function wslHomes({ env, wslRoot, listRoot, localAppData, late, problems }) {
-  const out = [];
-  if (late()) { problems.push('WSL Codex homes not checked: scan time budget exhausted'); return out; }
+  if (late()) { problems.push('WSL Codex homes not checked: scan time budget exhausted'); return []; }
   const candidates = new Map(); // lowercase name -> { name, strict }
   const addCandidate = (name, strict) => {
     const k = name.toLowerCase();
@@ -135,6 +135,12 @@ function wslHomes({ env, wslRoot, listRoot, localAppData, late, problems }) {
   for (const n of String(env.SKILL_SENTRY_WSL_DISTROS ?? '').split(',').map(s => s.trim()).filter(Boolean)) {
     if (validDistro(n)) addCandidate(n, true);
     else problems.push(`invalid WSL distribution name in SKILL_SENTRY_WSL_DISTROS: ${n}`);
+  }
+  // No `System32\wsl.exe` under a known SystemRoot: WSL is not installed, so only distros the user named
+  // are probed (a `\\wsl.localhost\` lookup there can stall on network name resolution).
+  const sysRoot = env.SystemRoot ?? env.SYSTEMROOT ?? env.windir;
+  if (sysRoot && !fs.existsSync(path.join(sysRoot, 'System32', 'wsl.exe'))) {
+    return probeDistros([...candidates.values()], { wslRoot, late, problems });
   }
   if (listRoot) {
     try {
@@ -146,8 +152,12 @@ function wslHomes({ env, wslRoot, listRoot, localAppData, late, problems }) {
   }
   if (!late()) for (const n of terminalDistros(localAppData)) addCandidate(n, false);
   for (const n of COMMON_DISTROS) addCandidate(n, false);
+  return probeDistros([...candidates.values()], { wslRoot, late, problems });
+}
 
-  for (const { name, strict } of [...candidates.values()].slice(0, MAX_DISTROS)) {
+function probeDistros(candidates, { wslRoot, late, problems }) {
+  const out = [];
+  for (const { name, strict } of candidates.slice(0, MAX_DISTROS)) {
     if (late()) { problems.push('WSL Codex homes partly checked: scan time budget exhausted'); return out; }
     const distroRoot = path.join(wslRoot, name);
     const homeRoot = path.join(distroRoot, 'home');

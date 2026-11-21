@@ -106,6 +106,30 @@ test('codexHomes: an unlistable WSL root is a problem line, never a throw', () =
   assert.match(problems[0], /WSL/);
 });
 
+test('codexHomes: no System32\\wsl.exe under SystemRoot -> WSL is not probed (no UNC lookups on machines without WSL)', () => {
+  const { wslRoot } = buildWslTree(tmp('wsl'));
+  const noWsl = tmp('sysroot'); // no System32\wsl.exe inside
+  const problems = [];
+  assert.deepEqual(codexHomes({ env: { SystemRoot: noWsl }, homeDir: tmp('nohome'), platform: 'win32', includeWsl: true, wslRoot, problems }), []);
+  assert.deepEqual(problems, []);
+});
+
+test('codexHomes: System32\\wsl.exe present -> WSL homes are probed as before', () => {
+  const { wslRoot, aliceCodex } = buildWslTree(tmp('wsl'));
+  const sys = tmp('sysroot');
+  fs.mkdirSync(path.join(sys, 'System32'), { recursive: true });
+  fs.writeFileSync(path.join(sys, 'System32', 'wsl.exe'), '');
+  const homes = codexHomes({ env: { SystemRoot: sys }, homeDir: tmp('nohome'), platform: 'win32', includeWsl: true, wslRoot });
+  assert.deepEqual(homes.map(h => h.root), [aliceCodex]);
+});
+
+test('codexHomes: distros named in SKILL_SENTRY_WSL_DISTROS are probed even without wsl.exe', () => {
+  const { wslRoot, aliceCodex } = buildWslTree(tmp('wsl'));
+  const env = { SystemRoot: tmp('sysroot'), SKILL_SENTRY_WSL_DISTROS: 'Ubuntu' };
+  const homes = codexHomes({ env, homeDir: tmp('nohome'), platform: 'win32', includeWsl: true, wslRoot, listRoot: false });
+  assert.deepEqual(homes.map(h => h.root), [aliceCodex]);
+});
+
 // --- discoverCodex ---
 
 const expected = fx => [...EXPECTED,
