@@ -1473,6 +1473,8 @@ test('I2: mount/ndr/rdr count only as PowerShell commands; plain text mentions d
     'mount',
     'git log --grep=rdr',
     'docker run --mount type=bind,src=C:/a,dst=/a img',
+    'git commit -m "return the mount handle"',
+    'echo done <# note #>',
   ]) noneSelf('PowerShell', c);
   const home = fwdSlash(os.homedir());
   for (const c of [
@@ -1488,6 +1490,13 @@ test('I2: mount/ndr/rdr count only as PowerShell commands; plain text mentions d
     'iex "mount C FileSystem D:/x"',
     'echo "x" | & { rdr C }',
     `M\`ount C FileSystem ${home}`,
+    // block comments and pipeline-taking keywords keep an alias in command position
+    `<##> ndr C FileSystem ${home}`,
+    '<# c #> rdr C',
+    `return ndr C FileSystem ${home}`,
+    'throw rdr C',
+    `exit mount C FileSystem ${home}`,
+    `echo "<#"; ndr C FileSystem ${home}; echo "#>"`,
   ]) asksSelf('PowerShell', c);
 });
 

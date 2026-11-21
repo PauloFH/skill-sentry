@@ -445,17 +445,28 @@ const PS_DRIVE_TOKEN = /^[({@&.]*(?:microsoft\.powershell\.management\/)?(?:new-
 // The cmdlet names (and module-qualified forms) count anywhere; the short aliases are everyday words.
 const PS_DRIVE_EXPLICIT = /new-psdrive|remove-psdrive|microsoft\.powershell\.management\//i;
 const PIPE_BEFORE = /(?:^|[^|])\|\s*$/;
+// Keywords that take a pipeline: the word after them is a command too (`return ndr C FileSystem D:\`).
+const PS_PIPELINE_KEYWORD = /^(?:return|throw|exit)$/i;
+const PS_BLOCK_COMMENT = /<#[\s\S]*?(?:#>|$)/g;
 /**
  * Final review I2: `mount`, `ndr` and `rdr` (in `git commit -m "fix mount"`, `findstr mount`, `npm run ndr`)
  * count only as a command, with arguments or fed by a pipe (bare `mount` cannot create a drive without its
  * mandatory parameters); anywhere only when the text can build a command at run time (psDynamicCore).
+ * The text is read as written and with `<# … #>` block comments removed (either reading can ask).
  */
 function changesPsDrive(script) {
+  const s = String(script);
+  const stripped = s.includes('<#') ? s.replace(PS_BLOCK_COMMENT, ' ') : s;
+  return psDriveIn(s) || (stripped !== s && psDriveIn(stripped));
+}
+function psDriveIn(script) {
   const words = shellWords(script, true);
   const tokens = w => w.value.split(/[\s;|&]+/).filter(t => PS_DRIVE_TOKEN.test(t));
   if (words.some(w => tokens(w).some(t => PS_DRIVE_EXPLICIT.test(t)))) return true;
   if (psDynamicCore(script)) return words.some(w => tokens(w).length > 0);
-  return words.some((w, k) => w.cmd && PS_DRIVE_TOKEN.test(w.value)
+  const atCommand = words.map(w => w.cmd);
+  for (let k = 1; k < words.length; k++) if (!atCommand[k] && atCommand[k - 1] && PS_PIPELINE_KEYWORD.test(words[k - 1].value)) atCommand[k] = true;
+  return words.some((w, k) => atCommand[k] && PS_DRIVE_TOKEN.test(w.value)
     && ((k + 1 < words.length && !words[k + 1].cmd) || PIPE_BEFORE.test(script.slice(0, w.start))));
 }
 
