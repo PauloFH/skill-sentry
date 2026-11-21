@@ -267,6 +267,8 @@ const CWD_PROTECTED = `The command would run with its working directory inside s
   + 'Tell the user: if they want this, they must run this command themselves in a terminal.';
 const PATCH_TOO_LARGE = 'The patch is too large for skill-sentry to inspect (more than '
   + `${PATCH_MAX_PATHS} file headers or ${PATCH_MAX_BYTES / (1024 * 1024)} MiB). Split it into smaller patches.`;
+const PATCH_NOT_INLINE = 'This command runs apply_patch without the patch inline (stdin, a file, a substitution or more than one '
+  + 'invocation), so skill-sentry cannot see which files it writes. Use the apply_patch tool with the patch inline instead.';
 
 const originName = o => (o ? o.skill ?? o.mcpPlugin ?? null : null);
 const show = s => truncate(escapeInvisible(String(s ?? '')), 200)
@@ -306,8 +308,11 @@ export function codexDecision(base, ctx) {
   if (base && base.decision === 'ask' && SELF_RULES.has(base.ruleId)) {                      // tier 5
     return deny(base, base.ruleId === 'PATH_UNUSUAL_WRITE' ? UNUSUAL_WRITE : RUN_YOURSELF);
   }
-  // A patch past the scan caps could not be inspected: fail closed (C1).
-  if (ctx.patchTruncated) return deny({ ruleId: 'PATCH_UNINSPECTABLE', severity: 'high', snippet: String(ctx.toolName ?? 'apply_patch') }, PATCH_TOO_LARGE);
+  // A patch past the scan caps (C1), or a shell apply_patch whose patch is not inline (R18), could not be
+  // inspected: fail closed, no retry token.
+  if (ctx.patchTruncated || ctx.patchNotInline) {
+    return deny({ ruleId: 'PATCH_UNINSPECTABLE', severity: 'high', snippet: String(ctx.toolName ?? 'apply_patch') }, ctx.patchTruncated ? PATCH_TOO_LARGE : PATCH_NOT_INLINE);
+  }
   if (!base || base.decision === 'none') return tainted() ? taintDeny() : { decision: 'none' };
   if (base.decision !== 'ask' && base.decision !== 'log') return { decision: 'none' };
 
@@ -401,6 +406,7 @@ export async function handleCodex({ input, selfRoot, write, log, now = Date.now,
 
   let extraWritePaths = null;
   let patchTruncated = false;
+  let patchNotInline = false;
   if (toolName === 'apply_patch') {
     if (cmd === null) return;
     ({ paths: extraWritePaths, truncated: patchTruncated } = scanPatch(cmd));
@@ -409,6 +415,7 @@ export async function handleCodex({ input, selfRoot, write, log, now = Date.now,
     const sp = shellPatch(cmd);
     if (sp) {
       patchTruncated = sp.truncated;
+      patchNotInline = !sp.inline;
       const from = typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd();
       extraWritePaths = sp.workdir === null ? sp.paths : sp.paths.map(p => path.resolve(from, sp.workdir, p));
     }
@@ -432,7 +439,7 @@ export async function handleCodex({ input, selfRoot, write, log, now = Date.now,
   const d = codexDecision(base, {
     // Peek only (C4): decide() already resolved the origin when a high match needed it.
     origin: () => originMemo ?? null,
-    net: isNetworkCapable(toolName, toolInput), patchTruncated, cwdProtected, toolName,
+    net: isNetworkCapable(toolName, toolInput), patchTruncated, patchNotInline, cwdProtected, toolName,
     tainted: () => readTaint(dir, sid, t),
     retry: () => hasRetry(dir, sid, hash(), t),
     snippet: cmd !== null && toolName !== 'apply_patch' ? cmd : toolName,

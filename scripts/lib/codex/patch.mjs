@@ -11,7 +11,8 @@
 export const PATCH_MAX_BYTES = 8 * 1024 * 1024;
 export const PATCH_MAX_PATHS = 256;
 
-const HEADER = /^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/;
+// The path is everything to the end of the line: `[^\n]`, not `.`, which would stop at U+2028/U+2029 (N1).
+const HEADER = /^\*\*\* (?:Add File|Update File|Delete File|Move to): ([^\n]+)$/;
 // Rust White_Space = JS \s (minus U+FEFF) plus U+0085 (NEL).
 const TRIM = /^[\s\u0085]+|[\s\u0085]+$/g;
 const LINE_BREAK = /\r\n|\n|\r/;
@@ -46,17 +47,49 @@ export function patchPaths(patchText) {
 }
 
 // Codex intercepts `[cd <dir> &&] apply_patch|applypatch <<'EOF' … EOF` run through a shell (apply-patch
-// invocation.rs) and applies it itself; the PreToolUse hook sees it as a `Bash` call.
-const SHELL_APPLY_PATCH = /(?:^|[\s;&|(){}])(?:apply_patch|applypatch)(?:\.exe)?(?=$|[\s<'"])/;
-const CD_PREFIX = /^\s*cd\s+(?:'([^']*)'|"([^"]*)"|([^\s;&|'"]+))\s*&&\s*(?:apply_patch|applypatch)\b/;
+// invocation.rs) and applies it itself; the PreToolUse hook sees it as a `Bash` call. Codex also puts real
+// `apply_patch`/`applypatch` executables first on PATH (arg0), so any shell construct that runs one applies a
+// patch: the invocation is detected in command position (N2), not only at the start of the text.
+//   statement starts: text start, newline, ; & | ( { ! backtick $(, or the quoted script of -c/-lc/-Command//c;
+//   then assignments, common wrappers (with options) and a path prefix.
+const NAME = String.raw`(?:apply_patch|applypatch)(?:\.exe)?`;
+const START = String.raw`(?:^|[\n;&|({!\x60]|\$\(|(?:^|\s)(?:-[a-z]*c|-command|/c)\s+['"])`;
+// Option alternatives are disjoint (start with `-`, a digit, or a letter/_) so the match cannot backtrack exponentially.
+const WRAPPER = String.raw`(?:(?:sudo|env|command|exec|nohup|time|xargs|doas|nice|stdbuf|timeout|busybox)(?:[ \t]+(?:-\S+|\d\S*|[A-Za-z_]\w*=\S*))*[ \t]+)`;
+const INVOCATION = new RegExp(String.raw`${START}[ \t]*(?:[A-Za-z_]\w*=\S*[ \t]+)*${WRAPPER}*(?:[^\s;&|()<>'"\x60]*[\\/])?${NAME}(?=$|[\s<>|;&)'"\x60])`, 'gi');
+// Bash words end at blanks and metacharacters only: U+2028 and friends stay inside the word (N1 audit).
+const CD_PREFIX = /^[ \t\n]*cd[ \t]+(?:'([^']*)'|"([^"]*)"|([^ \t\n;&|()<>'"]+))[ \t]*&&[ \t]*(?:apply_patch|applypatch)\b/;
+const BEGIN = '*** Begin Patch';
+const END = '*** End Patch';
+
+/** [start, end) ranges of inline patch text, so a patch body line is never taken for an invocation. */
+function patchRanges(text) {
+  const out = [];
+  let from = 0;
+  for (;;) {
+    const b = text.indexOf(BEGIN, from);
+    if (b === -1) return out;
+    const e = text.indexOf(END, b + BEGIN.length);
+    out.push([b, e === -1 ? text.length : e + END.length]);
+    if (e === -1) return out;
+    from = e + END.length;
+  }
+}
 
 /**
- * Shell-form apply_patch: `null` when the command does not invoke apply_patch, else the header paths
- * (`truncated` as in scanPatch) and the `cd` directory Codex applies the patch in (`workdir`, or null).
- * @returns {{ paths: string[], truncated: boolean, workdir: string|null } | null}
+ * Shell-form apply_patch: `null` when the command does not invoke apply_patch in command position, else the
+ * header paths (`truncated` as in scanPatch), the `cd` directory Codex applies the patch in (`workdir`, or
+ * null), and `inline`: exactly one invocation, followed by an inline `*** Begin Patch`. A non-inline
+ * invocation (stdin, file, substitution, a second invocation) cannot be inspected (Ruling R18).
+ * @returns {{ paths: string[], truncated: boolean, workdir: string|null, inline: boolean } | null}
  */
 export function shellPatch(command) {
-  if (typeof command !== 'string' || !SHELL_APPLY_PATCH.test(command)) return null;
+  if (typeof command !== 'string' || !/apply_?patch/i.test(command)) return null;
+  const ranges = patchRanges(command);
+  const inPatch = i => ranges.some(([s, e]) => i >= s && i < e);
+  const calls = [...command.matchAll(INVOCATION)].map(m => m.index + m[0].length).filter(end => !inPatch(end - 1));
+  if (!calls.length) return null;
   const cd = CD_PREFIX.exec(command);
-  return { ...scanPatch(command), workdir: cd ? cd[1] ?? cd[2] ?? cd[3] : null };
+  const inline = calls.length === 1 && command.indexOf(BEGIN, calls[0]) !== -1;
+  return { ...scanPatch(command), workdir: cd ? cd[1] ?? cd[2] ?? cd[3] : null, inline };
 }

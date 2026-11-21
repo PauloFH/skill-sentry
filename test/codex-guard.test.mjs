@@ -169,6 +169,14 @@ test('scanPatch is bounded: over a cap it reports truncated but keeps the paths 
   const body = ['*** Begin Patch', '*** Add File: a.txt', ...Array.from({ length: 100_000 }, () => '+line!'), '*** Update File: z.txt', '*** End Patch'].join('\n');
   assert.deepEqual(scanPatch(body), { paths: ['a.txt', 'z.txt'], truncated: false });
 });
+test('scanPatch keeps U+2028 / U+2029 inside header paths (N1)', () => {
+  for (const sep of [' ', ' ']) {
+    for (const header of ['Add File', 'Update File', 'Delete File', 'Move to']) {
+      const p = `/d/skill-sentry ${sep}../skill-sentry/allowlist.json`;
+      assert.deepEqual(patchPaths(`*** Begin Patch\n*** ${header}: ${p}\n*** End Patch`), [p], `${header} ${sep.charCodeAt(0).toString(16)}`);
+    }
+  }
+});
 test('scanPatch trims each line like Codex (C2): leading spaces, tabs, Unicode whitespace, NEL; CR-only breaks', () => {
   for (const pad of ['  ', '\t', ' ', ' ', '　', '\u0085', ' \t ']) {
     assert.deepEqual(patchPaths(`*** Begin Patch\n${pad}*** Update File: x/allowlist.json${pad}\n*** End Patch`), ['x/allowlist.json'], JSON.stringify(pad));
@@ -178,13 +186,45 @@ test('scanPatch trims each line like Codex (C2): leading spaces, tabs, Unicode w
 });
 test('shellPatch: heredoc and cd forms of apply_patch / applypatch (I1)', () => {
   const body = "*** Begin Patch\n*** Add File: notes.txt\n+hi\n*** End Patch";
-  assert.deepEqual(shellPatch(`apply_patch <<'EOF'\n${body}\nEOF`), { paths: ['notes.txt'], truncated: false, workdir: null });
-  assert.deepEqual(shellPatch(`applypatch <<"PATCH"\n${body}\nPATCH`), { paths: ['notes.txt'], truncated: false, workdir: null });
-  assert.deepEqual(shellPatch(`cd 'sub dir' && apply_patch <<'EOF'\n${body}\nEOF`), { paths: ['notes.txt'], truncated: false, workdir: 'sub dir' });
+  assert.deepEqual(shellPatch(`apply_patch <<'EOF'\n${body}\nEOF`), { paths: ['notes.txt'], truncated: false, workdir: null, inline: true });
+  assert.deepEqual(shellPatch(`applypatch <<"PATCH"\n${body}\nPATCH`), { paths: ['notes.txt'], truncated: false, workdir: null, inline: true });
+  assert.deepEqual(shellPatch(`cd 'sub dir' && apply_patch <<'EOF'\n${body}\nEOF`), { paths: ['notes.txt'], truncated: false, workdir: 'sub dir', inline: true });
   assert.deepEqual(shellPatch(`cd sub && apply_patch <<EOF\n${body}\nEOF`).workdir, 'sub');
+  assert.equal(shellPatch(`cd s x && apply_patch <<EOF\n${body}\nEOF`).workdir, 's x', 'U+2028 is part of a shell word');
   assert.equal(shellPatch('git apply fix.patch'), null);
   assert.equal(shellPatch('echo apply_patcher'), null);
   assert.equal(shellPatch(42), null);
+});
+test('shellPatch: command position after quotes, backticks, $( and wrappers (N2)', () => {
+  const body = "*** Begin Patch\n*** Add File: notes.txt\n+hi\n*** End Patch";
+  for (const command of [
+    `bash -lc "apply_patch <<'EOF'\n${body}\nEOF"`, `bash -lc 'apply_patch <<"EOF"\n${body}\nEOF'`,
+    `x=\`apply_patch <<'EOF'\n${body}\nEOF\``, `x=$(apply_patch <<'EOF'\n${body}\nEOF\n)`, `sh -c "applypatch <<EOF\n${body}\nEOF"`,
+    `pwsh -NoProfile -Command "apply_patch <<'EOF'\n${body}\nEOF"`, `env -i apply_patch <<'EOF'\n${body}\nEOF`,
+    `/usr/local/bin/apply_patch <<'EOF'\n${body}\nEOF`, `true && apply_patch <<'EOF'\n${body}\nEOF`, `& apply_patch.exe <<'EOF'\n${body}\nEOF`,
+  ]) {
+    const r = shellPatch(command);
+    assert.ok(r, command);
+    assert.deepEqual([r.paths, r.inline], [['notes.txt'], true], command);
+  }
+});
+test('shellPatch R18: invocation without an inline patch is not inline; arguments and other words are not invocations', () => {
+  for (const command of ['apply_patch < p.txt', 'cat p.txt | apply_patch', 'apply_patch "$(cat p.txt)"', 'applypatch < p.txt',
+    'sudo apply_patch < p.txt', "bash -c 'apply_patch < p.txt'", 'x=$(apply_patch < p.txt)',
+    `apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: a.txt\n+x\n*** End Patch\nEOF\napply_patch < other.txt`]) {
+    const r = shellPatch(command);
+    assert.ok(r, command);
+    assert.equal(r.inline, false, command);
+  }
+  for (const command of ['grep -rn apply_patch src', 'echo apply_patch', 'git log --grep apply_patch', 'my_apply_patch_helper --x',
+    'cat apply_patch.md', 'rg "apply_patch" docs', 'node scripts/apply_patch_test.mjs']) {
+    assert.equal(shellPatch(command), null, command);
+  }
+  const ctxLine = `apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: docs/tools.md\n@@\n apply_patch < p.txt is not supported\n*** End Patch\nEOF`;
+  assert.equal(shellPatch(ctxLine).inline, true, 'a patch body line naming apply_patch is content, not an invocation');
+  const t0 = performance.now();
+  for (const evil of ['sudo ' + '1=1 '.repeat(5000) + 'x', '\n' + 'a=b'.repeat(30000), ';'.repeat(100000) + 'apply_patch', 'x/'.repeat(50000) + 'apply_patcher']) shellPatch(evil);
+  assert.ok(performance.now() - t0 < 500, `adversarial inputs took ${(performance.now() - t0).toFixed(0)} ms`);
 });
 
 // ---------------------------------------------------------------- origin from the rollout
@@ -387,6 +427,16 @@ test('codexDecision: a truncated apply_patch fails closed (C1), self-protect kee
     assert.match(d.reason, /Split it into smaller patches/);
   }
   assert.equal(codexDecision(base('ask', 'SELF_PROTECT_WRITE'), ctx({ patchTruncated: true })).ruleId, 'SELF_PROTECT_WRITE');
+});
+test('codexDecision R18: a not-inline patch invocation denies like C1, after critical / C3 / self-protect', () => {
+  const d = codexDecision({ decision: 'none' }, ctx({ patchNotInline: true, retry: () => true, toolName: 'Bash' }));
+  assert.equal(d.decision, 'deny');
+  assert.equal(d.ruleId, 'PATCH_UNINSPECTABLE');
+  assert.equal(d.retry, undefined);
+  assert.match(d.reason, /apply_patch tool with the patch inline/);
+  assert.equal(codexDecision(base('deny', 'RCE_X'), ctx({ patchNotInline: true })).ruleId, 'RCE_X');
+  assert.equal(codexDecision({ decision: 'none' }, ctx({ patchNotInline: true, cwdProtected: true })).ruleId, 'SELF_PROTECT_CWD');
+  assert.equal(codexDecision(base('ask', 'SELF_PROTECT'), ctx({ patchNotInline: true })).ruleId, 'SELF_PROTECT');
 });
 test('codexDecision: protected working directory (C3) denies before everything but a critical match', () => {
   for (const b of [{ decision: 'none' }, base('log', 'Y'), base('ask', 'Z')]) {
@@ -764,6 +814,42 @@ test('codex I1: shell-form apply_patch headers are write targets (heredoc, apply
   const r4 = await runGuard(codex('Bash', { command: hd(Array.from({ length: PATCH_MAX_PATHS + 1 }, (_, i) => `f${i}.txt`)) }), env);
   assert.match(assertDeny(JSON.parse(r4.stdout)), /PATCH_UNINSPECTABLE/);
   assert.equal((await runGuard(codex('Bash', { command: hd(['src/ok.txt']) }), env)).stdout, '', 'a normal shell-form patch is none');
+});
+test('codex N1: U+2028 / U+2029 in a header path cannot hide a data-dir write', async () => {
+  const data = path.join(tmp('n1'), 'skill-sentry');
+  for (const sep of [' ', ' ']) {
+    for (const header of ['Update File', 'Add File']) {
+      const p = `${data} ${sep}${path.sep}..${path.sep}skill-sentry${path.sep}allowlist.json`;
+      const r = await runGuard(codex('apply_patch', { command: `*** Begin Patch\n*** ${header}: ${p}\n+x\n*** End Patch` }), { SKILL_SENTRY_DATA_DIR: data });
+      assert.match(assertDeny(JSON.parse(r.stdout), `${header} ${sep.charCodeAt(0).toString(16)}`), /SELF_PROTECT_WRITE/);
+    }
+  }
+});
+test('codex N2: shell-form apply_patch after a quote, a backtick or $( is checked', async () => {
+  const data = path.join(tmp('n2'), 'skill-sentry');
+  const rc = path.join(os.homedir(), '.bashrc');
+  const body = `*** Begin Patch\n*** Add File: ${rc}\n+x\n*** End Patch`;
+  for (const command of [`bash -lc "apply_patch <<'EOF'\n${body}\nEOF"`, `bash -lc 'apply_patch <<"EOF"\n${body}\nEOF'`, `x=\`apply_patch <<'EOF'\n${body}\nEOF\``, `x=$(apply_patch <<'EOF'\n${body}\nEOF\n)`]) {
+    const r = await runGuard(codex('Bash', { command }, { transcript_path: R('cmdexec-read.jsonl') }), { SKILL_SENTRY_DATA_DIR: data });
+    assert.match(assertPaused(JSON.parse(r.stdout), command), /PERSIST_PATH_SHELL_RC/, command);
+  }
+});
+test('codex R18: apply_patch in command position without an inline patch → PATCH_UNINSPECTABLE, no token', async () => {
+  const data = path.join(tmp('r18'), 'skill-sentry');
+  const env = { SKILL_SENTRY_DATA_DIR: data };
+  for (const command of ['apply_patch < p.txt', 'cat p.txt | apply_patch', 'apply_patch "$(cat p.txt)"', "bash -lc 'applypatch < p.txt'"]) {
+    for (let i = 0; i < 2; i++) {
+      const r = await runGuard(codex('Bash', { command }, { transcript_path: R('cmdexec-read.jsonl') }), env);
+      const reason = assertDeny(JSON.parse(r.stdout), command);
+      assert.match(reason, /PATCH_UNINSPECTABLE/, command);
+      assert.match(reason, /apply_patch tool with the patch inline/, command);
+      assert.ok(!/paused/.test(reason), 'no retry token');
+    }
+  }
+  assert.ok(!fs.existsSync(taintFile(data, SID_A)), 'no token stored');
+  for (const command of ['grep -rn apply_patch src', 'echo apply_patch', 'git log --grep apply_patch', 'my_apply_patch_helper --x']) {
+    assert.equal((await runGuard(codex('Bash', { command }), env)).stdout, '', command);
+  }
 });
 test('codex R17: a taint deny never writes the command to stdout or guard.log', async () => {
   const data = path.join(tmp('r17'), 'skill-sentry');
