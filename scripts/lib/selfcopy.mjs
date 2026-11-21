@@ -39,7 +39,7 @@ const MAX_MARKER_BYTES = 4096;
 
 // Codex writes `.codex-marketplace-install.json` into the plugin root on the first start after `codex plugin add`
 // from a git marketplace. Seen on the real installs (Windows and WSL): 185 bytes of 2-space pretty JSON with no
-// trailing newline, exactly {"source_type": <word>, "source": <url>, "ref_name": null, "sparse_paths": [],
+// trailing newline, exactly {"source_type": <word>, "source": <https URL with a short plain path>, "ref_name": null, "sparse_paths": [],
 // "revision": <40-hex commit>} in that order. Only that exact shape at the top level is left out of a tree: the
 // exact name, a regular file of at most CODEX_MARKER_MAX_SIZE bytes (bounded read), text equal byte for byte to
 // the canonical pretty form of its own parse (no duplicate keys, comments or padding), every value pinned. Anything
@@ -60,7 +60,7 @@ function isCodexMarker(root, rel, size) {
     if (Object.keys(o).join(',') !== CODEX_MARKER_KEYS.join(',')) return false;
     if (JSON.stringify(o, null, 2) !== text) return false;
     return typeof o.source_type === 'string' && /^[a-z]{1,16}$/.test(o.source_type)
-      && typeof o.source === 'string' && /^[\x21-\x7e]{1,512}$/.test(o.source)
+      && typeof o.source === 'string' && /^https:\/\/[A-Za-z0-9.-]+\/[\w./-]{1,200}$/.test(o.source)
       && o.ref_name === null
       && Array.isArray(o.sparse_paths) && o.sparse_paths.length === 0
       && typeof o.revision === 'string' && /^[0-9a-f]{40}$/.test(o.revision);
