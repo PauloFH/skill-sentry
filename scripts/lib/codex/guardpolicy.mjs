@@ -392,9 +392,10 @@ function readAllowlist(dir) {
  * Handle one Codex PreToolUse payload. The decision is written first; the session-store write (retry token,
  * consumption, taint) and the log line follow (Ruling L1). Unknown or malformed shapes produce no output.
  * @param {{ input: object, selfRoot: string, write: (s: string) => void, log: (entry: object) => void,
- *   now?: () => number, deadline?: number }} io  `deadline` (epoch ms) bounds the rollout read for the origin.
+ *   now?: () => number, deadline?: number, shellPatch?: typeof shellPatch }} io  `deadline` (epoch ms) bounds
+ *   the rollout read for the origin; `shellPatch` replaces the shell-form patch scanner (tests).
  */
-export async function handleCodex({ input, selfRoot, write, log, now = Date.now, deadline = Infinity }) {
+export async function handleCodex({ input, selfRoot, write, log, now = Date.now, deadline = Infinity, shellPatch: shellPatchFn = shellPatch }) {
   const toolName = input.tool_name;
   const toolInput = input.tool_input;
   if (!toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) return;
@@ -412,7 +413,9 @@ export async function handleCodex({ input, selfRoot, write, log, now = Date.now,
     ({ paths: extraWritePaths, truncated: patchTruncated } = scanPatch(cmd));
   } else if (shell && cmd !== null) {
     // I1: `[cd <dir> &&] apply_patch <<'EOF' …` is applied by Codex itself; its headers are write targets.
-    const sp = shellPatch(cmd);
+    // R20.1: runs before decide(), so a throw here must never fail the whole call open.
+    let sp;
+    try { sp = shellPatchFn(cmd); } catch { sp = { paths: [], truncated: false, workdir: null, inline: false }; }
     if (sp) {
       patchTruncated = sp.truncated;
       patchNotInline = !sp.inline;

