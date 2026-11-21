@@ -14,7 +14,7 @@ import { buildReport, renderMarkdown } from '../scripts/lib/report.mjs';
 import { scanComponent } from '../scripts/lib/scanner.mjs';
 import { fileMap } from '../scripts/lib/baseline.mjs';
 import { readJsonSafe } from '../scripts/lib/jsonsafe.mjs';
-import { tmpFactory } from './helpers/tmp.mjs';
+import { tmpFactory, copyTree } from './helpers/tmp.mjs';
 import { SENTINEL, buildCodexFixture, buildWslTree, buildBrokenCodexHome, buildWslCandidates } from './helpers/codexfixtures.mjs';
 
 const { knownRelease, isCopyOfSelf, shippedFiles } = selfcopy;
@@ -168,7 +168,7 @@ function codexHomeWithCopy(selfDir, mutate = () => {}) {
   const home = tmp('cxself');
   fs.writeFileSync(path.join(home, 'config.toml'), '[plugins."skill-sentry@skill-sentry"]\nenabled = true\n');
   const copy = path.join(home, 'plugins', 'cache', 'skill-sentry', 'skill-sentry', '0.1.1');
-  fs.cpSync(selfDir, copy, { recursive: true });
+  copyTree(selfDir, copy);
   mutate(copy);
   return { home: { label: 'h0', root: home }, copy };
 }
@@ -268,7 +268,7 @@ test('discover (Claude): an installed skill-sentry copy identical to the running
   const self = buildSelfTree(tmp('self'));
   const claudeHome = path.join(tmp('ch'), '.claude');
   const installPath = path.join(claudeHome, 'plugins', 'cache', 'skill-sentry', 'skill-sentry', '0.1.1');
-  fs.cpSync(self, installPath, { recursive: true });
+  copyTree(self, installPath);
   fs.writeFileSync(path.join(claudeHome, 'plugins', 'installed_plugins.json'), JSON.stringify({
     version: 2, plugins: { 'skill-sentry@skill-sentry': [{ scope: 'user', installPath, version: '0.1.1' }] },
   }));
@@ -335,7 +335,7 @@ test('discover (Claude): an install equal to a known older release (with its .in
   const { self, old, releases } = skewSetup();
   const claudeHome = path.join(tmp('ch'), '.claude');
   const installPath = path.join(claudeHome, 'plugins', 'cache', 'skill-sentry', 'skill-sentry', '0.0.9');
-  fs.cpSync(old, installPath, { recursive: true });
+  copyTree(old, installPath);
   fs.mkdirSync(path.join(installPath, '.in_use'));
   fs.writeFileSync(path.join(installPath, '.in_use', '31700'), JSON.stringify({ pid: 31700, procStartFt: '134080000000000000' }));
   fs.writeFileSync(path.join(claudeHome, 'plugins', 'installed_plugins.json'), JSON.stringify({
@@ -366,7 +366,7 @@ test('discoverCodex: a skill-sentry copy that differs from every known release i
         fs.rmSync(path.join(c, 'scripts', 'guard.mjs'));
         fs.symlinkSync(path.join(old, 'scripts', 'guard.mjs'), path.join(c, 'scripts', 'guard.mjs'), 'file');
       } catch {
-        fs.cpSync(path.join(old, 'scripts', 'guard.mjs'), path.join(c, 'scripts', 'guard.mjs'));
+        copyTree(path.join(old, 'scripts', 'guard.mjs'), path.join(c, 'scripts', 'guard.mjs'));
         fs.rmSync(path.join(c, 'skills'), { recursive: true });
         fs.symlinkSync(path.join(old, 'skills'), path.join(c, 'skills'), 'junction');
       }
@@ -458,7 +458,7 @@ test('a known-release plugin is self, but its hooks and MCP servers are still li
   const releases = releaseTableOf(old, '0.0.9');
   const claudeHome = path.join(tmp('ch'), '.claude');
   const installPath = path.join(claudeHome, 'plugins', 'cache', 'skill-sentry', 'skill-sentry', '0.0.9');
-  fs.cpSync(old, installPath, { recursive: true });
+  copyTree(old, installPath);
   fs.writeFileSync(path.join(claudeHome, 'plugins', 'installed_plugins.json'), JSON.stringify({
     version: 2, plugins: { 'skill-sentry@skill-sentry': [{ scope: 'user', installPath, version: '0.0.9' }] },
   }));
@@ -482,7 +482,7 @@ test('discover: copyChecks false (guard, origin not naming skill-sentry) skips t
   const self = buildSelfTree(tmp('self'));
   const claudeHome = path.join(tmp('ch'), '.claude');
   const installPath = path.join(claudeHome, 'plugins', 'cache', 'skill-sentry', 'skill-sentry', '0.1.1');
-  fs.cpSync(self, installPath, { recursive: true });
+  copyTree(self, installPath);
   fs.writeFileSync(path.join(claudeHome, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: {
     'skill-sentry@skill-sentry': [{ scope: 'user', installPath, version: '0.1.1' }],
     'skill-sentry@dev': [{ scope: 'user', installPath: self, version: '0.1.1' }],
