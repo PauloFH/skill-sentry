@@ -1257,11 +1257,15 @@ test('codex on Windows (I2): everyday commands that mention mount/ndr words are 
   for (const command of [
     'rg -n "mount" src', 'git commit -m "fix mount handling"', 'echo "mount the volume"',
     'kubectl get pv | findstr mount', 'npm run ndr', 'mount',
+    // I2 residual: plain $, parentheses, braces or quotes are not a run-time construct
+    'git commit -m "fix (mount) handling"', 'Select-String -Pattern mount -Path $env:TEMP/x.log',
+    'Get-ChildItem $env:TEMP | Select-String mount', 'docker volume inspect $(docker volume ls -q) | findstr mount',
+    '$v = "mount"; echo $v',
   ]) {
     const r = await runGuard(codex('Bash', { command }));
     assert.equal(r.stdout, '', command);
   }
-  for (const command of ['Get-PSDrive C | rdr', 'mount C FileSystem D:\\']) {
+  for (const command of ['Get-PSDrive C | rdr', 'mount C FileSystem D:\\', 'if (1) { ndr C FileSystem D:\\x }', '& ndr C FileSystem D:\\x']) {
     const r = await runGuard(codex('Bash', { command }));
     assert.match(assertDeny(JSON.parse(r.stdout), command), RUN_YOURSELF, command);
   }

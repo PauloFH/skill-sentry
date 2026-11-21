@@ -448,25 +448,43 @@ const PIPE_BEFORE = /(?:^|[^|])\|\s*$/;
 // Keywords that take a pipeline: the word after them is a command too (`return ndr C FileSystem D:\`).
 const PS_PIPELINE_KEYWORD = /^(?:return|throw|exit)$/i;
 const PS_BLOCK_COMMENT = /<#[\s\S]*?(?:#>|$)/g;
+// Unquoted openers that start a statement: `(`, `$(`, `@(`, `{` (`(ndr …)`, `$(ndr …)`, `if (1) { ndr … }`).
+const PS_STATEMENT_OPENER = /^(?:\$\(|@\(|[({])+/;
+const PS_OPENS_STATEMENT = /(?:^|[^"'])[({]$/;
+// A `-c` / `-Command` script inside one quoted argument (`Start-Process pwsh -ArgumentList "-c ndr …"`).
+const PWSH_INLINE_SCRIPT = /(?:^|\s)-c(?:o(?:m(?:m(?:a(?:n(?:d)?)?)?)?)?)?[\s:]+(\S[\s\S]*)$/i;
 /**
  * Final review I2: `mount`, `ndr` and `rdr` (in `git commit -m "fix mount"`, `findstr mount`, `npm run ndr`)
  * count only as a command, with arguments or fed by a pipe (bare `mount` cannot create a drive without its
- * mandatory parameters); anywhere only when the text can build a command at run time (psDynamicCore).
- * The text is read as written and with `<# … #>` block comments removed (either reading can ask).
+ * mandatory parameters); anywhere only when the text can build a command at run time (psRunTimeBuild: the call
+ * operator, dot-sourcing, iex/sal/gcm and the like). A plain `$`, quotes or parentheses do not (I2 residual).
+ * The text is read as written, with backtick-newline continuations joined, and with `<# … #>` block comments
+ * removed (any reading can ask).
  */
-function changesPsDrive(script) {
+function changesPsDrive(script, depth = 0) {
   const s = String(script);
-  const stripped = s.includes('<#') ? s.replace(PS_BLOCK_COMMENT, ' ') : s;
-  return psDriveIn(s) || (stripped !== s && psDriveIn(stripped));
+  const readings = new Set([s, s.replace(/`\r?\n/g, ' ')]);
+  for (const r of [...readings]) if (r.includes('<#')) readings.add(r.replace(PS_BLOCK_COMMENT, ' '));
+  return [...readings].some(r => psDriveIn(r, depth));
 }
-function psDriveIn(script) {
+const psRunTimeBuild = c => /(?<!>)&/.test(c.replace(/&&/g, '  ')) || PS_DOT_SOURCE.test(c) || PS_DYNAMIC_WORD_CORE.test(c);
+function psDriveIn(script, depth) {
   const words = shellWords(script, true);
   const tokens = w => w.value.split(/[\s;|&]+/).filter(t => PS_DRIVE_TOKEN.test(t));
   if (words.some(w => tokens(w).some(t => PS_DRIVE_EXPLICIT.test(t)))) return true;
-  if (psDynamicCore(script)) return words.some(w => tokens(w).length > 0);
-  const atCommand = words.map(w => w.cmd);
-  for (let k = 1; k < words.length; k++) if (!atCommand[k] && atCommand[k - 1] && PS_PIPELINE_KEYWORD.test(words[k - 1].value)) atCommand[k] = true;
-  return words.some((w, k) => atCommand[k] && PS_DRIVE_TOKEN.test(w.value)
+  if (psRunTimeBuild(script)) return words.some(w => tokens(w).length > 0);
+  if (depth < 2 && RUNS_PWSH.test(script)) {
+    for (const w of words) {
+      const m = /\s/.test(w.value) && PWSH_INLINE_SCRIPT.exec(w.value);
+      if (m && changesPsDrive(m[1], depth + 1)) return true;
+    }
+  }
+  const atCommand = words.map(w => w.cmd || PS_STATEMENT_OPENER.test(w.raw));
+  for (let k = 1; k < words.length; k++) {
+    if (atCommand[k]) continue;
+    if (PS_OPENS_STATEMENT.test(words[k - 1].raw) || (atCommand[k - 1] && PS_PIPELINE_KEYWORD.test(words[k - 1].value))) atCommand[k] = true;
+  }
+  return words.some((w, k) => atCommand[k] && PS_DRIVE_TOKEN.test(w.value.replace(PS_STATEMENT_OPENER, ''))
     && ((k + 1 < words.length && !words[k + 1].cmd) || PIPE_BEFORE.test(script.slice(0, w.start))));
 }
 
@@ -483,10 +501,8 @@ const PS_DOT_SOURCE = /(?:^|[;|{(\r\n]|&&)\s*\.(?=[\s'"])/;
 const PS_DYNAMIC_WORD = /(?<![\w-])(?:(?:iex|invoke-expression|invoke-command|icm|sal|set-alias|nal|new-alias|gcm|get-command|new-object|add-type|new-psdrive|ndr|mount|remove-psdrive|rdr)(?![\w-])|(?:alias|function):)/i;
 // The same without the drive words themselves (I2: a drive word must not make its own text "dynamic").
 const PS_DYNAMIC_WORD_CORE = /(?<![\w-])(?:(?:iex|invoke-expression|invoke-command|icm|sal|set-alias|nal|new-alias|gcm|get-command|new-object|add-type)(?![\w-])|(?:alias|function):)/i;
-const psDynamicWith = words => c => PS_DYNAMIC_CHAR.test(c) || /(?<!>)&/.test(c.replace(/&&/g, '  ')) || PS_DOT_SOURCE.test(c) || words.test(c);
 /** PowerShell text that can build a command at run time (call operator `&`, not `&&` or `2>&1`). */
-const psDynamic = psDynamicWith(PS_DYNAMIC_WORD);
-const psDynamicCore = psDynamicWith(PS_DYNAMIC_WORD_CORE);
+const psDynamic = c => PS_DYNAMIC_CHAR.test(c) || /(?<!>)&/.test(c.replace(/&&/g, '  ')) || PS_DOT_SOURCE.test(c) || PS_DYNAMIC_WORD.test(c);
 const CLAUDE_SEGMENT = /(?:^|[^\w.-])\.claude[. ]*(?=$|[^\w.-])/i;
 
 /** A glob component (`.cl*`, `.c?aude`, `.cl{a,}ude`, `[.]claude`) that can match `.claude`. */

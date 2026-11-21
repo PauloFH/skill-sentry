@@ -1500,6 +1500,31 @@ test('I2: mount/ndr/rdr count only as PowerShell commands; plain text mentions d
   ]) asksSelf('PowerShell', c);
 });
 
+test('I2 residual: plain $, parentheses, braces and quotes are not dynamic; real run-time constructs and statement starts still ask', () => {
+  for (const c of [
+    'git commit -m "fix (mount) handling"',
+    'Select-String -Pattern mount -Path $env:TEMP/x.log',
+    'Get-ChildItem $env:TEMP | Select-String mount',
+    'docker volume inspect $(docker volume ls -q) | findstr mount',
+    '$v = "mount"; echo $v',
+    'echo $x mount',
+    'rg "mount(" src',
+    'echo "a (" mount y',
+  ]) noneSelf('PowerShell', c);
+  // The re-review's drive-alias attacks (all asked at the start of this fix).
+  const X = 'C FileSystem D:/x';
+  for (const c of [
+    `ndr ${X}`, 'mount -Name C -PSProvider FileSystem -Root D:/x', `echo a; ndr ${X}`, `echo a && ndr ${X}`, `echo a || ndr ${X}`,
+    `echo a\nndr ${X}`, `echo a\r\nndr ${X}`, `<# c #> ndr ${X}`, `# c\nndr ${X}`, `return ndr ${X}`, `throw (ndr ${X})`,
+    `if (1) { ndr ${X} }`, `try { ndr ${X} } catch {}`, '"C" | ndr -PSProvider FileSystem -Root D:/x', 'ndr @p', `ndr\`\n ${X}`,
+    `& ndr ${X}`, `. ndr ${X}`, `ndr; ndr ${X}`, 'Ndr -n C -psp FileSystem -r D:/x', 'rdr C', 'rdr -Name C -Force',
+    `Write-Output x | Out-Null; mount ${X}`, `cmd /c "echo" ; ndr ${X}`, `powershell -c "ndr ${X}"`, `pwsh -NoProfile -Command ndr ${X}`,
+    `ndr\t${X.replace(/ /g, '\t')}`, 'ndr -Name:C -PSProvider:FileSystem -Root:D:/x', `switch (1) { 1 { ndr ${X} } }`, `do { ndr ${X} } while (0)`,
+    `echo a | % { ndr ${X} }`, `gci | ForEach-Object -Process { ndr ${X} }`, `exit (ndr ${X})`, `Invoke-Command { ndr ${X} }`, `ndr --% ${X}`,
+    `$(ndr ${X})`, `@(ndr ${X})`, `{ndr ${X}}`, `Start-Process pwsh -ArgumentList "-c ndr ${X}"`,
+  ]) asksSelf('PowerShell', c);
+});
+
 // ---------------------------------------------------------------- final review I3: Codex control files
 test('I3: writes to Codex config, hooks, requirements and rules ask with an origin and log without (tool and shell forms)', () => {
   const o = { skill: 'evil:x' };
