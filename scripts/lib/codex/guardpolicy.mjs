@@ -427,8 +427,8 @@ export async function handleCodex({ input, selfRoot, write, log, now = Date.now,
   // C3: a shell call whose working directory is inside the data or install dir can touch it with bare
   // relative names. Only an exact Ruling M read-only self invocation is exempt.
   const cwdProtected = shell && cmd !== null && cwdInside(input.cwd, [dir, selfRoot])
-    && !isReadOnlySelfInvocation(cmd, selfRoot, toolName)
-    && !(process.platform === 'win32' && isReadOnlySelfInvocation(cmd, selfRoot, 'PowerShell'));
+    && !isReadOnlySelfInvocation(cmd, selfRoot, toolName, { agentFlag: true })
+    && !(process.platform === 'win32' && isReadOnlySelfInvocation(cmd, selfRoot, 'PowerShell', { agentFlag: true }));
 
   let originMemo;
   const origin = () => (originMemo === undefined ? (originMemo = findCodexOrigin(input.transcript_path, undefined, toolName, deadline)) : originMemo);

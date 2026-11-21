@@ -828,10 +828,13 @@ test('codex: reading our own SKILL.md with a plain read verb passes (Codex loads
     `cat '${SKILL_AUDIT}'`,
     `sed -n '1,200p' ${SKILL_AUDIT}`,
     `sed -n "1,80p" "${SKILL_HARDEN}"`,
-    // Shape seen in a real Windows Codex rollout: Get-Content -LiteralPath <file> -Raw.
-    `Get-Content -LiteralPath "${SKILL_AUDIT}" -Raw`,
-    `Get-Content -Raw -LiteralPath '${SKILL_AUDIT}'`,
-    `Get-Content -Path ${SKILL_HARDEN}`,
+    // Shape seen in a real Windows Codex rollout: Get-Content -LiteralPath <file> -Raw. Codex's shell on Windows
+    // is PowerShell (the guard merges the PowerShell reading, R15); elsewhere Get-Content is not a command.
+    ...(process.platform === 'win32' ? [
+      `Get-Content -LiteralPath "${SKILL_AUDIT}" -Raw`,
+      `Get-Content -Raw -LiteralPath '${SKILL_AUDIT}'`,
+      `Get-Content -Path ${SKILL_HARDEN}`,
+    ] : []),
   ]) {
     const r = await runGuard(codex('Bash', { command }));
     assert.equal(r.stdout, '', command);
@@ -893,6 +896,31 @@ test('codex: the SKILL.md read exemption is Codex-only (Claude Code still asks; 
   assert.equal(decide({ ...base, toolName: 'Bash', toolInput: { command: `cat ${SKILL_AUDIT}` }, selfViews: true }).decision, 'none');
   const back = path.join(SELF_REAL, 'skills', 'audit', 'SKILL.md');
   assert.equal(decide({ ...base, toolName: 'Bash', toolInput: { command: `cat "${back.replace(/\//g, '\\')}"` }, selfViews: true }).ruleId, 'SELF_PROTECT');
+});
+test('codex: Get-Content / gc / type reads of our own SKILL.md are exempt only as PowerShell (not cmdlets under bash/zsh)', async () => {
+  const { decide } = await import('../scripts/lib/guardcore.mjs');
+  const base = { selfRoot: SELF, dataDir: path.join(tmp('svps'), 'skill-sentry'), cwd: PROJECT, selfViews: true };
+  for (const command of [`Get-Content -Raw "${SKILL_AUDIT}"`, `Get-Content -LiteralPath '${SKILL_AUDIT}' -Raw`, `gc ${SKILL_AUDIT}`, `type "${SKILL_AUDIT}"`]) {
+    assert.equal(decide({ ...base, toolName: 'Bash', toolInput: { command } }).ruleId, 'SELF_PROTECT', `Bash: ${command}`);
+    assert.equal(decide({ ...base, toolName: 'PowerShell', toolInput: { command } }).decision, 'none', `PowerShell: ${command}`);
+  }
+  for (const command of [`cat ${SKILL_AUDIT}`, `sed -n '1,200p' ${SKILL_AUDIT}`]) {
+    assert.equal(decide({ ...base, toolName: 'Bash', toolInput: { command } }).decision, 'none', `Bash: ${command}`);
+  }
+});
+test('codex C3: --agent self invocations pass with the working directory inside the install or data dir', async () => {
+  const data = path.join(tmp('cwdagent'), 'skill-sentry');
+  fs.mkdirSync(data, { recursive: true });
+  const scan = fwdSlash(path.join(SELF_REAL, 'scripts', 'scan.mjs'));
+  const harden = fwdSlash(path.join(SELF_REAL, 'scripts', 'harden.mjs'));
+  for (const cwd of [SELF_REAL, data]) {
+    for (const command of [`node "${scan}" --json --agent codex`, `node "${harden}" check --agent codex`]) {
+      const r = await runGuard(codex('Bash', { command }, { cwd }), { SKILL_SENTRY_DATA_DIR: data });
+      assert.equal(r.stdout, '', `${cwd}: ${command}`);
+    }
+  }
+  const bad = await runGuard(codex('Bash', { command: `node "${scan}" --agent codex --update-baseline` }, { cwd: SELF_REAL }), { SKILL_SENTRY_DATA_DIR: data });
+  assert.match(assertDeny(JSON.parse(bad.stdout)), RUN_YOURSELF);
 });
 test('codex: harden check --agent <claude|codex|all> and scan --agent <...> pass (the Codex harden flow needs --agent codex)', async () => {
   const harden = fwdSlash(path.join(SELF_REAL, 'scripts', 'harden.mjs'));

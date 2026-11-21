@@ -127,6 +127,15 @@ test('codexHomes: System32\\wsl.exe present -> WSL homes are probed as before', 
   assert.deepEqual(homes.map(h => h.root), [aliceCodex]);
 });
 
+test('codexHomes: Sysnative\\wsl.exe only (32-bit node under WOW64 sees no System32\\wsl.exe) -> WSL homes are probed', () => {
+  const { wslRoot, aliceCodex } = buildWslTree(tmp('wsl'));
+  const sys = tmp('sysroot');
+  fs.mkdirSync(path.join(sys, 'Sysnative'), { recursive: true });
+  fs.writeFileSync(path.join(sys, 'Sysnative', 'wsl.exe'), '');
+  const homes = codexHomes({ env: { SystemRoot: sys }, homeDir: tmp('nohome'), platform: 'win32', includeWsl: true, wslRoot });
+  assert.deepEqual(homes.map(h => h.root), [aliceCodex]);
+});
+
 test('codexHomes: distros named in SKILL_SENTRY_WSL_DISTROS are probed even without wsl.exe', () => {
   const { wslRoot, aliceCodex } = buildWslTree(tmp('wsl'));
   const env = { SystemRoot: tmp('sysroot'), SKILL_SENTRY_WSL_DISTROS: 'Ubuntu' };
@@ -169,6 +178,14 @@ test('discoverCodex: an installed copy byte-identical to the running scanner is 
   const comp = pluginOf(discoverCodex({ homes: [home], projectDir: null, selfRoot: self }).components);
   assert.equal(comp.self, true);
   assert.equal(scanComponent(comp).findings.filter(f => f.severity === 'critical').length, 0);
+});
+
+test('discoverCodex: the copy check gets the running scanner path as given, not its lowercased comparison key', () => {
+  // On win32 the comparison key is lowercased; 'İ' lowercases to 'i' + U+0307, a different NTFS name, so a
+  // check reading files through the key would find no running scanner there.
+  const self = buildSelfTree(tmp('selfİ'));
+  const { home } = codexHomeWithCopy(self);
+  assert.equal(pluginOf(discoverCodex({ homes: [home], projectDir: null, selfRoot: self }).components).self, true);
 });
 
 test('discoverCodex: a copy must hold the exact shipped set of the running scanner (a subset is not self)', () => {

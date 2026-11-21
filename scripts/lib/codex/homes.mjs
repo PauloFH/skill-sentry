@@ -32,7 +32,7 @@ const isDir = p => { try { return fs.statSync(p).isDirectory(); } catch { return
  *   3. Windows Terminal WSL profile names (`<localAppData>\Packages\Microsoft.WindowsTerminal*\LocalState\
  *      settings.json`, `<localAppData>\Microsoft\Windows Terminal\settings.json`);
  *   4. COMMON_DISTROS. Failing probes of 2-4 are skipped silently.
- * When `env.SystemRoot` is set and has no `System32\wsl.exe` (WSL not installed), only 1. is probed.
+ * When `env.SystemRoot` is set and has no `System32\wsl.exe` nor `Sysnative\wsl.exe` (WSL not installed), only 1. is probed.
  *
  * Each entry: `{ label, root, userHome?, systemDir?, distroRoot? }`. `userHome` (where `~/.agents/skills`
  * lives) and `systemDir` (system config layer) are set for the default and WSL homes only: an explicit
@@ -137,9 +137,10 @@ function wslHomes({ env, wslRoot, listRoot, localAppData, late, problems }) {
     else problems.push(`invalid WSL distribution name in SKILL_SENTRY_WSL_DISTROS: ${n}`);
   }
   // No `System32\wsl.exe` under a known SystemRoot: WSL is not installed, so only distros the user named
-  // are probed (a `\\wsl.localhost\` lookup there can stall on network name resolution).
+  // are probed (a `\\wsl.localhost\` lookup there can stall on network name resolution). A 32-bit node under
+  // WOW64 sees System32 redirected to SysWOW64 (no wsl.exe there): `Sysnative` is the real System32 for it.
   const sysRoot = env.SystemRoot ?? env.SYSTEMROOT ?? env.windir;
-  if (sysRoot && !fs.existsSync(path.join(sysRoot, 'System32', 'wsl.exe'))) {
+  if (sysRoot && !['System32', 'Sysnative'].some(d => fs.existsSync(path.join(sysRoot, d, 'wsl.exe')))) {
     return probeDistros([...candidates.values()], { wslRoot, late, problems });
   }
   if (listRoot) {

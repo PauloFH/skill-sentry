@@ -92,7 +92,7 @@ export function discoverCodex({ homes = [], projectDir, selfRoot, deadline, limi
       return;
     }
     try {
-      inventoryHome({ home, projectDir: i === 0 ? projectDir : null, homes, components, configFindings, late, selfReal, maxDirs, limits, deadline, releases });
+      inventoryHome({ home, projectDir: i === 0 ? projectDir : null, homes, components, configFindings, late, selfRoot, selfReal, maxDirs, limits, deadline, releases });
     } catch (e) {
       configFindings.push({ ruleId: 'CONFIG_UNREADABLE', category: 'config', severity: 'info', line: 0, file: home.root, snippet: truncate(`Codex home inventory failed: ${e?.code ?? e?.message ?? 'error'}`) });
     }
@@ -100,7 +100,7 @@ export function discoverCodex({ homes = [], projectDir, selfRoot, deadline, limi
   return { components, configFindings };
 }
 
-function inventoryHome({ home, projectDir, homes, components, configFindings, late, selfReal, maxDirs, limits, deadline, releases }) {
+function inventoryHome({ home, projectDir, homes, components, configFindings, late, selfRoot, selfReal, maxDirs, limits, deadline, releases }) {
   const { label, root } = home;
   if (!isDir(root)) return;
   const seen = new Set(components.map(c => c.id));
@@ -384,7 +384,7 @@ function inventoryHome({ home, projectDir, homes, components, configFindings, la
     const comp = { id: `plugin:${key}`, kind: 'plugin', name: key, scope: 'user', root: proot, meta };
     // The name only decides whether the copy check runs; the running scanner vouching for the bytes decides self.
     if (selfReal && realDir(proot) === selfReal) comp.self = true;
-    else if (selfReal && p === 'skill-sentry') markSkillSentryCopy(comp, proot, selfReal, { releases, deadline });
+    else if (selfReal && p === 'skill-sentry') markSkillSentryCopy(comp, proot, selfRoot, { releases, deadline });
     add(comp);
 
     const readOnce = new Set();
