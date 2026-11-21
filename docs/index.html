@@ -75,7 +75,7 @@
         <span class="line" data-i18n="hero.title">Your plugins run with your privileges.</span>
         <span class="line line-2"><span data-i18n="hero.title2">Watch them with</span> <span class="badge-tilt"><span class="badge"><span class="grad-text">&lt;skill-sentry/&gt;</span></span></span></span>
       </h1>
-      <p class="hero-lead" data-i18n="hero.lead">It audits the plugins, skills, hooks and MCP servers you install in Claude Code and OpenAI Codex, guards risky tool calls as they happen, and hardens your Claude Code settings.</p>
+      <p class="hero-lead" data-i18n="hero.lead">It audits the plugins, skills, hooks and MCP servers you install in Claude Code and OpenAI Codex, guards risky tool calls as they happen, hardens your Claude Code settings and recommends hardening for Codex.</p>
       <p class="hero-tagline" data-i18n="hero.tagline">Local and readable, with zero dependencies. No network calls, no telemetry.</p>
       <div class="hero-ctas">
         <a class="btn btn-primary" href="#install"><svg aria-hidden="true"><use href="#i-download"/></svg><span data-i18n="hero.ctaInstall">Install</span></a>
@@ -291,6 +291,7 @@
         <div class="window-body">
           <p><span class="t-blue">$</span> <span class="t-bold">codex plugin marketplace add PauloFH/skill-sentry</span></p>
           <p><span class="t-blue">$</span> <span class="t-bold">codex plugin add skill-sentry@skill-sentry</span></p>
+          <p class="t-dim" data-i18n="codex.untested">Installing from the public GitHub repo is not tested end to end yet. The same commands were verified against a local copy.</p>
           <p style="margin-top:12px"><span class="t-blue">●</span> <span data-i18n="codex.trust">Then open <code>/hooks</code>, review the skill-sentry hook and trust it. Codex does not run a hook until you do, and enabling a plugin does not trust its hooks.</span></p>
         </div>
       </figure>
@@ -448,7 +449,7 @@
     "hero.eyebrow": "Plugin de segurança para o Claude Code e o Codex",
     "hero.title": "Seus plugins rodam com os seus privilégios.",
     "hero.title2": "Fique de olho neles com",
-    "hero.lead": "Ele audita os plugins, skills, hooks e servidores MCP que você instala no Claude Code e no OpenAI Codex, vigia chamadas de ferramentas arriscadas no momento em que acontecem e reforça as configurações do seu Claude Code.",
+    "hero.lead": "Ele audita os plugins, skills, hooks e servidores MCP que você instala no Claude Code e no OpenAI Codex, vigia chamadas de ferramentas arriscadas no momento em que acontecem, reforça as configurações do seu Claude Code e recomenda ajustes de segurança para o Codex.",
     "hero.tagline": "Local e legível, sem nenhuma dependência. Sem chamadas de rede, sem telemetria.",
     "hero.ctaInstall": "Instalar",
     "hero.ctaGithub": "Ver no GitHub",
@@ -547,7 +548,8 @@
     "codex.d5": "Escritas nos arquivos do próprio skill-sentry, ou por formas incomuns de caminho. Negado.",
     "codex.patch": "Os patches enviados pelo <code>apply_patch</code> também são inspecionados. Um patch que a guarda não consegue ler é negado.",
     "codex.termLabel": "Instalação no Codex",
-    "codex.trust": "Depois, abra <code>/hooks</code>, revise o hook do skill-sentry e confie nele. O Codex não executa um hook enquanto você não confiar, e ativar um plugin não faz o Codex confiar nos hooks dele.",
+    "codex.untested": "A instalação a partir do repositório público do GitHub ainda não foi testada de ponta a ponta. Os mesmos comandos foram verificados contra uma cópia local.",
+    "codex.trust":"Depois, abra <code>/hooks</code>, revise o hook do skill-sentry e confie nele. O Codex não executa um hook enquanto você não confiar, e ativar um plugin não faz o Codex confiar nos hooks dele.",
     "codex.limTitle": "Principais limites no Codex",
     "codex.lim1": "Sem “ask”: a guarda só pode permitir ou negar.",
     "codex.lim2": "Ela falha aberta: se o hook der erro ou passar do tempo limite do Codex, cerca de 5 segundos, a chamada roda.",

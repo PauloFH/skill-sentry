@@ -149,9 +149,11 @@ codex plugin marketplace add PauloFH/skill-sentry
 codex plugin add skill-sentry@skill-sentry
 ```
 
+Installing from the public GitHub repository has not been tested end to end yet. The same two commands were verified against a local copy of this repository.
+
 Then **trust the guard hook**. Codex does not run a hook until you trust it, and enabling a plugin does not trust its hooks. Open `/hooks` in Codex (or "Review hooks" in the desktop app), review the skill-sentry hook and trust it. Until you do, the guard does not run. Trust it again after every update, because a changed hook shows as `modified`.
 
-Then ask Codex to run the skill-sentry audit skill for your first report.
+Then ask Codex to run the skill-sentry audit for your first report. This is verified on WSL Codex only. On Windows Codex it may need your approval for the shell commands it runs.
 
 ### Guard under Codex
 
@@ -202,7 +204,7 @@ Plain `check` stays Claude-only. Codex hardening is **recommend-only**: skill-se
 
 ### Two installs, one version
 
-If Claude Code and Codex run different skill-sentry versions, a newer scanner recognises older releases and shows an "update both installs" note. An older scanner may flag a newer copy as unknown until both are updated. **Update both installs** after each release.
+If Claude Code and Codex run different skill-sentry versions, a newer scanner recognises older releases and shows an "update both installs" note. An older scanner may report the newer copy as suspicious or malicious (a false positive) until both installs are updated. **Update both installs** after each release.
 
 ### skills.sh
 

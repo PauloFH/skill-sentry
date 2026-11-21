@@ -149,9 +149,11 @@ codex plugin marketplace add PauloFH/skill-sentry
 codex plugin add skill-sentry@skill-sentry
 ```
 
+从公开的 GitHub 仓库安装尚未经过端到端测试。这两条命令已针对本仓库的本地副本验证过。
+
 然后**信任守卫 hook**。在你信任之前，Codex 不会运行 hook，而启用插件并不会自动信任它的 hook。在 Codex 中打开 `/hooks`（桌面应用中是 "Review hooks"），检查 skill-sentry 的 hook 并信任它。在此之前守卫不会运行。每次更新后都要重新信任，因为被改动的 hook 会显示为 `modified`。
 
-接着让 Codex 运行 skill-sentry 的审计 skill，查看你的第一份报告。
+接着让 Codex 运行 skill-sentry 的审计，查看你的第一份报告。这仅在 WSL 中的 Codex 上验证过。在 Windows 的 Codex 上，它运行的 shell 命令可能需要你批准。
 
 ### Codex 下的守卫
 
@@ -202,7 +204,7 @@ node scripts/harden.mjs check --agent codex
 
 ### 两套安装，同一个版本
 
-如果 Claude Code 和 Codex 运行的 skill-sentry 版本不同，较新的扫描器能识别旧版本，并显示"请更新两处安装"的提示。较旧的扫描器可能会把较新的副本标记为未知，直到两边都更新。每次发布后请**更新两处安装**。
+如果 Claude Code 和 Codex 运行的 skill-sentry 版本不同，较新的扫描器能识别旧版本，并显示"请更新两处安装"的提示。较旧的扫描器可能会把较新的副本报告为 suspicious 或 malicious（误报），直到两处安装都更新。每次发布后请**更新两处安装**。
 
 ### skills.sh
 

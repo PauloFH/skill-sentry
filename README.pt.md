@@ -149,9 +149,11 @@ codex plugin marketplace add PauloFH/skill-sentry
 codex plugin add skill-sentry@skill-sentry
 ```
 
+A instalação a partir do repositório público do GitHub ainda não foi testada de ponta a ponta. Os mesmos dois comandos foram verificados contra uma cópia local deste repositório.
+
 Depois, **confie no hook da guarda**. O Codex não executa um hook enquanto você não confiar nele, e ativar um plugin não faz o Codex confiar nos hooks dele. Abra `/hooks` no Codex (ou "Review hooks" no app desktop), revise o hook do skill-sentry e confie nele. Até você fazer isso, a guarda não roda. Confie de novo a cada atualização, porque um hook alterado aparece como `modified`.
 
-Em seguida, peça ao Codex que execute a skill de auditoria do skill-sentry para ver o seu primeiro relatório.
+Em seguida, peça ao Codex que execute a auditoria do skill-sentry para ver o seu primeiro relatório. Isso foi verificado só no Codex do WSL. No Codex do Windows, pode ser preciso você aprovar os comandos de shell que ele executa.
 
 ### Guarda no Codex
 
@@ -202,7 +204,7 @@ O `check` sem flag continua só para o Claude. O harden do Codex **só recomenda
 
 ### Duas instalações, uma versão
 
-Se o Claude Code e o Codex rodarem versões diferentes do skill-sentry, um scanner mais novo reconhece versões anteriores e mostra um aviso de "atualize as duas instalações". Um scanner mais antigo pode sinalizar uma cópia mais nova como desconhecida até as duas serem atualizadas. **Atualize as duas instalações** a cada versão nova.
+Se o Claude Code e o Codex rodarem versões diferentes do skill-sentry, um scanner mais novo reconhece versões anteriores e mostra um aviso de "atualize as duas instalações". Um scanner mais antigo pode apontar a cópia mais nova como suspicious ou malicious (um falso positivo) até as duas instalações serem atualizadas. **Atualize as duas instalações** a cada versão nova.
 
 ### skills.sh
 
