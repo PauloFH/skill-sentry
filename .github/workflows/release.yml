@@ -5,12 +5,14 @@ name: Release
 # write it into the manifests and CHANGELOG.md, commit `chore: release <version>`, tag v<version> and create the
 # GitHub Release. A push with only docs/chore/ci/test commits releases nothing.
 #
-# workflow_dispatch is a dry run on any branch: the same checks, then `semantic-release --dry-run` prints the
-# next version. It never commits, tags or releases: the publish job runs only for a push to main.
+# A pull request (from this repository) and workflow_dispatch are dry runs: the same checks, then
+# `semantic-release --dry-run` prints the next version in the job summary. They never commit, tag or release: the
+# publish job runs only for a push to main, and the dry-run job refuses to run semantic-release without --dry-run.
 
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
     inputs:
       dry_run:
@@ -107,6 +109,11 @@ jobs:
           npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/semrel" $SEMANTIC_RELEASE_PACKAGES
           # semantic-release resolves the plugins of an --extends config from the config's own dir.
           cp tools/ci/release.config.cjs "$RUNNER_TEMP/semrel/release.config.cjs"
+      - name: Only a push to main publishes
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != "push" ] || [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::refusing to publish for $GITHUB_EVENT_NAME on $GITHUB_REF"; exit 1
+          fi
       - name: semantic-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -129,17 +136,27 @@ jobs:
           fi
 
   dry-run:
-    # A dispatch on any branch: same checks, then semantic-release --dry-run. --dry-run is fixed here, so nothing is
-    # committed, tagged or released. contents: write only because semantic-release checks push access with
-    # `git push --dry-run` even in a dry run.
+    # A pull request from this repository, or a dispatch on any branch: same checks, then semantic-release
+    # --dry-run. Nothing is committed, tagged or released. contents: write only because semantic-release checks
+    # push access with `git push --dry-run` even in a dry run (fork PRs get a read-only token: see fork-notice).
+    # On a pull request semantic-release sees the base branch (main) and analyses the merge commit, so the summary
+    # shows what merging would release.
     name: release (dry run)
     needs: [ci, model-e2e]
-    if: github.event_name == 'workflow_dispatch'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: write
     steps:
+      - name: Refuse to publish from this job
+        run: |
+          case "$GITHUB_EVENT_NAME" in
+            pull_request|workflow_dispatch) echo "dry run for $GITHUB_EVENT_NAME" ;;
+            *) echo "::error::the dry-run job ran for $GITHUB_EVENT_NAME"; exit 1 ;;
+          esac
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -157,14 +174,35 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -o pipefail
-          "$RUNNER_TEMP/semrel/node_modules/.bin/semantic-release" --extends "$RUNNER_TEMP/semrel/release.config.cjs" \
-            --dry-run --no-ci --branches "$GITHUB_REF_NAME" 2>&1 | tee "$RUNNER_TEMP/semrel.log"
+          args=(--extends "$RUNNER_TEMP/semrel/release.config.cjs" --dry-run --no-ci)
+          # A dispatch releases from the dispatched branch; a pull request is analysed against main (the config).
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then args+=(--branches "$GITHUB_REF_NAME"); fi
+          case " ${args[*]} " in *" --dry-run "*) ;; *) echo "::error::refusing to run semantic-release without --dry-run"; exit 1 ;; esac
+          "$RUNNER_TEMP/semrel/node_modules/.bin/semantic-release" "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/semrel.log"
+          log="$(sed -E 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/semrel.log")"
+          next="$(printf '%s\n' "$log" | sed -nE 's/.*The next release version is ([^ ]+).*/\1/p' | tail -n1)"
           {
-            echo "### semantic-release --dry-run on $GITHUB_REF_NAME"
+            if [ -n "$next" ]; then echo "### next release: $next"; else echo "### no release"; fi
+            echo
+            echo "semantic-release --dry-run ($GITHUB_EVENT_NAME, $GITHUB_REF_NAME):"
             echo '```'
-            grep -E 'next release version|no new version|no relevant changes|associated with version|Published release|Release note for version' "$RUNNER_TEMP/semrel.log" || true
+            printf '%s\n' "$log" | grep -E 'associated with version|commits since last release|Analysis of|next release version|no relevant changes' || true
             echo '```'
+            if [ -n "$next" ]; then
+              echo '<details><summary>release notes</summary>'; echo
+              printf '%s\n' "$log" | sed -n '/Release note for version/,$p' | sed '1d'
+              echo '</details>'
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  fork-notice:
+    name: release (dry run skipped for forks)
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "::notice title=release dry run::skipped for a fork pull request (its token is read-only, and semantic-release needs push access even for --dry-run)"
+          echo "### release dry run skipped for a fork pull request" >> "$GITHUB_STEP_SUMMARY"
 
   pages:
     # Non-blocking: wait for the Pages build of the release commit, then check that the live page responds and
