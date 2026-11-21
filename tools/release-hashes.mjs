@@ -14,7 +14,7 @@
 //      scanning a clean export of the tag with the new scanner reports SKILL_SENTRY_OLD_VERSION, not malicious.
 //
 // Files are walked with the runtime's own rules (shippedFiles: regular files only, Claude Code's `.in_use/<pid>`
-// markers left out) and hashed with its LF normalisation (lfSha256), so the two cannot drift.
+// and Codex's `.codex-marketplace-install.json` markers left out) and hashed with its LF normalisation (lfSha256), so the two cannot drift.
 import fs from 'node:fs';
 import path from 'node:path';
 import { shippedFiles, lfBytes, lfSha256 } from '../scripts/lib/selfcopy.mjs';

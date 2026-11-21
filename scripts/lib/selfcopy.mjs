@@ -37,6 +37,38 @@ const MARKER_MAX_SIZE = 64;
 const MAX_MARKERS = 16;
 const MAX_MARKER_BYTES = 4096;
 
+// Codex writes `.codex-marketplace-install.json` into the plugin root on the first start after `codex plugin add`
+// from a git marketplace. Seen on the real installs (Windows and WSL): 185 bytes of 2-space pretty JSON with no
+// trailing newline, exactly {"source_type": <word>, "source": <url>, "ref_name": null, "sparse_paths": [],
+// "revision": <40-hex commit>} in that order. Only that exact shape at the top level is left out of a tree: the
+// exact name, a regular file of at most CODEX_MARKER_MAX_SIZE bytes (bounded read), text equal byte for byte to
+// the canonical pretty form of its own parse (no duplicate keys, comments or padding), every value pinned. Anything
+// else (another key or type, a ref or sparse install, a directory of that name, a nested copy) is an ordinary
+// file or dir, so the tree stays unknown and the marker can never carry a payload past the comparison.
+const CODEX_MARKER = '.codex-marketplace-install.json';
+const CODEX_MARKER_MAX_SIZE = 1024;
+const CODEX_MARKER_KEYS = ['source_type', 'source', 'ref_name', 'sparse_paths', 'revision'];
+
+/** True for a Codex install marker of exactly the expected shape (see CODEX_MARKER). Never throws. */
+function isCodexMarker(root, rel, size) {
+  if (rel !== CODEX_MARKER || size > CODEX_MARKER_MAX_SIZE) return false;
+  try {
+    const text = readListed(abs(root, rel), size)?.toString('utf8');
+    if (!text) return false;
+    const o = JSON.parse(text);
+    if (o === null || typeof o !== 'object' || Array.isArray(o)) return false;
+    if (Object.keys(o).join(',') !== CODEX_MARKER_KEYS.join(',')) return false;
+    if (JSON.stringify(o, null, 2) !== text) return false;
+    return typeof o.source_type === 'string' && /^[a-z]{1,16}$/.test(o.source_type)
+      && typeof o.source === 'string' && /^[\x21-\x7e]{1,512}$/.test(o.source)
+      && o.ref_name === null
+      && Array.isArray(o.sparse_paths) && o.sparse_paths.length === 0
+      && typeof o.revision === 'string' && /^[0-9a-f]{40}$/.test(o.revision);
+  } catch {
+    return false;
+  }
+}
+
 // Never shipped: VCS and gitignored dev dirs of a checkout. Skipped on the running scanner's side only (it may
 // run from a dev checkout); on the side of the copy under inspection they are files like any other.
 const DEV_DIRS = new Set(['.git', 'node_modules', '.omc', '.superpowers', 'docs/superpowers']);
@@ -81,8 +113,8 @@ function isInstallMarker(root, rel, size) {
 }
 
 /**
- * Regular files under `root` as a Map of relpath (`/`-separated) -> size. Only install markers are read
- * (bounded); they are left out of the Map. null when the tree cannot be vouched for: a link or special file, a
+ * Regular files under `root` as a Map of relpath (`/`-separated) -> size. Only install markers (Claude Code's
+ * `.in_use/<pid>`, Codex's top-level CODEX_MARKER) are read (bounded); they are left out of the Map. null when the tree cannot be vouched for: a link or special file, a
  * read error, a limit (files, dirs, bytes, markers) or `deadline` hit (checked on every entry), or (with
  * `allowed`) the first file whose relpath is not in `allowed`. Directories in `skipDirs` (relpaths) are not
  * entered. Never throws.
@@ -105,7 +137,11 @@ export function shippedFiles(root, { allowed = null, skipDirs = null, limits = C
         for (let e = dir.readSync(); e !== null; e = dir.readSync()) {
           if (late(deadline)) return null;
           const r = rel ? `${rel}/${e.name}` : e.name;
-          if (e.isDirectory()) { if (!skipDirs?.has(r)) stack.push(r); continue; }
+          if (e.isDirectory()) {
+            if (r === CODEX_MARKER) return null; // an (even empty) dir under the marker's name is never a marker
+            if (!skipDirs?.has(r)) stack.push(r);
+            continue;
+          }
           if (!e.isFile()) return null; // symlink, junction, FIFO, socket, device
           const st = fs.lstatSync(abs(root, r));
           if (!st.isFile()) return null;
@@ -113,6 +149,7 @@ export function shippedFiles(root, { allowed = null, skipDirs = null, limits = C
             if (++markers > MAX_MARKERS || (markerBytes += st.size) > MAX_MARKER_BYTES) return null;
             if (isInstallMarker(root, r, st.size)) continue;
           }
+          if (isCodexMarker(root, r, st.size)) continue; // top level only, at most one by construction
           if (allowed && !allowed.has(r)) return null;
           if (out.size >= maxFiles || (bytes += st.size) > maxBytes) return null;
           out.set(r, st.size);
@@ -184,7 +221,8 @@ export function knownRelease(root, { releases = { hashes: KNOWN_RELEASES, sizes:
       maxFiles: Math.max(...versions.map(v => Object.keys(hashes[v]).length)),
       maxBytes: Math.max(...versions.map(v => 2 * total(v))),
     };
-    const files = shippedFiles(root, { allowed, limits, deadline });
+    // A Codex install is a shallow git clone: its `.git` (and any `node_modules`) is skipped as in isCopyOfSelf (m6).
+    const files = shippedFiles(root, { allowed, skipDirs: OTHER_COPY_SKIP_DIRS, limits, deadline });
     if (!files) return null;
     candidates: for (const v of versions) {
       const names = Object.keys(hashes[v]);

