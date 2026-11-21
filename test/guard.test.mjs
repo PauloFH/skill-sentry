@@ -992,6 +992,35 @@ test('CI macOS: a slow file system cannot stall a decision (path I/O budget, the
   assert.equal(r.ruleId, 'PATH_UNRESOLVED');
   assert.ok(ms < 1800, `decision took ${ms.toFixed(0)} ms`);
 });
+// Fix round 2 (N2): a write path the budget (or the count cap) leaves unresolved fails closed as SELF_PROTECT_WRITE:
+// an alias into the data dir behind it is never seen otherwise.
+function dataJunctionFixture(name) {
+  const root = tmp(name);
+  const data = path.join(root, 'stuff', 'skill-sentry');
+  const work = path.join(root, 'work');
+  fs.mkdirSync(data, { recursive: true });
+  fs.mkdirSync(work, { recursive: true });
+  fs.symlinkSync(data, path.join(work, 'j'), 'junction');
+  const slow = path.join(root, 'slowfs');
+  fs.mkdirSync(slow);
+  return { root, data, work, slow };
+}
+test('fix round 2 (N2): an unresolved write path fails closed (slow lookup budget and count cap)', () => {
+  const f = dataJunctionFixture('n2');
+  const patch = extraWritePaths => decide({ toolName: 'apply_patch', toolInput: {}, extraWritePaths, origin: null, allowlist: EMPTY,
+    selfRoot: SELF, dataDir: f.data, cwd: f.work, shellCwd: false });
+  const { r } = countRealpaths(1100, () => patch([path.join(f.slow, 'a.txt'), 'j/allowlist.json']));
+  assert.equal(r.decision, 'ask', 'budget');
+  assert.equal(r.ruleId, 'SELF_PROTECT_WRITE', 'budget');
+  const many = Array.from({ length: 300 }, (_, i) => `notes/f${i}.txt`);
+  const r2 = patch([...many, 'j/allowlist.json']);
+  assert.equal(r2.ruleId, 'SELF_PROTECT_WRITE', 'count cap');
+  // control: resolved in time, the junction write is caught as such; plain writes stay none
+  assert.equal(patch(['j/allowlist.json']).ruleId, 'SELF_PROTECT_WRITE');
+  assert.equal(patch(['notes/a.txt']).decision, 'none');
+  // reads keep the fast fail-safe path (PATH_UNRESOLVED), see the macOS tests above
+});
+
 test('round 4: secret paths hidden behind many URLs are still matched', () => {
   const urls = Object.fromEntries(Array.from({ length: 130 }, (_, i) => [`u${i}`, `https://example.com/item/${i}`]));
   // Repeated cells count once; a MIME-shaped string that a path rule matches is still matched.

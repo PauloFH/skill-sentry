@@ -247,7 +247,7 @@ function makeResolver(cwd, mcp) {
     const key = normForCompare(abs);
     let e = io.get(key);
     if (!e) {
-      if (state.left <= 0 || state.ioMs > IO_BUDGET_MS) { state.unresolved = true; return { abs, long: null, unusual, io: null }; }
+      if (state.left <= 0 || state.ioMs > IO_BUDGET_MS) { state.unresolved = true; return { abs, long: null, unusual, io: null, unresolved: true }; }
       state.left--;
       let long = null;
       const t0 = Date.now();
@@ -1017,6 +1017,11 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
     const rootIds = new Set(protectedRoots.map(r => fileId(path.resolve(r))).filter(Boolean));
     for (const p of t.writePaths) {
       const r = R.get(p);
+      // Fix round 2 (N2): a write path left unresolved (lookup time budget or count cap) may alias a protected file
+      // through a link the guard never followed: it fails closed, as a write to a protected place would.
+      if (r.unresolved) {
+        return { decision: 'ask', ruleId: 'SELF_PROTECT_WRITE', severity: 'high', reason: 'write target could not be resolved in time; it may alias skill-sentry data', snippet: snip(p) };
+      }
       const c = normForCompare(r.long ?? r.abs);
       // C1: a sibling skill-sentry install (the other agent's, or another marketplace's) counts as protected too.
       if (roots.some(root => isUnder(c, root)) || siblingInstall(c) || siblingInstall(normForCompare(r.abs))
