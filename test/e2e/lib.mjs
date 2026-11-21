@@ -101,9 +101,9 @@ export function readTree(root) {
  * Minimal `codex app-server` client over stdio (one JSON object per line, as codex-rs/tui talks to it).
  * Messages without a matching id (notifications, server requests) are collected in `notifications`.
  */
-export async function appServer(codex, { env, cwd }) {
+export async function appServer(codex, { env, cwd, args = [] }) {
   const [file, ...pre] = codex;
-  const child = spawn(file, [...pre, 'app-server'], { env, cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  const child = spawn(file, [...pre, 'app-server', ...args], { env, cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   let stderr = '';
   child.stderr.on('data', c => { stderr += c; });
   const pending = new Map();
@@ -121,7 +121,20 @@ export async function appServer(codex, { env, cwd }) {
       pending.delete(msg.id);
       if (msg.error) p.reject(new Error(`${p.method}: ${JSON.stringify(msg.error)}`));
       else p.resolve(msg.result);
-    } else notifications.push(msg);
+    } else {
+      notifications.push(msg);
+      // A server request (approval, elicitation...): the e2e never grants anything, so every request is refused.
+      if (msg.id !== undefined && typeof msg.method === 'string') {
+        child.stdin.write(JSON.stringify({ id: msg.id, error: { code: -32601, message: 'refused by the skill-sentry e2e client' } }) + '\n');
+      }
+    }
+    for (const w of waiters.splice(0)) if (!w(msg)) waiters.push(w);
+  });
+  const waiters = [];
+  /** Resolves with the first later message for which `pred` is true (or rejects after `timeout` ms). */
+  const waitFor = (pred, timeout = 120_000) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('app-server: timed out waiting for a message')), timeout);
+    waiters.push(msg => { if (!pred(msg)) return false; clearTimeout(timer); resolve(msg); return true; });
   });
   const request = (method, params, timeout = 60_000) => new Promise((resolve, reject) => {
     if (closed) { reject(new Error('app-server is closed')); return; }
@@ -142,7 +155,7 @@ export async function appServer(codex, { env, cwd }) {
   });
   const init = await request('initialize', { clientInfo: { name: 'skill-sentry-e2e', version: '0.0.0' } });
   child.stdin.write(JSON.stringify({ method: 'initialized' }) + '\n');
-  return { init, request, close, notifications, stderr: () => stderr };
+  return { init, request, waitFor, close, notifications, stderr: () => stderr };
 }
 
 /**
@@ -221,6 +234,73 @@ export async function installBoth(cli, { env, cwd, dist, id = 'skill-sentry@skil
     await s.request('config/batchWrite', { edits: [{ keyPath: 'hooks.state', value, mergeStrategy: 'upsert' }], reloadUserConfig: true });
   } finally { await s.close(); }
   return { claudeRoot, codexRoot };
+}
+
+/**
+ * A git marketplace without the network: commit `src` into a repo, clone it bare, and make `url` (a GitHub-style
+ * https URL) resolve to that bare repo through `url.<file>.insteadOf` in the isolated home's ~/.gitconfig. A
+ * global config, not GIT_CONFIG_* variables: Codex strips those from its background git commands
+ * (codex-rs/core-plugins/src/git_policy.rs, PluginGitMode::Automatic). Returns the bare repo path.
+ */
+export function gitMarketplace(src, { base, home, url }) {
+  const ident = { GIT_AUTHOR_NAME: 'e2e', GIT_AUTHOR_EMAIL: 'e2e@example.invalid', GIT_COMMITTER_NAME: 'e2e', GIT_COMMITTER_EMAIL: 'e2e@example.invalid' };
+  const g = (args, cwd) => {
+    const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...ident } });
+    if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
+  };
+  g(['init', '-q', '-b', 'main'], src);
+  g(['add', '-A'], src);
+  g(['commit', '-q', '-m', 'e2e marketplace'], src);
+  const bare = path.join(base, 'remote.git');
+  g(['clone', '-q', '--bare', src, bare], base);
+  const fileUrl = `file:///${bare.replaceAll('\\', '/').replace(/^\/+/, '')}`;
+  fs.writeFileSync(path.join(home, '.gitconfig'), `[url "${fileUrl}"]\n\tinsteadOf = ${url}\n[core]\n\tlongpaths = true\n`);
+  return bare;
+}
+
+/** `codex app-server` arguments that route the model to the stub (Responses wire API, no retries, no auth). */
+export const codexStubArgs = stubUrl => [
+  '-c', 'model_provider="e2e"', '-c', 'model="gpt-5-codex"',
+  '-c', `model_providers.e2e={ name = "skill-sentry e2e stub", base_url = "${stubUrl}/v1", wire_api = "responses", request_max_retries = 0, stream_max_retries = 0 }`,
+];
+
+/**
+ * One `claude -p` turn against the stub model (ANTHROPIC_BASE_URL + a dummy key; the stub scripts one Bash call).
+ * Returns the parsed stream-json events: the init message, the PreToolUse hook responses, the tool results and the
+ * permission denials.
+ */
+export async function claudeTurn(cli, { env, cwd, stubUrl }) {
+  const r = await run(cli.claude, ['-p', '--output-format', 'stream-json', '--verbose', '--include-hook-events', '--allowedTools', 'Bash'], {
+    env: { ...env, ANTHROPIC_BASE_URL: stubUrl, ANTHROPIC_API_KEY: 'e2e-stub-placeholder' }, cwd, input: 'Run the probe command.', timeout: 180_000,
+  });
+  const events = r.stdout.split(/\r?\n/).filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  const content = events.filter(e => e.type === 'user').flatMap(e => (Array.isArray(e.message?.content) ? e.message.content : []));
+  return {
+    code: r.code, stderr: r.stderr, events,
+    init: events.find(e => e.type === 'system' && e.subtype === 'init'),
+    hooks: events.filter(e => e.type === 'system' && e.subtype === 'hook_response' && e.hook_event === 'PreToolUse'),
+    toolResults: content.filter(c => c?.type === 'tool_result'),
+    denials: events.find(e => e.type === 'result')?.permission_denials ?? [],
+  };
+}
+
+/**
+ * One app-server turn against the stub model. Returns the PreToolUse hook runs reported for the turn
+ * (hook/completed), the turn status and the command items.
+ */
+export async function codexTurn(server, threadId) {
+  const before = server.notifications.length;
+  const { turn } = await server.request('turn/start', { threadId, input: [{ type: 'text', text: 'Run the probe command.' }] });
+  const completed = m => m.method === 'turn/completed' && m.params?.turn?.id === turn.id;
+  // Checked and registered synchronously, so a completion that already arrived is not missed.
+  if (!server.notifications.slice(before).some(completed)) await server.waitFor(completed, 180_000);
+  const mine = server.notifications.slice(before).filter(m => m.params?.turnId === turn.id || m.params?.turn?.id === turn.id);
+  return {
+    turnId: turn.id,
+    status: mine.find(m => m.method === 'turn/completed')?.params?.turn?.status,
+    hooks: mine.filter(m => m.method === 'hook/completed' && m.params?.run?.eventName === 'preToolUse').map(m => m.params.run),
+    commands: mine.filter(m => m.method === 'item/completed' && m.params?.item?.type === 'commandExecution').map(m => m.params.item),
+  };
 }
 
 export const tmpBase = () => fs.mkdtempSync(path.join(process.env.RUNNER_TEMP || os.tmpdir(), 'ss-e2e-'));
