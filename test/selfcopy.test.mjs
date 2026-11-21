@@ -268,6 +268,37 @@ test('a dev tree that differs from the manifest still recognises installed copie
   assert.equal(matchSelf(skillCopy(rel), 'skill', { ...sopts, selfManifest: null }).via, 'copy');
 });
 
+test('a standalone running scanner recognises a same-version git plugin install (markers and .git) through the manifest (Review Focus 3)', () => {
+  const { dir: rel, manifest } = buildRelease(tmp('rel'));
+  const standalone = skillCopy(rel, path.join(tmp('sa'), '.agents', 'skills', 'skill-sentry'));
+  write(standalone, 'scripts/lib/local.mjs', '// differs from the release: only the manifest can vouch\n');
+  const copy = pluginCopy(rel);
+  write(copy, '.in_use/31700', JSON.stringify({ pid: 31700, procStartFt: '134080000000000000' }));
+  write(copy, '.git/HEAD', 'ref: refs/heads/main\n');
+  write(copy, '.codex-marketplace-install.json', JSON.stringify({
+    source_type: 'git', source: 'https://github.com/o/skill-sentry.git', ref_name: null, sparse_paths: [], revision: 'b'.repeat(40),
+  }, null, 2));
+  assert.deepEqual(matchSelf(copy, 'plugin', { selfRoot: standalone, selfManifest: manifest, releases: NO_RELEASES }), { self: true, version: '9.9.9', via: 'manifest' });
+});
+
+test('a skills-dir entry that links to a matching copy is recognised (the skills CLI may install by linking)', t => {
+  const { dir: rel, manifest } = buildRelease(tmp('rel'));
+  const canonical = skillCopy(rel, path.join(tmp('agents'), '.agents', 'skills', 'skill-sentry'));
+  const claudeHome = path.join(tmp('home'), '.claude');
+  const link = path.join(claudeHome, 'skills', 'skill-sentry');
+  fs.mkdirSync(path.dirname(link), { recursive: true });
+  try {
+    fs.symlinkSync(canonical, link, 'junction');
+  } catch (e) {
+    t.skip(`cannot create a directory link here: ${e.code}`);
+    return;
+  }
+  const comp = discover({ claudeHome, homeDir: tmp('hd'), projectDir: null, selfRoot: devTree(), selfManifest: manifest, releases: NO_RELEASES })
+    .components.find(c => c.kind === 'skill');
+  assert.equal(comp.root, link);
+  assert.equal(comp.self, true);
+});
+
 function exportTag(tag) {
   const out = tmp('export');
   const a = spawnSync('git', ['-C', ROOT, 'archive', '--format=tar', tag], { maxBuffer: 256 * 1024 * 1024 });

@@ -463,6 +463,7 @@ test('SELF_PROTECT covers standalone skill-sentry installs (~/.claude/skills, ~/
     path.join(H, '.agents', 'skills', 'my-skill-sentry-copy'),
     path.join(proj, '.claude', 'skills', 'skill-sentry-audit'),
     path.join(proj, '.agents', 'skills', 'skill-sentry'),
+    path.join(H, '.codex', 'skills', 'skill-sentry'), // Codex also loads skills from <codex home>/skills
   ];
   const fwd = s => s.replace(/\\/g, '/');
   for (const dir of dirs) {
