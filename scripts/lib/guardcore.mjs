@@ -326,7 +326,8 @@ function shellWords(cmd, ps) {
     }
     if (/\s/.test(ch)) {
       end(i);
-      if (ch === '\n') { atCommand = true; pendingSep += '\n'; }
+      // A lone CR ends a statement in PowerShell (fix round 1, I1): count it as a newline everywhere.
+      if (ch === '\n' || ch === '\r') { atCommand = true; if (!(ch === '\r' && next === '\n')) pendingSep += '\n'; }
       continue;
     }
     if (ch === ';' || ch === '&' || ch === '|') {
@@ -481,6 +482,10 @@ const REL_KILL_WORDS = new Set([
   'invoke-expression', 'iex', 'invoke-command', 'icm', 'claude', 'codex',
 ]);
 const wordName = v => v.toLowerCase().replace(/^.*\//, '').replace(/\.(?:exe|cmd|bat|ps1)$/, '');
+// PowerShell's built-in `cd..` and `cd\` functions (Set-Location .. and \); `\` reads as `/` in a word value.
+const CD_SHORTHAND = /^cd(?:\.\.|[/\\~])$/i;
+const UNICODE_BREAKS = [0x85, 0x2028, 0x2029].map(n => String.fromCharCode(n)); // NEL, LINE and PARAGRAPH SEPARATOR
+const killWord = v =>REL_KILL_WORDS.has(wordName(v)) || CD_SHORTHAND.test(v);
 const DOT_DOT = /(?:^|\/)\.\.(?:\/|$)/;
 const NAMES_AGENT_HOME = /\.claude|\.codex|claude_config_dir|codex_home/i;
 const NULL_DEVICES = new Set(['/dev/null', '/dev/stdout', '/dev/stderr', 'nul']);
@@ -492,9 +497,12 @@ const relativePiece = v => LITERAL_PATH.test(v) && !v.includes(':') && !/^[/~-]/
  * Per-command P3 context: `forWord(k)` returns null or a resolver for relative pieces of word `k` (see above).
  * Lazy: built on the first relative piece. Never throws (any doubt -> no resolver -> the word asks).
  */
-function relativeContext(words, ps, cwd, shellCwd, placeOk) {
+function relativeContext(cmd, words, ps, cwd, shellCwd, placeOk) {
   let ctx;
   const build = () => {
+    // A lone CR splits statements in PowerShell but not in bash: one more reading to get wrong, so no exemption.
+    // The same for the Unicode line breaks (NEL, U+2028, U+2029), whose reading differs between parsers.
+    if (/\r(?!\n)/.test(cmd) || UNICODE_BREAKS.some(ch => cmd.includes(ch))) return { ok: false };
     const starts = words.flatMap((w, i) => (i === 0 || w.sep ? [i] : []));
     const stmtOf = [];
     const stmts = starts.map((s, n) => {
@@ -522,14 +530,14 @@ function relativeContext(words, ps, cwd, shellCwd, placeOk) {
       if (/^[A-Za-z_]\w*=/.test(st[0].value)) return fail; // prefix assignment (HOME=…, CDPATH=…)
       for (const [i, w] of st.entries()) {
         const name = wordName(w.value);
-        if (!(i === 0 && CD_ABS_VERBS.has(verb)) && REL_KILL_WORDS.has(name) && (name !== '.' || i === 0)) return fail;
+        if (!(i === 0 && CD_ABS_VERBS.has(verb)) && killWord(w.value) && (name !== '.' || i === 0)) return fail;
       }
     }
     for (const w of words) {
       if (!w.literal || /[$`(){}%]/.test(w.raw) || NAMES_AGENT_HOME.test(w.raw) || NAMES_AGENT_HOME.test(w.value)) return fail;
       const pieces = w.value.split(/\s+/).filter(Boolean);
       if (pieces.length > 1) { // a quoted command line handed to something else
-        if (/[;&|]/.test(w.value) || pieces.some(p => REL_KILL_WORDS.has(wordName(p)))) return fail;
+        if (/[;&|]/.test(w.value) || pieces.some(killWord)) return fail;
         continue;
       }
       if (!pieces.length || SELF_SEGMENT.test(w.value) || NULL_DEVICES.has(w.value.toLowerCase())) continue;
@@ -932,7 +940,7 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
       const scriptAt = words.findIndex(w => SCRIPT_FLAG.test(w.value));
       const segAt = words.flatMap((w, k) => (SELF_SEGMENT.test(w.value) || SELF_SEGMENT.test(w.raw) ? [k] : []));
       const dynamicPs = segAt.length > 0 && (ps || RUNS_PWSH.test(c)) && psDynamic(String(c));
-      const rel = segAt.length ? relativeContext(words, ps, cwd, shellCwd, placeOk) : null; // P3
+      const rel = segAt.length ? relativeContext(String(c), words, ps, cwd, shellCwd, placeOk) : null; // P3
       if (texts.some(text => needles.some(n => mentions(text, n)))
         || segAt.some(k => dynamicPs || segmentAsks(words[k], ps, scriptAt !== -1 && k > scriptAt, rel(k)))
         || (!segAt.length && texts.some(text => SELF_SEGMENT.test(text)))) {

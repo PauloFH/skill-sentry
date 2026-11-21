@@ -1755,6 +1755,30 @@ test('P3: the hook cwd base is used only when it is literal, absolute and away f
   }
 });
 
+test('P3 fix round 1 (I1): a lone CR is a PowerShell statement break, and cd.. / cd\\ are directory changes', () => {
+  const base = fwdSlash(fs.realpathSync.native(tmp('p3cr')));
+  const stuff = `${base}/stuff`;
+  for (const d of ['stuff/skill-sentry', 'stuff/proj', 'home/skill-sentry/scripts', 'home/vault']) fs.mkdirSync(path.join(base, d), { recursive: true });
+  const data = { dataDir: `${stuff}/skill-sentry`, cwd: `${stuff}/proj` };
+  const dev = { selfRoot: `${base}/home/skill-sentry`, cwd: `${base}/home/vault` };
+  for (const [tool, c, o] of [
+    ['PowerShell', 'Get-Date\rcd..\rRemove-Item -Recurse -Force skill-sentry', data],
+    ['PowerShell', 'Get-Date\rcd\\\rRemove-Item -Recurse -Force stuff\\skill-sentry', data],
+    ['PowerShell', 'Get-Date\rcd..\rRemove-Item -Recurse -Force skill-sentry', dev],
+    ['Bash', 'Get-Date\rcd..\rRemove-Item -Recurse -Force skill-sentry', data],
+    ['PowerShell', ['Get-Date', 'cd..', 'Remove-Item -Recurse skill-sentry'].join(String.fromCharCode(0x2028)), data],
+    ['PowerShell', 'Get-Date\u0085cd..\u0085Remove-Item -Recurse skill-sentry', data],
+    ['Bash', `cd ${stuff}/proj\r&& rm -rf skill-sentry`, data],
+  ]) asksSelf(tool, c, o);
+  // Codex (no hook cwd base): a hidden cd.. after a literal Set-Location.
+  const r = decide({ toolName: 'PowerShell', toolInput: { command: `Set-Location ${stuff}/proj && Get-Date\rcd..\rRemove-Item -Recurse skill-sentry` },
+    origin: null, allowlist: EMPTY, selfRoot: SELF, dataDir: data.dataDir, cwd: data.cwd, shellCwd: false, selfViews: true });
+  assert.equal(r.decision, 'ask', 'Codex CR cd..');
+  assert.equal(r.ruleId, 'SELF_PROTECT');
+  // control: the same commands with LF already asked in v0.1.1
+  asksSelf('PowerShell', 'Get-Date\ncd..\nRemove-Item -Recurse -Force skill-sentry', data);
+});
+
 test('P3: relative resolutions share the 16-per-decision realpath cap', () => {
   const words = n => Array.from({ length: n }, (_, i) => `d${i}/skill-sentry`).join(' ');
   noneSelf('Bash', `ls ${words(3)}`, atVault);
