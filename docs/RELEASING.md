@@ -67,9 +67,13 @@ the work tree; ignored ones such as `tools/ci/release/node_modules` are never pa
 export it hashes every file. `test/known-releases.test.mjs` re-checks every released tag that carries a manifest:
 `write-manifest <export> --verify` must pass.
 
-Between releases the committed manifest is the last release's, so a dev checkout never matches its own manifest. That
-is expected: a dev checkout recognises itself by real path, copies of its own tree byte for byte, installs of the
-manifest's release through the manifest, and older releases through `KNOWN_RELEASES`.
+Between releases the committed manifest is the last release's, so a dev checkout never matches its own manifest. A dev
+checkout recognises itself by real path and copies of its own tree byte for byte. Through the manifest it recognises
+installs of the manifest's release, and through `KNOWN_RELEASES` older recorded releases. Until 0.2.0 is released, the
+committed manifest is an empty placeholder and `KNOWN_RELEASES` holds 0.1.0 and 0.1.1 only, so a dev checkout does not
+recognise an installed 0.1.2. A standalone copy (`npx skills add`) has no plugin tree of its own, so between releases it
+recognises a plugin copy only through the manifest; a dev or PR build's standalone scanner flags same-tree plugin copies
+until a release writes the matching manifest.
 
 ## Recovery
 

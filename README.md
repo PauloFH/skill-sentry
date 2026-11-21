@@ -213,11 +213,11 @@ If Claude Code and Codex run different skill-sentry versions, a newer scanner re
 
 ### skills.sh
 
-`npx skills add PauloFH/skill-sentry` installs the audit only, as the skill `skill-sentry-audit` (in Claude Code, `/skill-sentry-audit`). It cannot install the runtime guard (a hook) or harden: install the plugin for those. With `-g` the skills CLI copies the skill to `~/.agents/skills/skill-sentry-audit`, where Codex reads it, and links `~/.claude/skills/skill-sentry-audit` to it for Claude Code. CI checks this install with the real skills CLI on Linux and Windows.
+`npx skills add PauloFH/skill-sentry` installs the audit only, as the skill `skill-sentry-audit` (in Claude Code, `/skill-sentry-audit`). It cannot install the runtime guard (a hook) or harden: install the plugin for those. With `-g` the skills CLI copies the skill to `~/.agents/skills/skill-sentry-audit`, where Codex reads it, and links `~/.claude/skills/skill-sentry-audit` to it for Claude Code. CI checks this install with the real skills CLI on Linux and Windows. Without a ref it installs the default branch (`main`); pin a release with `npx skills add PauloFH/skill-sentry#v<version>` (for example `#v0.2.0`). Installs under `$CLAUDE_CONFIG_DIR/skills` (when that variable is set) are not covered: the scanner and the guard look in `~/.claude/skills` only.
 
 Similarly named skills exist on skills.sh (for example `skillsentry`). They are other projects: use the exact `PauloFH/skill-sentry` source.
 
-Next to the plugin of the same release, every scanner (plugin or standalone) recognises the other copies as skill-sentry. The guard lets the standalone audit run its scan, and lets Codex read its `SKILL.md`; any other command on that folder asks (Claude Code) or is denied (Codex). Update both installs after each release. A copy installed under another name with `--rename` has a changed `SKILL.md`, so the scanners no longer recognise it.
+Next to the plugin of the same release, every scanner (plugin or standalone) recognises the other copies as skill-sentry. The guard lets the standalone audit run its scan, and lets Codex read its `SKILL.md`, only when that folder is a verified copy of the plugin's own audit. Any other command on that folder asks (Claude Code) or is denied (Codex), and so do those two on a copy the guard cannot verify (a newer version than the plugin, a dev or PR build, a `--rename` install) until both installs match. Update both installs after each release. A copy installed under another name with `--rename` has a changed `SKILL.md`, so the scanners no longer recognise it.
 
 ## Data and privacy
 

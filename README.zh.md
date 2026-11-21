@@ -213,11 +213,11 @@ node skills/audit/scripts/harden.mjs check --agent codex
 
 ### skills.sh
 
-`npx skills add PauloFH/skill-sentry` 只安装审计功能，作为 skill `skill-sentry-audit`（在 Claude Code 中为 `/skill-sentry-audit`）。它无法安装运行时守卫（一个 hook）或 harden：这些请安装插件。使用 `-g` 时，skills CLI 把该 skill 复制到 `~/.agents/skills/skill-sentry-audit`（Codex 从这里读取），并为 Claude Code 把 `~/.claude/skills/skill-sentry-audit` 链接到它。CI 在 Linux 和 Windows 上用真实的 skills CLI 检查这种安装。
+`npx skills add PauloFH/skill-sentry` 只安装审计功能，作为 skill `skill-sentry-audit`（在 Claude Code 中为 `/skill-sentry-audit`）。它无法安装运行时守卫（一个 hook）或 harden：这些请安装插件。使用 `-g` 时，skills CLI 把该 skill 复制到 `~/.agents/skills/skill-sentry-audit`（Codex 从这里读取），并为 Claude Code 把 `~/.claude/skills/skill-sentry-audit` 链接到它。CI 在 Linux 和 Windows 上用真实的 skills CLI 检查这种安装。不带 ref 时安装默认分支（`main`）；用 `npx skills add PauloFH/skill-sentry#v<版本>` 固定某个发布版本（例如 `#v0.2.0`）。安装在 `$CLAUDE_CONFIG_DIR/skills`（设置了该变量时）下的副本不在覆盖范围内：扫描器和守卫只查看 `~/.claude/skills`。
 
 skills.sh 上存在名称相近的 skill（例如 `skillsentry`）。它们是其他项目：请使用确切的来源 `PauloFH/skill-sentry`。
 
-与同一版本的插件并存时，每个扫描器（插件的或独立安装的）都会把其他副本识别为 skill-sentry。守卫允许独立安装的审计运行它的扫描，并允许 Codex 读取它的 `SKILL.md`；对该文件夹的任何其他命令都会请求确认（Claude Code）或被拒绝（Codex）。每次发布后请更新两处安装。用 `--rename` 以其他名称安装的副本，其 `SKILL.md` 已被改动，扫描器将不再识别它。
+与同一版本的插件并存时，每个扫描器（插件的或独立安装的）都会把其他副本识别为 skill-sentry。只有当该文件夹是插件自身审计的已验证副本时，守卫才允许独立安装的审计运行它的扫描，并允许 Codex 读取它的 `SKILL.md`。对该文件夹的任何其他命令都会请求确认（Claude Code）或被拒绝（Codex）；对守卫无法验证的副本（比插件更新的版本、开发或 PR 构建、`--rename` 安装），这两种操作也是如此，直到两处安装一致。每次发布后请更新两处安装。用 `--rename` 以其他名称安装的副本，其 `SKILL.md` 已被改动，扫描器将不再识别它。
 
 ## 数据与隐私
 
