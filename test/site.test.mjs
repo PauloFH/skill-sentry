@@ -82,11 +82,30 @@ test('install commands appear verbatim', () => {
   assert.ok(src.includes('/plugin install skill-sentry@skill-sentry'));
 });
 
-test('the eight sections exist', () => {
+test('the nine sections exist', () => {
   const src = html();
-  for (const id of ['hero', 'why', 'what', 'how', 'tested', 'limits', 'install', 'footer']) {
+  for (const id of ['hero', 'why', 'what', 'how', 'codex', 'tested', 'limits', 'install', 'footer']) {
     assert.match(src, new RegExp(`\\sid="${id}"`), `section #${id}`);
   }
+});
+
+test('the Codex section documents install, the hook trust step, the tiers and the main limits', () => {
+  const src = html();
+  const m = /<section id="codex"[\s\S]*?<\/section>/.exec(src);
+  assert.ok(m, 'a real #codex section, not just a mention');
+  const sec = m[0];
+  assert.ok(sec.includes('codex plugin marketplace add PauloFH/skill-sentry'));
+  assert.ok(sec.includes('codex plugin add skill-sentry@skill-sentry'));
+  assert.match(sec, /<code>\/hooks<\/code>/, 'the /hooks trust step');
+  assert.equal((sec.match(/class="pill-sub"/g) ?? []).length, 5, 'one table row per guard tier');
+  assert.match(sec, /No “ask”/);
+  assert.match(sec, /fails open/i);
+  assert.match(sec, /recommend-only/);
+  assert.match(sec, /apply_patch/);
+  // The trust-bypass flag is never written with its leading dashes: skill-sentry's own audit flags that form.
+  assert.doesNotMatch(src, new RegExp(['-', '-dangerously-bypass-hook-trust'].join('')));
+  assert.match(src, /<a href="#codex"/, 'the nav links to the Codex section');
+  assert.match(dictionary(src).pt['codex.title'], /Codex/);
 });
 
 test('English copy lives in the markup, not in JavaScript', () => {

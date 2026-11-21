@@ -19,7 +19,7 @@ test('manifests parse and carry the expected identity', () => {
   const market = readJson('.claude-plugin/marketplace.json');
   readJson('hooks/hooks.json');
   assert.equal(plugin.name, 'skill-sentry');
-  assert.equal(plugin.version, '0.1.0');
+  assert.equal(plugin.version, '0.1.1');
   assert.equal(plugin.license, 'MIT');
   assert.equal(plugin.repository, 'https://github.com/PauloFH/skill-sentry');
   assert.equal(plugin.homepage, 'https://github.com/PauloFH/skill-sentry');
@@ -31,7 +31,7 @@ test('manifests parse and carry the expected identity', () => {
   const p = market.plugins[0];
   assert.equal(p.name, 'skill-sentry');
   assert.equal(p.source, './');
-  assert.equal(p.version, '0.1.0');
+  assert.equal(p.version, '0.1.1');
   assert.equal(p.category, 'security');
   for (const f of ['plugin.json', 'marketplace.json']) {
     assert.ok(!/email|@[a-z0-9-]+\.[a-z]/i.test(fs.readFileSync(path.join(ROOT, '.claude-plugin', f), 'utf8').replace(/https?:\/\/\S+/g, '')), `${f} has no email`);
@@ -58,7 +58,7 @@ test('script paths referenced by hooks.json and the skills exist', () => {
   for (const [name, script] of [['audit', 'scan.mjs'], ['harden', 'harden.mjs']]) {
     const skillDir = path.join(ROOT, 'skills', name);
     const text = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8');
-    const refs = [...text.matchAll(/<base directory>\/([^"\s`]+\.mjs)/g)].map(m => m[1]);
+    const refs = [...text.matchAll(/<(?:base directory|skill dir)>\/([^"\s`]+\.mjs)/g)].map(m => m[1]);
     assert.ok(refs.some(r => r.endsWith(`scripts/${script}`)), `${name} references scripts/${script}`);
     for (const r of refs) assert.ok(fs.statSync(path.resolve(skillDir, r)).isFile(), `${name}: ${r}`);
   }
@@ -81,7 +81,7 @@ test('self-scan: shipped skills, hooks and manifests pass the plugin\'s own rule
   const data = tmpDir('selfdata');
   for (const d of ['skills', 'hooks', '.claude-plugin']) fs.cpSync(path.join(ROOT, d), path.join(tmp, d), { recursive: true });
   const r = spawnSync(process.execPath, [SCAN, '--path', tmp, '--json'], {
-    encoding: 'utf8', env: { ...process.env, SKILL_SENTRY_DATA_DIR: data },
+    encoding: 'utf8', env: { ...process.env, SKILL_SENTRY_DATA_DIR: data, SKILL_SENTRY_CODEX_HOME: tmpDir('codex'), SKILL_SENTRY_NO_WSL: '1' },
   });
   assert.equal(r.status, 0, r.stderr);
   const report = JSON.parse(r.stdout);

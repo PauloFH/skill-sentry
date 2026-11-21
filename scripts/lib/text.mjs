@@ -52,10 +52,62 @@ const P_FLAG = /(^|\s)(-p)(=|\s+)("[^"]*"|'[^']*'|\S+)/g;
 const SECRET_ASSIGN = /(^|\s)([A-Za-z_][\w.-]*)=("[^"]*"|'[^']*'|\S+)/g;
 const SECRET_NAME = /token|secret|key|pass|auth/i;
 const URL_RE = /[a-z][\w+.-]*:\/\/[^\s"'<>]+/gi;
+/** Well-known credential shapes (Anthropic/OpenAI, GitHub, Slack, AWS, Google, GitLab). */
+export const TOKEN_SHAPES = /\b(?:sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|glpat-[A-Za-z0-9_-]{20,})/;
+const TOKEN_SHAPES_G = new RegExp(TOKEN_SHAPES.source, 'g');
+// `Name: value` where Name names a credential (X-Api-Key, Authorization, Cookie, ...); not `scheme://`.
+// Only the name and separator are matched here; maskHeaders finds where the value ends.
+const HEADER_FORM = /\b((?=[\w-]*(?:key|token|auth|secret|cookie|session|passw))[A-Za-z][\w-]*)(["']?)(\s*:\s*)(?!\/\/)/gi;
+// Sticky helpers of maskHeaders (applied at a position, never on a slice: long config strings stay linear).
+const HEADER_UNQUOTED = /(?:(?:Bearer|Basic|Token)[ \t]+)?[^\s"',;]+/iy;
+const AUTH_SCHEME = /(?:Bearer|Basic|Token)[ \t]+/iy;
+const AUTH_WORD_ONLY = /(?:Bearer|Basic|Token)[ \t]*/iy;
+const BLANKS = /[ \t]*/y;
+const NEWLINE = /[\r\n]/g;
+const stickyLen = (re, s, at) => { re.lastIndex = at; const m = re.exec(s); return m ? m[0].length : -1; };
+
+/**
+ * Mask credential header values. The value runs to the matching quote when it is quoted (`{"x-api-key":"v"}`,
+ * `x-api-key: 'a b'`) or when the whole header is (`'x-api-key: a b'`, `"Cookie: a=b; c=d"`); otherwise to the
+ * next space, quote, comma or semicolon. An unclosed quote masks to the end of the line. Final review I1.
+ * Match positions only grow, so the next quote / newline positions are cached (linear time overall).
+ */
+function maskHeaders(s) {
+  let out = '';
+  let last = 0;
+  const next = { '"': -2, "'": -2, '\n': -2 };
+  const find = (k, from) => {
+    if (next[k] !== -1 && next[k] < from) {
+      if (k === '\n') { NEWLINE.lastIndex = from; next[k] = NEWLINE.exec(s)?.index ?? -1; } else next[k] = s.indexOf(k, from);
+    }
+    return next[k] === -1 ? s.length : next[k];
+  };
+  HEADER_FORM.lastIndex = 0;
+  for (let m; (m = HEADER_FORM.exec(s)) !== null;) {
+    const end = m.index + m[0].length;
+    const lineEnd = find('\n', end);
+    const lead = m[2] === '' && (s[m.index - 1] === '"' || s[m.index - 1] === "'") ? s[m.index - 1] : null;
+    let start = end;
+    let stop;
+    if (s[end] === '"' || s[end] === "'") { start = end + 1; stop = Math.min(find(s[end], start), lineEnd); } else if (lead) stop = Math.min(find(lead, end), lineEnd);
+    else stop = end + Math.max(0, stickyLen(HEADER_UNQUOTED, s, end));
+    const scheme = Math.max(0, stickyLen(AUTH_SCHEME, s, start));
+    const rest = start + scheme;
+    // Empty, already masked, or only an auth scheme word: nothing to hide.
+    if (rest + Math.max(0, stickyLen(BLANKS, s, rest)) >= stop || s.startsWith(R, rest) || start + stickyLen(AUTH_WORD_ONLY, s, start) >= stop) continue;
+    out += s.slice(last, rest) + R;
+    last = stop;
+    HEADER_FORM.lastIndex = Math.max(stop, end);
+  }
+  return out + s.slice(last);
+}
+// Bot API token in a URL path: /bot<digits>:<token>.
+const BOT_TOKEN = /(\/bot)\d{5,}:[A-Za-z0-9_-]{20,}/g;
 
 /**
  * Hide credentials in config text before it is stored or shown: URL `user:password@` and query values,
- * values after credential flags, `KEY=value` when KEY names a secret, and `Bearer`/`Basic` tokens.
+ * values after credential flags, `KEY=value` when KEY names a secret, `Bearer`/`Basic` tokens,
+ * `Name: value` credential headers, bot tokens in URL paths and well-known token shapes.
  */
 export function redactSecrets(str) {
   let s = String(str ?? '');
@@ -66,6 +118,9 @@ export function redactSecrets(str) {
   if (pIsPasswordIn(s)) s = s.replace(P_FLAG, (_, pre, flag, sep) => `${pre}${flag}${sep}${R}`);
   s = s.replace(SECRET_ASSIGN, (m, pre, key) => (SECRET_NAME.test(key) ? `${pre}${key}=${R}` : m));
   s = s.replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/g, `$1 ${R}`);
+  s = s.replace(BOT_TOKEN, `$1${R}`);
+  s = maskHeaders(s);
+  s = s.replace(TOKEN_SHAPES_G, R);
   return s;
 }
 

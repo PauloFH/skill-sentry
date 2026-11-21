@@ -2,9 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { listFiles, isSensitiveLinkTarget, rawConfigOf } from './inventory.mjs';
-import { matchText, matchCommand, findInvisible } from './rules.mjs';
+import { matchText, findInvisible } from './rules.mjs';
 import { analyzeSkillMarkdown } from './skillmd.mjs';
-import { classifyFile, truncate, escapeInvisible, redactSecrets, redactArgs } from './text.mjs';
+import { classifyFile, redactSecrets } from './text.mjs';
+import { CONFIG_FILE, finding, commandFindings, urlFindings } from './cmdfindings.mjs';
+import { codexConfigFindings, codexTextFindings } from './codex/rules.mjs';
 
 /**
  * @typedef {import('./rules.mjs').Match & { file: string }} Finding
@@ -13,11 +15,7 @@ import { classifyFile, truncate, escapeInvisible, redactSecrets, redactArgs } fr
 
 const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024;
 const CONFIG_ONLY_KINDS = new Set(['hook', 'mcp', 'statusline']);
-const CONFIG_FILE = '<config>';
 const LIFECYCLE = ['preinstall', 'install', 'postinstall'];
-
-const finding = (ruleId, category, severity, file, snippet, line = 1) =>
-  ({ ruleId, category, severity, line, snippet: truncate(escapeInvisible(String(snippet))), file });
 
 /** SHA-256 of a file, read in chunks so huge files are never held in memory; stops at `deadline`. */
 function hashFile(file, size, maxBytes, deadline) {
@@ -41,49 +39,20 @@ function hashFile(file, size, maxBytes, deadline) {
 
 const isSkillMarkdown = rel => /(^|\/)SKILL\.md$/i.test(rel) || /(^|\/)(?:commands|agents)\/.+\.md$/i.test(rel);
 
-/** Runner invoked without a pinned version, `npx -y`, `uvx` or `@latest`. */
-function unpinnedRuntime(cmd) {
-  if (/@latest\b/i.test(cmd)) return true;
-  const tokens = cmd.split(/\s+/).filter(Boolean);
-  for (let i = 0; i < tokens.length; i++) {
-    const t = tokens[i].replace(/^.*[\\/]/, '').replace(/\.(?:cmd|exe)$/i, '').toLowerCase();
-    const isDlx = t === 'pnpm' && tokens[i + 1] === 'dlx';
-    const isPipx = t === 'pipx' && tokens[i + 1] === 'run';
-    if (!['npx', 'uvx', 'bunx'].includes(t) && !isDlx && !isPipx) continue;
-    const rest = tokens.slice(i + (isDlx || isPipx ? 2 : 1));
-    if (t === 'npx' && rest.some(a => a === '-y' || a === '--yes')) return true;
-    if (t === 'uvx') return true;
-    const pkg = rest.find(a => !a.startsWith('-'));
-    if (!pkg) return true;
-    if (!/@\d|==\d|@[a-z]*\d/i.test(pkg.replace(/^@/, ''))) return true;
-  }
-  return false;
-}
-
 /**
- * Rules run on the unredacted config (a payload placed after `--token` must still match); every
- * snippet taken from it is redacted, so credentials never reach the report or Claude.
+ * Claude Code config (hooks, MCP servers, statusLine, monitors). Rules run on the unredacted config
+ * (a payload placed after `--token` must still match); every snippet taken from it is redacted, so
+ * credentials never reach the report or Claude. Codex components go through codexConfigFindings.
  */
 function scanConfig(c, findings) {
   const cfg = rawConfigOf(c.config);
   if (!cfg || typeof cfg !== 'object') return;
-  const push = m => findings.push({ ...m, snippet: redactSecrets(m.snippet), file: CONFIG_FILE });
   const args = Array.isArray(cfg.args) ? cfg.args.map(String) : [];
-  const commands = [];
-  if (typeof cfg.command === 'string') commands.push([cfg.command, ...args]);
-  if (typeof cfg.headersHelper === 'string') commands.push([cfg.headersHelper]);
-  for (const argv of commands) {
-    const cmd = argv.join(' ');
-    const shown = [argv[0], ...redactArgs(argv.slice(1), argv[0])].map(redactSecrets).join(' ');
-    for (const m of matchCommand(cmd)) push(m);
-    if (unpinnedRuntime(cmd)) findings.push(finding('SUPPLY_UNPINNED_RUNTIME', 'supply', 'medium', CONFIG_FILE, shown));
-  }
-  if (typeof cfg.url === 'string') {
-    findings.push(finding('SUPPLY_REMOTE_MCP', 'supply', 'info', CONFIG_FILE, redactSecrets(cfg.url)));
-    for (const m of matchCommand(cfg.url)) push(m);
-  }
+  if (typeof cfg.command === 'string') findings.push(...commandFindings([cfg.command, ...args]));
+  if (typeof cfg.headersHelper === 'string') findings.push(...commandFindings([cfg.headersHelper]));
+  if (typeof cfg.url === 'string') findings.push(...urlFindings(cfg.url));
   if (typeof cfg.prompt === 'string') {
-    for (const m of matchText(cfg.prompt, 'markdown')) push(m);
+    for (const m of matchText(cfg.prompt, 'markdown')) findings.push({ ...m, snippet: redactSecrets(m.snippet), file: CONFIG_FILE });
   }
 }
 
@@ -121,6 +90,12 @@ export function scanComponent(c, opts = {}) {
     if (!rel || rel.startsWith('../') || path.isAbsolute(rel)) rel = abs.replace(/\\/g, '/');
     return rel;
   };
+  // Another install that is a known older release (selfcopy.mjs): not scanned as third party, but the user
+  // must still hear that two different versions are installed. The version comes from the scanner's table.
+  if (c.self && typeof c.meta?.knownRelease === 'string') {
+    findings.push(finding('SKILL_SENTRY_OLD_VERSION', 'config', 'info', '<scan>',
+      `skill-sentry ${c.meta.knownRelease} (older) installed at ${c.root}; update both installs`));
+  }
   if (c.meta?.filesTruncated && !c.self) {
     findings.push(finding('SCAN_TRUNCATED', 'config', 'info', '<scan>', 'File listing was truncated by a limit; some files were not scanned'));
   }
@@ -186,10 +161,15 @@ export function scanComponent(c, opts = {}) {
     for (const m of matchText(text, kind)) add(m);
     for (const m of findInvisible(text, kind)) add(m);
     if (kind === 'markdown' && isSkillMarkdown(rel)) for (const m of analyzeSkillMarkdown(text)) add(m);
+    // Codex reads the project AGENTS.md too, though the Claude inventory owns that component.
+    if (c.agent === 'codex' || c.kind === 'instructions') for (const m of codexTextFindings(text)) add(m);
   }
 
-  // --- config (hooks, MCP servers, statusLine, monitors) ---
-  if (!c.self) scanConfig(c, findings);
+  // --- config ---
+  if (!c.self) {
+    if (c.agent === 'codex') findings.push(...codexConfigFindings(c));
+    else scanConfig(c, findings);
+  }
 
   return { component: c, files, findings, incomplete };
 }

@@ -14,6 +14,8 @@
 
 需要 Node 18 或更高版本。没有 npm 依赖。
 
+从 0.1.1 起，它也支持 OpenAI Codex：见 [Codex 支持](#codex-支持)。
+
 ## 威胁模型与坦诚的局限
 
 skill-sentry 是一双额外的眼睛，而不是一面盾牌。在信任它之前请先阅读本节。
@@ -44,7 +46,7 @@ skill-sentry 是一双额外的眼睛，而不是一面盾牌。在信任它之�
 /skill-sentry:audit
 ```
 
-Claude 运行扫描器，然后给出摘要（各结论的组件数量、自基线以来的变化）、读取配置时发现的每个问题，以及每个非 `ok` 组件的表格。扫描器的结论永远不会被调低：如果 Claude 不同意，会在单独的 "Claude assessment" 列中加入自己的意见，让你始终能同时看到两者。从被扫描文件复制来的文本一律视为不可信数据，绝不会当作指令执行。
+Claude 运行扫描器，然后给出摘要（各结论的组件数量、自基线以来的变化）、读取配置时发现的每个问题，以及每个非 `ok` 组件的表格。扫描器的结论永远不会被调低：如果 Claude 不同意，会在单独的 "Agent assessment" 列中加入自己的意见，让你始终能同时看到两者。从被扫描文件复制来的文本一律视为不可信数据，绝不会当作指令执行。
 
 结论来自评分：critical 发现计 40 分，high 计 15 分，medium 计 5 分。每条规则在每个组件中只计一次，取其最高严重级别，总分上限为 100。
 
@@ -100,8 +102,8 @@ Claude 列出每条建议，解释其重要性，只有在你对该项明确回�
 | 决定 | 条件 |
 | --- | --- |
 | deny | 命中 critical 规则（例如下载并执行的管道、反向 shell、启动加密货币挖矿程序、清除磁盘或主目录）。始终拦截，除非你已把这条完全相同的命令加入白名单。 |
-| ask | 命中 high 风险规则，且调用很可能来自某个 skill 或插件。此外，写入 skill-sentry 自己的数据目录或安装目录、提及这些目录的 shell 命令，以及使用不寻常的 Windows 路径形式（设备路径、UNC 路径、8.3 短文件名、NTFS 数据流、末尾的点或空格）进行写入，也始终询问。 |
-| log | 命中 high 风险规则，但调用不太可能来自 skill 或插件（是你自己输入的）。记录到 `guard.log`，不打断你。 |
+| ask | 命中 high 风险规则，且调用很可能来自某个 skill 或插件。此外，写入 skill-sentry 自己的数据目录或安装目录（或任何其他已安装的 skill-sentry 副本，例如为 Codex 安装的那份）、提及这些目录的 shell 命令，以及使用不寻常的 Windows 路径形式（设备路径、UNC 路径、8.3 短文件名、NTFS 数据流、末尾的点或空格）进行写入，也始终询问。 |
+| log | 命中 high 风险规则，但没有把任何 skill 或插件认定为可能的来源。记录到 `guard.log`，不打断你。 |
 
 如果守卫自身出错，它会以放行方式失败：向 `guard.log` 写入一行，并让调用继续，而不是破坏你的会话。
 
@@ -119,11 +121,102 @@ node scripts/scan.mjs --allow <componentId> <ruleId> <file> --reason "why"
 
 如果安装了 `skillspector` 命令，审计可以用它提供第二意见。skill-sentry 从不安装它。
 
+## Codex 支持
+
+skill-sentry 0.1.1 把同样的审计和守卫带到了 OpenAI Codex，并提供只给建议的加固。
+
+### 审计在 Codex 中覆盖什么
+
+- `config.toml`：审批与沙箱设置、MCP 服务器、明文密钥、受信任的项目、shell 环境策略
+- `rules/*.rules` 执行策略文件
+- 插件及其自带的 hook，连同每个 hook 的信任状态
+- MCP 服务器
+- skill，包括 `~/.agents/skills`
+- `AGENTS.md` 指令文件
+- `notify` 程序
+
+Windows 和 WSL 中的 Codex 目录会被自动检测。用 `--agent claude|codex|all`（默认 `all`）选择审计对象，用 `--codex-home <dir>`（可重复）添加目录，用 `--no-wsl` 跳过 WSL：
+
+```
+node scripts/scan.mjs --agent codex
+node scripts/scan.mjs --agent all --codex-home <dir> --no-wsl
+```
+
+### 在 Codex 中安装
+
+```
+codex plugin marketplace add PauloFH/skill-sentry
+codex plugin add skill-sentry@skill-sentry
+```
+
+从公开的 GitHub 仓库安装尚未经过端到端测试。这两条命令已针对本仓库的本地副本验证过。
+
+然后**信任守卫 hook**。在你信任之前，Codex 不会运行 hook，而启用插件并不会自动信任它的 hook。在 Codex 中打开 `/hooks`（桌面应用中是 "Review hooks"），检查 skill-sentry 的 hook 并信任它。在此之前守卫不会运行。每次更新后都要重新信任，因为被改动的 hook 会显示为 `modified`。
+
+接着让 Codex 运行 skill-sentry 的审计，查看你的第一份报告。这仅在 WSL 中的 Codex 上验证过。在 Windows 的 Codex 上，它运行的 shell 命令可能需要你批准。
+
+### Codex 下的守卫
+
+这里的守卫同样是 PreToolUse hook。Codex 没有 "ask"，所以它只能放行或拒绝。分级如下：
+
+| 级别 | 条件 | 在 Codex 中的行为 |
+| --- | --- | --- |
+| 1 | 命中严重（critical）规则 | deny |
+| 2 | 命中 rce、exfil、miner 或 destructive 的高危（high）规则；同一条命令里既有密钥又有对外网络访问；会话中先前有一个归属于 skill 或插件、读取了密钥的调用在重试时被放行，随后又出现能联网的调用 | deny。如果你确实想执行，请自己在终端里运行。 |
+| 3 | 其他有明确来源（skill 或插件）的高危规则 | 第一次被拒绝并给出原因。同一会话内 10 分钟之内完全相同的重试会被放行一次。 |
+| 4 | 没有归属到任何 skill 或插件的高危规则 | 仅记录日志 |
+| 5 | 写入 skill-sentry 自身文件（任何已安装的副本），或使用不寻常的路径形式 | deny |
+
+`apply_patch` 的补丁也会被检查。守卫无法读取的补丁大多会被拒绝：来自文件或管道的补丁，或带有 shell 展开的补丁。藏在动态或混淆的 shell 写法背后的补丁命令（见下方局限）不会被发现。
+
+### Codex 下的局限
+
+- Codex 没有 "ask"：守卫只能放行或拒绝。
+- 它是失败即放行：如果 hook 出错或超过 Codex 的超时（约 5 秒），调用照常执行。
+- hook 需要信任（`/hooks`）。Codex 的 `dangerously-bypass-hook-trust` 选项会关闭这层保护。
+- 第 3 级的重试由模型确认，而不是由你确认。
+- 发给正在运行的 shell 的交互式输入（`write_stdin`）不经过 hook。
+- 在运行时才拼出名称或路径的命令不会被分析：`eval`、变量、通配符（glob）、`python -c` 这类解释器单行命令，或在一次调用里写入、在之后的调用里运行的脚本。
+- 如果会话中在读取 skill 之后又出现了超过约 1 MiB 的输出，来源归属就会丢失，该调用会按第 4 级处理。
+- 在 WSL 下，如果会话从 `/mnt/c` 开始，而你的 node 工具链（例如 mise）在那里拒绝启动，守卫就会失败即放行。请在 `/home/...` 下开始会话。
+- WSL 中的 Codex 与 Windows 中的 Codex 各自保存独立的 skill-sentry 数据（taint、baseline、allowlist）。
+- 在 `workspace-write` 沙箱下，审计需要你批准才能把报告写入 `~/.claude/skill-sentry`。
+- 通过串联的 shell 命令（`cd ... && cat ...`）读取 skill-sentry 自己的 `SKILL.md` 可能被拒绝，直接读取则可以。
+- 在 shell 命令里单独提到 `skill-sentry` 路径，在 Claude Code 中仍可能弹出确认（自我保护）。
+
+### Codex 下的加固
+
+```
+node scripts/harden.mjs check --agent codex
+```
+
+不带选项的 `check` 仍然只针对 Claude。Codex 的加固**只给建议**：skill-sentry 绝不会修改 Codex 的文件。每条建议都附带一段代码片段，由你自己应用：
+
+| Id | 建议内容 |
+| --- | --- |
+| `approval-sandbox` | 让 `approval_policy` 和 `sandbox_mode` 保持带沙箱、按需询问的默认值 |
+| `broad-allow-rules` | 把以 shell 或解释器结尾的执行策略 allow 规则改成 prompt 规则 |
+| `secrets-in-config` | 把明文密钥移出 `config.toml`，改为引用环境变量 |
+| `env-excludes` | 保留默认的环境变量排除，避免把看起来像密钥的变量传给命令 |
+| `mcp-auto-approve` | 不要自动批准 MCP 服务器或工具 |
+| `approvals-reviewer` | 让 `approvals_reviewer` 保持为 `user` |
+| `trusted-tmp-projects` | 不要信任位于临时目录中的项目 |
+| `hooks-enabled` | 保持 Codex 的 hook 开启，守卫才能运行 |
+| `trust-guard-hook` | 在 `/hooks` 中信任 skill-sentry 的 hook |
+
+### 两套安装，同一个版本
+
+如果 Claude Code 和 Codex 运行的 skill-sentry 版本不同，较新的扫描器能识别旧版本，并显示"请更新两处安装"的提示。较旧的扫描器可能会把较新的副本报告为 suspicious 或 malicious（误报），直到两处安装都更新。每次发布后请**更新两处安装**。
+
+### skills.sh
+
+暂不支持（已列入计划）：skills.sh 只复制 skill 文件夹，因此无法安装守卫 hook。
+
 ## 数据与隐私
 
 - **没有网络调用，没有遥测。** 一切都在本地运行。
 - 它只写入 `~/.claude/skill-sentry/`：`baseline.json`、`allowlist.json`、`guard.log` 和 `reports/`。唯一的例外是 `harden`，它会在你批准后编辑你的 `settings.json`，并附带备份。
-- 环境变量（主要用于测试）：`SKILL_SENTRY_DATA_DIR`（数据目录）、`SKILL_SENTRY_CLAUDE_HOME`（默认 `~/.claude`）、`SKILL_SENTRY_HOME_DIR`（读取 `~/.claude.json` 的位置）。
+- 环境变量（主要用于测试）：`SKILL_SENTRY_DATA_DIR`（数据目录）、`SKILL_SENTRY_CLAUDE_HOME`（默认 `~/.claude`）、`SKILL_SENTRY_HOME_DIR`（读取 `~/.claude.json` 的位置）、`SKILL_SENTRY_CODEX_HOME`（替换默认的 Codex 目录）和 `SKILL_SENTRY_NO_WSL=1`（不在 WSL 中查找 Codex 目录）。
 
 ## 验证
 

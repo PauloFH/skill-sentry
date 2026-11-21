@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { extractTargets, decide, formatReason, scanSummary, originToComponentId, isUnusualPath } from '../scripts/lib/guardcore.mjs';
+import { extractTargets, decide, formatReason, scanSummary, originToComponentId, originMayNameSkillSentry, isUnusualPath } from '../scripts/lib/guardcore.mjs';
 import { findOrigin } from '../scripts/lib/origin.mjs';
 import { discover } from '../scripts/lib/inventory.mjs';
 import { tmpFactory, removeTree } from './helpers/tmp.mjs';
@@ -393,6 +393,383 @@ test('skill-sentry segment boundary is any non-name character on both sides', ()
     assert.equal(d('Bash', { command: c }).decision, 'none', c);
   }
 });
+
+// ---------------------------------------------------------------- Ruling R9 revised (task 3b)
+// Every `skill-sentry` segment asks (Ruling J), except inside a literal absolute path word that resolves,
+// as written and through realpath, outside `~/.claude` and away from every protected root.
+const CHECKOUT = 'C:/Users/x/skill-sentry';
+const HOME_CLAUDE = path.join(os.homedir(), '.claude');
+const fwdSlash = p => p.replace(/\\/g, '/');
+const msysPath = p => '/' + fwdSlash(p)[0].toLowerCase() + fwdSlash(p).slice(2);
+const dc = (toolName, command, o = {}) => decide({
+  toolName, toolInput: { command }, origin: null, allowlist: EMPTY,
+  selfRoot: o.selfRoot ?? SELF, dataDir: o.dataDir ?? DATA, cwd: o.cwd ?? CHECKOUT,
+});
+const asksSelf = (tool, command, o) => {
+  const r = dc(tool, command, o);
+  assert.equal(r.decision, 'ask', `${tool}: ${command}`);
+  assert.equal(r.ruleId, 'SELF_PROTECT', `${tool}: ${command}`);
+};
+// Drive-letter paths are absolute only on win32 (elsewhere they are relative and keep asking).
+const onThisOs = c => process.platform === 'win32' || !/(?:^|[\s'"])[A-Za-z]:[\\/]/.test(c);
+const noneSelf = (tool, command, o) => assert.equal(dc(tool, command, o).decision, 'none', `${tool}: ${command}`);
+// Rooted non-drive paths: exempt on POSIX; on win32 Git Bash maps `/tmp`, `/usr`, ... elsewhere, so they ask.
+const ROOTED = 'ls /home/x/src/skill-sentry/scripts';
+test('R9: rooted non-drive paths are exempt on POSIX only', () => {
+  if (process.platform === 'win32') asksSelf('Bash', ROOTED);
+  else noneSelf('Bash', ROOTED);
+});
+
+test('R9: literal absolute paths outside Claude home no longer ask', () => {
+  for (const c of [
+    'cd ~/skill-sentry && git log --oneline -3',
+    'cat C:/Users/x/skill-sentry/README.md',
+    'cat /c/Users/x/skill-sentry/README.md',
+    'echo x > ~/skill-sentry/notes.md',
+    'git -C "C:/Users/x/skill-sentry" status',
+    "cat 'C:\\Users\\x\\skill-sentry\\README.md'",
+    'cat "C:\\dev\\skill-sentry\\scripts\\a.mjs"',
+    'rm -rf "C:/Users/x/skill-sentry/my notes.md"',
+    'cat C:/Users/x/skill-sentry/allowlist.json',
+    'cd C:/skill-sentry; git status',
+    // review false positives
+    "node 'C:\\Users\\x\\.claude\\plugins\\cache\\context-mode\\context-mode\\2.2.1\\search.mjs' s5h 'C:\\Users\\x\\skill-sentry\\.superpowers\\sdd\\r.md' 'C:\\Users\\x'",
+    'bash "C:/Users/x/.claude/plugins/cache/claude-plugins-official/superpowers/7.0.2/skills/sdd/scripts/review-package" C:/Users/x/skill-sentry/docs/plan.md A B',
+    'cd C:/Users/x/skill-sentry && bash "C:/Users/x/.claude/plugins/cache/claude-plugins-official/superpowers/7.0.2/skills/sdd/scripts/review-package" docs/plan.md A B',
+    'cd C:/Users/x/skill-sentry && git mv a.md b.md',
+    'cd C:/Users/x/skill-sentry && node scripts/scan.mjs --json ~/.claude/plugins',
+    'cp -r C:/Users/x/skill-sentry/scripts ~/.claude/x',
+  ].filter(onThisOs)) noneSelf('Bash', c);
+  for (const c of [
+    'Get-Content C:\\Users\\x\\skill-sentry\\x.md',
+    'Get-ChildItem C:\\dev\\skill-sentry\\scripts',
+    'Get-Content ~\\skill-sentry\\x.md',
+    'Set-Location C:\\Users\\x\\skill-sentry; git status',
+  ].filter(onThisOs)) noneSelf('PowerShell', c);
+});
+
+test('R9: bare words and search-by-name commands ask', () => {
+  for (const [tool, c] of [
+    ['Bash', 'git commit -m "fix: skill-sentry notes"'],
+    ['Bash', 'grep skill-sentry package.json'],
+    ['Bash', 'find ~ -name skill-sentry -type d | xargs rm -rf'],
+    ['Bash', 'find ~ -type d -name skill-sentry -print0 | xargs -0 rm -rf'],
+    ['Bash', 'find . -name skill-sentry -type d | xargs rm -rf'],
+    ['Bash', 'fd -H -t d skill-sentry ~ -X rm -rf'],
+    ['PowerShell', 'Get-ChildItem -Path ~ -Recurse -Filter skill-sentry -Directory -Force | Remove-Item -Recurse -Force'],
+    ['PowerShell', 'gci ~ -r -fo -di -fi skill-sentry | ri -r -fo'],
+  ]) asksSelf(tool, c);
+});
+
+test('R9: relative segments ask whatever the cd before them', () => {
+  for (const [tool, c] of [
+    ['Bash', 'cd ~/.c*/pl*/c* && rm -rf mkt/skill-sentry'],
+    ['Bash', 'cd "$X" && rm -rf mkt/skill-sentry'],
+    ['Bash', 'cd - && rm -rf mkt/skill-sentry'],
+    ['Bash', 'popd && rm -rf mkt/skill-sentry'],
+    ['PowerShell', 'Set-Location $env:CLAUDE_CONFIG_DIR; Remove-Item -Recurse plugins\\cache\\mkt\\skill-sentry'],
+    ['PowerShell', 'Set-Location ~/.cl*/pl*/ca*; Remove-Item -Recurse mkt\\skill-sentry'],
+    ['Bash', 'cd C:/Users/x && ls skill-sentry/x'],
+    ['Bash', 'rm -rf ./skill-sentry'],
+    ['Bash', 'node --test ../skill-sentry/test/'],
+    ['Bash', 'cd ~/.claude && echo x > skill-sentry/allowlist.json'],
+    ['Bash', 'cd ~/.claude/plugins/cache && rm -rf skill-sentry'],
+  ]) asksSelf(tool, c);
+  asksSelf('Bash', 'rm -rf skill-sentry', { cwd: HOME_CLAUDE });
+});
+
+test('R9: non-literal, escaped or unusual absolute spellings ask', () => {
+  for (const [tool, c] of [
+    ['Bash', 'echo x > ~/.claude/skill-sentry/allowlist.json'],
+    ['Bash', 'D=~/.claude; rm -rf $D/skill-sentry'],
+    ['Bash', 'rm -rf "$HOME/.claude/skill-sentry"'],
+    ['Bash', 'cd ~/.cl*/skill-sentry && ls'],
+    ['Bash', 'rm -rf %USERPROFILE%\\.claude\\skill-sentry'],
+    ['Bash', 'rm -rf ~/.claude/plugins/marketplaces/skill-sentry'],
+    ['Bash', 'rm -rf $CLAUDE_CONFIG_DIR/skill-sentry'],
+    ['Bash', 'rm -rf "$(dirname x)"/skill-sentry'],
+    ['Bash', 'rm -rf `pwd`/skill-sentry'],
+    ['Bash', 'rm -rf C:/Users/x/CLAUDE~1/skill-sentry'],
+    ['Bash', 'rm -rf ~x/skill-sentry'],
+    ['Bash', 'rm -rf C:/Users/x/skill-sentry*'],
+    ['Bash', 'rm -rf C:/Users/x/{a,skill-sentry}'],
+    ['Bash', 'rm -rf C:/Users/x/[s]kill-sentry/../skill-sentry'],
+    ['Bash', 'rm -rf C:\\Users\\x\\skill-sentry'],
+    ['Bash', 'rm -rf C:/Users/x/skill-sen\\try'],
+    ['Bash', 'rm -rf "C:/Users/x/skill-sentry'],
+    ['Bash', 'rm -rf C:/Users/x/skill-sentry./x'],
+    ['Bash', 'rm -rf \\\\?\\C:\\Users\\x\\skill-sentry'],
+    ['Bash', 'rm -rf //host/share/skill-sentry'],
+    ['Bash', 'node -e "require(0)" /skill-sentry'],
+    ['PowerShell', 'Remove-Item C:\\Users\\x\\skill-sen`try'],
+    ['PowerShell', '$p = (gi ~/.claude).FullName + \'/skill-sentry\'; ri -r $p'],
+    ['PowerShell', 'Remove-Item -Recurse (Join-Path $env:CLAUDE_CONFIG_DIR skill-sentry)'],
+    ['PowerShell', 'Remove-Item -Recurse /plugins/cache/mkt/skill-sentry'],
+  ]) asksSelf(tool, c);
+  asksSelf('Bash', 'cat ~/skill-sentry/README.md; rm -rf $D/skill-sentry');
+});
+
+test('R9: literal spellings of an overridden data dir or install dir ask', () => {
+  const base = fs.realpathSync.native(tmp('r9x'));
+  const xdata = path.join(base, 'x', 'y', 'skill-sentry');
+  const self = path.join(base, 'mkt', 'skill-sentry', '0.1.1');
+  for (const d of [xdata, self]) fs.mkdirSync(d, { recursive: true });
+  const o = { dataDir: xdata, selfRoot: self };
+  const cases = [
+    `rm -rf ${fwdSlash(xdata)}`,
+    `rm -rf "${fwdSlash(path.join(base, 'x', 'y'))}/skill-sentry"`,
+    `rm -rf ${fwdSlash(path.join(base, 'mkt', 'skill-sentry'))}`, // ancestor of the install dir
+    `rm -rf ${fwdSlash(path.join(base, 'x', 'z'))}/../y/skill-sentry`,
+  ];
+  if (process.platform === 'win32') cases.push(`rm -rf ${msysPath(xdata)}`, `cat ${msysPath(xdata)}/allowlist.json`);
+  for (const c of cases) asksSelf('Bash', c, o);
+  noneSelf('Bash', `ls ${fwdSlash(path.join(base, 'other', 'skill-sentry'))}`, o);
+});
+
+test('R9: literal paths through junctions into Claude home ask (as written, /c/ form, quoted with spaces)', t => {
+  const f = junctionFixture(t);
+  if (!f) return;
+  const work = fs.realpathSync.native(f.work);
+  const claude = path.join(path.dirname(work), 'home', '.claude');
+  const data = path.join(claude, 'skill-sentry');
+  const jk = path.join(work, 'j k');
+  try { fs.symlinkSync(claude, jk, 'junction'); } catch { t.skip('cannot create junctions'); return; }
+  const j2 = path.join(work, 'j2');
+  const o = { dataDir: data, cwd: work };
+  for (const [tool, c] of [
+    ['Bash', `rm -rf ${fwdSlash(j2)}/skill-sentry`],
+    ['Bash', `rm -rf ${msysPath(j2)}/skill-sentry`],
+    ['Bash', `cat ${fwdSlash(j2)}/skill-sentry/allowlist.json`],
+    ['Bash', `rm -rf "${fwdSlash(jk)}/skill-sentry"`],
+    ['Bash', `cd ${fwdSlash(j2)} && cd . && rm -rf skill-sentry`],
+    ['PowerShell', `Remove-Item -Recurse -Force '${jk}\\skill-sentry'`],
+    ['PowerShell', `Remove-Item -Recurse -Force ${j2}\\skill-sentry`],
+  ]) asksSelf(tool, c, o);
+  noneSelf('Bash', `rm -rf ${fwdSlash(work)}/skill-sentry`, o);
+});
+
+test('R9: moving or linking Claude home asks, with or without a skill-sentry mention', () => {
+  for (const [tool, c] of [
+    ['Bash', 'mv ~/.claude ~/y'],
+    ['Bash', 'cd /tmp && mv ~/.claude y'],
+    ['Bash', 'sudo mv ~/.claude /tmp/y'],
+    ['Bash', 'mv ~/.cl* /tmp/y'],
+    ['Bash', 'ln -s ~/.claude /tmp/j'],
+    ['Bash', 'cp -al ~/.claude ~/y'],
+    ['Bash', 'cmd //c mklink /J C:\\j C:\\Users\\x\\.claude'],
+    ['Bash', 'robocopy C:\\Users\\x\\.claude C:\\y /MOVE /E'],
+    ['Bash', 'bash -c "mv ~/.claude ~/y"'],
+    ['Bash', 'pwsh -Command "Rename-Item ~/.claude y"'],
+    ['PowerShell', 'New-Item -ItemType Junction -Path C:\\j -Target C:\\Users\\x\\.claude'],
+    ['PowerShell', 'ni -ItemType SymbolicLink C:\\j -Value $env:USERPROFILE\\.claude'],
+    ['PowerShell', 'Rename-Item ~/.claude y'],
+    ['PowerShell', 'Move-Item -Path ~\\.claude -Destination ~\\y'],
+    ['PowerShell', 'git status; move C:\\Users\\x\\.CLAUDE C:\\y'],
+  ]) {
+    const r = dc(tool, c);
+    assert.equal(r.decision, 'ask', `${tool}: ${c}`);
+    assert.equal(r.ruleId, 'SELF_PROTECT', `${tool}: ${c}`);
+  }
+  for (const [tool, c] of [
+    ['Bash', 'git mv a.md b.md'],
+    ['Bash', 'mv a.md b.md'],
+    ['Bash', 'git commit -m "mv ~/.claude docs"'],
+    ['Bash', 'echo mv ~/.claude'],
+    ['Bash', 'cp -r ~/.claude/agents ~/backup'],
+    ['Bash', 'robocopy C:\\Users\\x\\.claude C:\\y /E'],
+    ['PowerShell', 'New-Item -ItemType Directory ~/.claude/x'],
+    ['PowerShell', 'Move-Item a.md ~/.claude-plugin/b.md'],
+  ]) noneSelf(tool, c);
+});
+
+test('R9: segment checks are bounded (many cd targets and tokens decide fast and ask)', () => {
+  const timed = c => { const t0 = performance.now(); const r = dc('Bash', c); return { r, ms: performance.now() - t0 }; };
+  const cds = Array.from({ length: 300 }, (_, i) => `cd C:/z${i}`).join('; ');
+  const rel = Array.from({ length: 300 }, (_, i) => `a${i}/b/c/d/e/f/g/h/skill-sentry`).join(' ');
+  const absPath = i => (process.platform === 'win32' ? `C:/z${i}/a/skill-sentry` : `/z${i}/a/skill-sentry`);
+  const abs = Array.from({ length: 300 }, (_, i) => absPath(i)).join(' ');
+  for (const c of [`${cds}; ls ${rel}; rm -rf $D/skill-sentry`, `${cds}; ls ${abs}`, `ls ${abs} ${rel}`]) {
+    const { r, ms } = timed(c);
+    assert.equal(r.decision, 'ask');
+    assert.equal(r.ruleId, 'SELF_PROTECT');
+    assert.ok(ms < 200, `took ${ms.toFixed(0)} ms`);
+  }
+  // Up to the realpath cap, distinct literal paths are still exempt; repeats of one path stay cheap.
+  noneSelf('Bash', `ls ${Array.from({ length: 16 }, (_, i) => absPath(i)).join(' ')}`);
+  const { r, ms } = timed(`ls ${Array(5000).fill(absPath(1)).join(' ')}`);
+  assert.equal(r.decision, 'none');
+  assert.ok(ms < 200, `repeats took ${ms.toFixed(0)} ms`);
+});
+
+// ---------------------------------------------------------------- R9 fix round 2
+// Synthetic Claude home inside a tmp dir: dataDir/selfRoot live under it, so its paths are protected.
+function r9Home() {
+  const base = fs.realpathSync.native(tmp('r9h'));
+  const claude = path.join(base, 'home', '.claude');
+  const data = path.join(claude, 'skill-sentry');
+  const self = path.join(claude, 'plugins', 'cache', 'mkt', 'skill-sentry', '0.1.1');
+  for (const dir of [data, self]) fs.mkdirSync(dir, { recursive: true });
+  return { base, claude, data, self, inst: path.join(claude, 'plugins', 'cache', 'mkt', 'skill-sentry'), o: { dataDir: data, selfRoot: self } };
+}
+
+test('R9 N1: a quoted command line is not one literal path', () => {
+  const h = r9Home();
+  const inst = fwdSlash(h.inst);
+  const cases = [
+    ['Bash', `bash -c "/usr/bin/rm -rf ${inst}"`],
+    ['Bash', `bash -c "C:/Program Files/Git/usr/bin/rm.exe -rf ${inst}"`],
+    ['Bash', `sh -c "/usr/bin/rm -rf ${fwdSlash(h.claude)}/plugins/../skill-sentry"`],
+    ['Bash', `eval "/usr/bin/rm -rf ${inst}"`],
+    ['Bash', `cmd //c "C:/Windows/System32/cmd.exe /c rd /s /q ${h.inst}"`],
+    ['PowerShell', `powershell -c "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -c Remove-Item -Recurse -Force ${h.inst}"`],
+    ['PowerShell', `powershell -c "C:/Windows/System32/cmd.exe /c rd /s /q ${h.inst}"`],
+    // the needle sees `..`-collapsed forms
+    ['Bash', `cat ${fwdSlash(h.claude)}/plugins/../skill-sentry/allowlist.json`],
+    // even when every piece is an exempt literal path, a script argument never is
+    ['Bash', 'bash -c "ls C:/Users/x/skill-sentry"'],
+    // a quoted path with a space before the segment is split; the tail piece is relative
+    ['Bash', 'rm -rf "C:/a b/skill-sentry/tmp"'],
+    // quoted `~` is not expanded by the shell
+    ['Bash', "rm -rf '~'/mkt/skill-sentry"],
+    // a quoted value with a trailing or leading space
+    ['Bash', `rm -rf "${inst} "`],
+    ['Bash', 'rm -rf " C:/Users/x/skill-sentry"'],
+  ];
+  for (const [tool, c] of cases) asksSelf(tool, c, h.o);
+});
+
+test('R9 N2: PowerShell drives are not real volumes, and creating one is a link', () => {
+  const h = r9Home();
+  for (const c of [
+    'New-PSDrive -Name Q -PSProvider FileSystem -Root "$HOME\\.claude" | Out-Null; Remove-Item -Recurse -Force Q:\\skill-sentry',
+    'New-PSDrive -Name Q -PSProvider FileSystem -Root "$HOME\\.claude" | Out-Null; Remove-Item -Recurse -Force Q:\\plugins\\cache\\mkt\\skill-sentry',
+    `New-PSDrive -Name Q -PSProvider FileSystem -Root ${h.claude} | Out-Null; Remove-Item -Recurse -Force Q:\\skill-sentry`,
+    'ndr Q FileSystem $HOME\\.claude; ri -r -fo Q:\\skill-sentry',
+    'mount Q FileSystem $HOME\\.claude; ri -r -fo Q:\\skill-sentry',
+    'Remove-Item -Recurse -Force Q:\\skill-sentry', // a later call: Q: is no OS volume here
+  ]) asksSelf('PowerShell', c, h.o);
+  asksSelf('PowerShell', 'New-PSDrive -Name Q -PSProvider FileSystem -Root C:\\data', h.o); // Ruling R14
+  for (const c of ['subst Q: C:\\Users\\x\\.claude', 'net use Q: \\\\localhost\\c$\\Users\\x\\.claude', 'pwsh -c \'New-PSDrive Q FileSystem ~/.claude; Remove-Item -Recurse Q:/skill-sentry\'']) asksSelf('Bash', c, h.o);
+});
+
+test('R9 N3: on win32 Bash only the /x/ drive form of a rooted path is exempt', () => {
+  if (process.platform !== 'win32') return;
+  for (const c of [
+    'rm -rf /tmp/h/.claude/plugins/cache/mkt/skill-sentry',
+    'rm -rf /usr/x/skill-sentry',
+    'rm -rf /q/x/skill-sentry', // /q/ is a drive form, but Q: is no volume
+  ]) asksSelf('Bash', c);
+  noneSelf('Bash', 'cat /c/Users/x/skill-sentry/README.md');
+});
+
+test('R13: relink verbs with non-literal operands or under xargs / find -exec ask', () => {
+  for (const [tool, c] of [
+    ['Bash', 'mv "$X" ~/y'],
+    ['Bash', 'echo a | xargs mv -t ~/y'],
+    ['Bash', 'echo ~/.cl""aude | xargs -I % mv % ~/y'],
+    ['Bash', 'find ~ -maxdepth 1 -name ".cl*" -exec mv {} ~/y \\;'],
+    ['Bash', 'cmd //c mklink /J %TEMP%\\h %USERPROFILE%'],
+    ['Bash', 'ln -s "$(echo ~)" /tmp/h'],
+    ['PowerShell', 'Move-Item $env:CLAUDE_HOME ~/y'],
+    ['PowerShell', 'Rename-Item (Resolve-Path ~/.cl*) y'],
+  ]) {
+    const r = dc(tool, c);
+    assert.equal(r.decision, 'ask', `${tool}: ${c}`);
+    assert.equal(r.ruleId, 'SELF_PROTECT', `${tool}: ${c}`);
+  }
+  for (const [tool, c] of [
+    ['Bash', 'mv a.md b.md'],
+    ['Bash', 'git mv a.md b.md'],
+    ['Bash', 'mount'],
+    ['Bash', 'find . -name "*.tmp" -delete'],
+    ['Bash', 'echo a | xargs rm'],
+  ]) noneSelf(tool, c);
+});
+
+// ---------------------------------------------------------------- R9 fix round 3
+test('R14 X1: any PowerShell drive create/remove token asks, even for a real letter', () => {
+  const h = r9Home();
+  const home = path.dirname(h.claude);
+  for (const [tool, c] of [
+    ['PowerShell', `& { New-PSDrive -Name C -PSProvider FileSystem -Root ${home} -Scope Local | Out-Null; Remove-Item -Recurse -Force C:\\.claude\\plugins\\cache\\mkt\\skill-sentry }`],
+    ['PowerShell', `sl HKCU:\\; rdr C -Force; ndr C FileSystem ${home}; ri -r -fo C:\\.claude\\plugins\\cache\\mkt\\skill-sentry`],
+    ['PowerShell', 'Set-Location HKCU:\\; Remove-PSDrive C -Force'],
+    ['PowerShell', `&{New-PSDrive C FileSystem ${home}}`],
+    ['PowerShell', `(NEW-PSDRIVE C FileSystem ${home}) | Out-Null`],
+    ['PowerShell', `iex "ndr C FileSystem ${home}"`],
+    ['Bash', `pwsh -NoProfile -Command "Remove-PSDrive C -Force; ndr C FileSystem ${fwdSlash(home)}"`],
+    ['Bash', 'cmd //c powershell -c "rdr C -Force"'],
+  ]) {
+    const r = dc(tool, c, h.o);
+    assert.equal(r.decision, 'ask', `${tool}: ${c}`);
+    assert.equal(r.ruleId, 'SELF_PROTECT', `${tool}: ${c}`);
+  }
+  noneSelf('Bash', 'mount', h.o);
+  noneSelf('PowerShell', 'Get-PSDrive C', h.o);
+});
+
+test('R14 X2: `~` is home only when unquoted and directly followed by a separator', () => {
+  const h = r9Home();
+  const cwd = path.join(h.claude, 'plugins', 'cache');
+  asksSelf('Bash', 'find ~"/mkt"/skill-sentry -delete', { ...h.o, cwd });
+  asksSelf('Bash', "mv ~''/mkt/skill-sentry /c/zz", { ...h.o, cwd });
+  asksSelf('Bash', 'ls ~"/mkt/skill-sentry"', { ...h.o, cwd });
+  noneSelf('Bash', 'ls ~/skill-sentry', h.o);
+  noneSelf('PowerShell', 'Get-ChildItem ~\\skill-sentry', h.o);
+});
+
+test('R14 X3: relink verbs behind grouping, wrappers and 8.3 operands ask', () => {
+  for (const c of [
+    '{ mv ~/.claude ~/y; }',
+    '(mv ~/.claude ~/y)',
+    'timeout 5 mv ~/.claude ~/y',
+    'busybox mv ~/.claude ~/y',
+    'stdbuf -o0 mv ~/.claude ~/y',
+    'ionice -c 3 nice -n 10 mv ~/.claude ~/y',
+    'doas mv ~/.claude ~/y',
+    'mv ~/.CLAUD~1 ~/y',
+  ]) {
+    const r = dc('Bash', c);
+    assert.equal(r.decision, 'ask', c);
+    assert.equal(r.ruleId, 'SELF_PROTECT', c);
+  }
+  for (const c of ['mv ~/a.md ~/b.md', 'timeout 5 git status', '{ ls; }', '(cd ~/skill-sentry && git log --oneline -3)']) noneSelf('Bash', c);
+});
+
+// ---------------------------------------------------------------- R9 fix round 4
+test('R14 X5: dynamic PowerShell gets no exemption (drive made via alias, call operator or API)', () => {
+  const h = r9Home();
+  const home = path.dirname(h.claude);
+  const RI = 'Remove-Item -Recurse -Force C:\\.claude\\plugins\\cache\\mkt\\skill-sentry';
+  for (const [tool, c] of [
+    ['PowerShell', `sal zq ('New-PS' + 'Drive'); & { zq C FileSystem ${home} -Scope Local | Out-Null; ${RI} }`],
+    ['PowerShell', `Set-Alias -Name zq -Value ("New-PS" + "Drive"); & { zq C FileSystem ${home} -Scope Local | Out-Null; ${RI} }`],
+    ['PowerShell', `& { & ('New-PS'+'Drive') C FileSystem ${home} -Scope Local | Out-Null; ${RI} }`],
+    ['PowerShell', `& { & (gcm New-PSD*) C FileSystem ${home} -Scope Local | Out-Null; ${RI} }`],
+    ['PowerShell', `& { iex ('New-PS'+'Drive C FileSystem ${home} -Scope Local') | Out-Null; ${RI} }`],
+    ['PowerShell', `& { $d = New-Object Management.Automation.PSDriveInfo 'C', (Get-PSProvider FileSystem), '${home}', '', $null; $null = $executionContext.SessionState.Drive.New($d,'local'); ${RI} }`],
+    // module-qualified verb, dot-source, escaped iex, and a multi-word pwsh script from Bash
+    ['PowerShell', `Microsoft.PowerShell.Management\\New-PSDrive C FileSystem ${home} -Scope Local | Out-Null; ${RI}`],
+    ['PowerShell', `. C:\\tmp\\x.ps1; ${RI}`],
+    ['PowerShell', `Get-Content C:\\tmp\\x.txt | i\`ex; ${RI}`],
+    // the alias provider, with the verb glued to a parameter or in curly quotes
+    ['PowerShell', `Set-Item alias:zr -Value:Remove-PSDrive; Set-Item alias:zq -Value:New-PSDrive; Set-Location HKCU:\\; zr C -Force; zq C FileSystem ${home}; ${RI}`],
+    ['PowerShell', `Rename-Item alias:rdr zr; Rename-Item alias:ndr zq; Set-Location HKCU:\\; zr C -Force; zq C FileSystem ${home}; ${RI}`],
+    ['PowerShell', `Set-Item alias:zq \u2018New-PSDrive\u2019; zq C FileSystem ${home} -Scope Local; ${RI}`],
+    ['Bash', `pwsh -c "& ('New-PS'+'Drive') C FileSystem ${fwdSlash(home)}" ';' Remove-Item -Recurse -Force C:/.claude/plugins/cache/mkt/skill-sentry`],
+  ].filter(([, c]) => onThisOs(c))) asksSelf(tool, c, h.o);
+  for (const c of [
+    'Get-Content C:\\Users\\x\\skill-sentry\\x.md',
+    "node 'C:\\Users\\x\\.claude\\plugins\\cache\\context-mode\\context-mode\\2.2.1\\search.mjs' s5h 'C:\\Users\\x\\skill-sentry\\.superpowers\\sdd\\r.md' 'C:\\Users\\x'",
+    'git -C C:\\Users\\x\\skill-sentry status',
+    'Set-Location C:\\Users\\x\\skill-sentry; npm test',
+    'Remove-Item -Recurse C:\\Users\\x\\skill-sentry\\tmp',
+    'Get-Content C:\\Users\\x\\skill-sentry\\x.md 2>&1',
+    'git -C C:\\Users\\x\\skill-sentry status && npm test',
+    '$x = 1; Write-Output (Get-Date)',
+  ].filter(onThisOs)) noneSelf('PowerShell', c, h.o);
+});
+
 test('non-local UNC paths are matched by string only (no network I/O)', () => {
   const timed = fn => { const t0 = performance.now(); const r = fn(); return { r, ms: performance.now() - t0 }; };
   // Ruling K: any UNC path is an unusual form -> PATH_UNUSUAL_READ (log without origin, ask with one).
@@ -794,7 +1171,10 @@ test('scanSummary wording', () => {
 
 function runGuard(stdin, extraEnv = {}, script = GUARD) {
   const data = extraEnv.SKILL_SENTRY_DATA_DIR ?? tmp('gdata');
-  const env = { ...process.env, SKILL_SENTRY_DATA_DIR: data, SKILL_SENTRY_CLAUDE_HOME: tmp('nohome'), SKILL_SENTRY_HOME_DIR: tmp('nohome'), ...extraEnv };
+  const env = {
+    ...process.env, SKILL_SENTRY_DATA_DIR: data, SKILL_SENTRY_CLAUDE_HOME: tmp('nohome'), SKILL_SENTRY_HOME_DIR: tmp('nohome'),
+    SKILL_SENTRY_CODEX_HOME: tmp('nocodex'), SKILL_SENTRY_NO_WSL: '1', ...extraEnv,
+  };
   return new Promise((resolve, reject) => {
     const t0 = process.hrtime.bigint();
     const child = spawn(process.execPath, [script], { env, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -1000,6 +1380,38 @@ test('guard (L1): deny skips the component check; an expired budget skips it for
   assert.ok(ask.out.permissionDecisionReason.includes('component check skipped (time budget)'), ask.out.permissionDecisionReason);
 });
 
+test('originMayNameSkillSentry (R23): only an origin that can map onto a plugin named skill-sentry', () => {
+  for (const o of [{ skill: 'skill-sentry:audit' }, { mcpPlugin: 'skill-sentry' }, { mcpPlugin: 'other', mcpQualified: 'skill-sentry_srv' }]) {
+    assert.equal(originMayNameSkillSentry(o), true, JSON.stringify(o));
+  }
+  for (const o of [null, {}, { skill: 'evil:helper' }, { skill: 'skill-sentry' }, { skill: 'skill-sentry-x:y' },
+    { mcpPlugin: 'evil', mcpQualified: 'evil_srv' }, { mcpPlugin: 'skill-sentry-x', mcpQualified: 'skill-sentry-x_srv' }]) {
+    assert.equal(originMayNameSkillSentry(o), false, JSON.stringify(o));
+  }
+});
+
+test('guard (L1, I1): an attributed ask stays within budget with a planted skill-sentry copy full of markers', async () => {
+  const h = fakeHome();
+  const planted = path.join(h.claudeHome, 'plugins', 'cache', 'x', 'skill-sentry', '9.9.9');
+  fs.mkdirSync(path.join(planted, '.claude-plugin'), { recursive: true });
+  fs.mkdirSync(path.join(planted, 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(planted, '.in_use'), { recursive: true });
+  fs.writeFileSync(path.join(planted, '.claude-plugin', 'plugin.json'), '{"name":"skill-sentry","version":"9.9.9"}');
+  fs.writeFileSync(path.join(planted, 'scripts', 'guard.mjs'), '// not ours\n');
+  for (let i = 0; i < 3000; i++) fs.writeFileSync(path.join(planted, '.in_use', String(i)), '{}');
+  const ip = path.join(h.claudeHome, 'plugins', 'installed_plugins.json');
+  const installed = JSON.parse(fs.readFileSync(ip, 'utf8'));
+  installed.plugins['skill-sentry@x'] = [{ scope: 'user', installPath: planted, version: '9.9.9' }];
+  fs.writeFileSync(ip, JSON.stringify(installed));
+  const t0 = Date.now();
+  const ask = await handleWith({ tool_name: 'Read', tool_input: { file_path: path.join(h.home, '.ssh', 'id_ed25519') }, transcript_path: T('skill-then-bash.jsonl'), cwd: h.project },
+    { env: { SKILL_SENTRY_CLAUDE_HOME: h.claudeHome, SKILL_SENTRY_HOME_DIR: h.home }, deadline: Date.now() + 1500 });
+  const ms = Date.now() - t0;
+  assert.equal(ask.out.permissionDecision, 'ask');
+  assert.ok(ask.out.permissionDecisionReason.includes('likely source: plugin:evil@mkt; component verdict: ok'), ask.out.permissionDecisionReason);
+  assert.ok(ms < 1500, `${ms} ms`);
+});
+
 test('guard main: an unwritable guard.log does not stop the deny', async () => {
   const data = tmp('gdata');
   fs.mkdirSync(path.join(data, 'guard.log')); // a directory: every append fails
@@ -1048,4 +1460,161 @@ test('guard p50 under 150ms for a none decision', async () => {
   times.sort((a, b) => a - b);
   const median = (times[9] + times[10]) / 2;
   assert.ok(median < 150, `median ${median.toFixed(1)} ms`);
+});
+
+// ---------------------------------------------------------------- final review I2: R14 drive words
+test('I2: mount/ndr/rdr count only as PowerShell commands; plain text mentions do not ask', () => {
+  for (const c of [
+    'rg -n "mount" src',
+    'git commit -m "fix mount handling"',
+    'echo "mount the volume"',
+    'kubectl get pv | findstr mount',
+    'npm run ndr',
+    'mount',
+    'git log --grep=rdr',
+    'docker run --mount type=bind,src=C:/a,dst=/a img',
+    'git commit -m "return the mount handle"',
+    'echo done <# note #>',
+  ]) noneSelf('PowerShell', c);
+  const home = fwdSlash(os.homedir());
+  for (const c of [
+    `mount C FileSystem ${home}`,
+    `ndr -Name C -PSProvider FileSystem -Root ${home}`,
+    'git status; rdr C -Force',
+    'Get-PSDrive C | rdr',
+    'Import-Csv drives.csv | mount',
+    'echo New-PSDrive',
+    'Write-Output Remove-PSDrive',
+    `Microsoft.PowerShell.Management\\ndr C FileSystem ${home}`,
+    `$n = 'C'; ndr $n FileSystem ${home}`,
+    'iex "mount C FileSystem D:/x"',
+    'echo "x" | & { rdr C }',
+    `M\`ount C FileSystem ${home}`,
+    // block comments and pipeline-taking keywords keep an alias in command position
+    `<##> ndr C FileSystem ${home}`,
+    '<# c #> rdr C',
+    `return ndr C FileSystem ${home}`,
+    'throw rdr C',
+    `exit mount C FileSystem ${home}`,
+    `echo "<#"; ndr C FileSystem ${home}; echo "#>"`,
+  ]) asksSelf('PowerShell', c);
+});
+
+test('I2 residual: plain $, parentheses, braces and quotes are not dynamic; real run-time constructs and statement starts still ask', () => {
+  for (const c of [
+    'git commit -m "fix (mount) handling"',
+    'Select-String -Pattern mount -Path $env:TEMP/x.log',
+    'Get-ChildItem $env:TEMP | Select-String mount',
+    'docker volume inspect $(docker volume ls -q) | findstr mount',
+    '$v = "mount"; echo $v',
+    'echo $x mount',
+    'rg "mount(" src',
+    'echo "a (" mount y',
+  ]) noneSelf('PowerShell', c);
+  // The re-review's drive-alias attacks (all asked at the start of this fix).
+  const X = 'C FileSystem D:/x';
+  for (const c of [
+    `ndr ${X}`, 'mount -Name C -PSProvider FileSystem -Root D:/x', `echo a; ndr ${X}`, `echo a && ndr ${X}`, `echo a || ndr ${X}`,
+    `echo a\nndr ${X}`, `echo a\r\nndr ${X}`, `<# c #> ndr ${X}`, `# c\nndr ${X}`, `return ndr ${X}`, `throw (ndr ${X})`,
+    `if (1) { ndr ${X} }`, `try { ndr ${X} } catch {}`, '"C" | ndr -PSProvider FileSystem -Root D:/x', 'ndr @p', `ndr\`\n ${X}`,
+    `& ndr ${X}`, `. ndr ${X}`, `ndr; ndr ${X}`, 'Ndr -n C -psp FileSystem -r D:/x', 'rdr C', 'rdr -Name C -Force',
+    `Write-Output x | Out-Null; mount ${X}`, `cmd /c "echo" ; ndr ${X}`, `powershell -c "ndr ${X}"`, `pwsh -NoProfile -Command ndr ${X}`,
+    `ndr\t${X.replace(/ /g, '\t')}`, 'ndr -Name:C -PSProvider:FileSystem -Root:D:/x', `switch (1) { 1 { ndr ${X} } }`, `do { ndr ${X} } while (0)`,
+    `echo a | % { ndr ${X} }`, `gci | ForEach-Object -Process { ndr ${X} }`, `exit (ndr ${X})`, `Invoke-Command { ndr ${X} }`, `ndr --% ${X}`,
+    `$(ndr ${X})`, `@(ndr ${X})`, `{ndr ${X}}`, `Start-Process pwsh -ArgumentList "-c ndr ${X}"`,
+  ]) asksSelf('PowerShell', c);
+});
+
+// ---------------------------------------------------------------- final review I3: Codex control files
+test('I3: writes to Codex config, hooks, requirements and rules ask with an origin and log without (tool and shell forms)', () => {
+  const o = { skill: 'evil:x' };
+  const home = fwdSlash(os.homedir());
+  const proj = fwdSlash(tmp('i3proj'));
+  for (const [tool, input] of [
+    ['Write', { file_path: '~/.codex/config.toml', content: '[features]\nhooks = false\n' }],
+    ['Edit', { file_path: `${home}/.codex/config.toml`, old_string: 'a', new_string: 'b' }],
+    ['Write', { file_path: `${home}/.codex/hooks.json`, content: '{}' }],
+    ['Write', { file_path: `${home}/.codex/requirements.toml`, content: '' }],
+    ['Write', { file_path: `${home}/.codex/rules/x.rules`, content: '' }],
+    ['Write', { file_path: `${proj}/.codex/config.toml`, content: '' }],
+    ['Bash', { command: "printf '[features]\\nhooks=false\\n' >> ~/.codex/config.toml" }],
+    ['PowerShell', { command: "Add-Content -Path $env:USERPROFILE\\.codex\\config.toml -Value 'x'" }],
+  ]) {
+    const r = d(tool, input, o);
+    assert.equal(r.decision, 'ask', `${tool}: ${JSON.stringify(input)}`);
+    assert.ok((r.highs ?? []).some(h => h.category === 'persistence' && /^PERSIST_(?:PATH_)?CODEX_CONFIG/.test(h.ruleId)), `${tool}: ${JSON.stringify(r)}`);
+    assert.equal(d(tool, input).decision, 'log', `${tool}: ${JSON.stringify(input)}`);
+  }
+  assert.equal(d('Read', { file_path: '~/.codex/config.toml' }, o).decision, 'none');
+  assert.equal(d('Write', { file_path: `${home}/.codex/sessions/x.jsonl`, content: '' }, o).decision, 'none');
+});
+
+test('I3: a custom $CODEX_HOME (no .codex segment) is covered too', () => {
+  const alt = fwdSlash(tmp('i3alt'));
+  const old = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = alt;
+  try {
+    for (const f of [`${alt}/config.toml`, `${alt}/hooks.json`, `${alt}/rules/x.rules`, `${alt}/team.config.toml`]) {
+      const r = d('Write', { file_path: f, content: '' }, { skill: 'evil:x' });
+      assert.equal(r.decision, 'ask', f);
+      assert.equal(r.ruleId, 'PERSIST_PATH_CODEX_CONFIG', f);
+    }
+    assert.equal(d('Write', { file_path: `${alt}/notes.md`, content: '' }, { skill: 'evil:x' }).decision, 'none');
+  } finally {
+    if (old === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = old;
+  }
+});
+
+// ---------------------------------------------------------------- final review C1: sibling installs
+// The Claude guard must also protect a skill-sentry copy installed for Codex (and any plugin-cache copy),
+// although it is neither its own install dir nor under ~/.claude. Paths are only resolved, never written.
+test('C1: the sibling Codex install of skill-sentry is protected (shell, tilde, absolute, custom Codex home)', () => {
+  const home = fwdSlash(os.homedir());
+  const base = fwdSlash(fs.realpathSync.native(tmp('c1')));
+  const o = { selfRoot: `${home}/.claude/plugins/cache/skill-sentry/skill-sentry/0.1.1`, dataDir: DATA, cwd: home };
+  const codexCopy = `${home}/.codex/plugins/cache/skill-sentry/skill-sentry/0.1.1`;
+  const altCopy = `${base}/alt/codexhome/plugins/cache/PauloFH/skill-sentry/0.1.1`;
+  fs.mkdirSync(altCopy, { recursive: true });
+  const attributed = (tool, command) => decide({ toolName: tool, toolInput: { command }, origin: { skill: 'evil' }, allowlist: EMPTY, ...o });
+  for (const [tool, c] of [
+    ['Bash', `rm -rf ${codexCopy}`],
+    ['Bash', 'rm -rf ~/.codex/plugins/cache/skill-sentry'],
+    ['Bash', `echo x > ${codexCopy}/scripts/guard.mjs`],
+    ['Bash', `rm -rf ${altCopy}`],
+    ['Bash', `rm -rf ${base}/alt/codexhome/plugins/cache/skill-sentry`],
+    ['Bash', `rm -rf ${base}/other/.claude/plugins/cache/mkt/skill-sentry`],
+    ['Bash', `rm -rf ${base}/other/.claude/skill-sentry`],
+    ['Bash', `rm -rf ${base}/other/.codex/skill-sentry`],
+    ['PowerShell', `Remove-Item -Recurse -Force ${codexCopy.replace(/\//g, '\\')}`],
+    ['PowerShell', 'Remove-Item -Recurse -Force ~\\.codex\\plugins\\cache\\skill-sentry'],
+  ].filter(([, c]) => onThisOs(c))) {
+    const r = attributed(tool, c);
+    assert.equal(r.decision, 'ask', `${tool}: ${c}`);
+    assert.equal(r.ruleId, 'SELF_PROTECT', `${tool}: ${c}`);
+  }
+  // Ruling R9 is kept for unrelated checkouts.
+  for (const c of ['ls ~/src/skill-sentry', 'cat C:/Users/x/skill-sentry/README.md', `ls ${base}/src/skill-sentry`].filter(onThisOs)) {
+    assert.equal(attributed('Bash', c).decision, 'none', c);
+  }
+});
+
+test('C1: Write/Edit to a sibling skill-sentry install asks (SELF_PROTECT_WRITE); an unrelated checkout does not', () => {
+  const home = fwdSlash(os.homedir());
+  const base = fwdSlash(fs.realpathSync.native(tmp('c1w')));
+  const o = { selfRoot: `${home}/.claude/plugins/cache/skill-sentry/skill-sentry/0.1.1`, dataDir: DATA, cwd: home };
+  for (const tool of ['Write', 'Edit']) {
+    for (const f of [
+      `${home}/.codex/plugins/cache/skill-sentry/skill-sentry/0.1.1/scripts/guard.mjs`,
+      '~/.codex/plugins/cache/skill-sentry/skill-sentry/0.1.1/hooks/hooks.json',
+      `${base}/alt/codexhome/plugins/cache/PauloFH/skill-sentry/0.1.1/scripts/guard.mjs`,
+      `${home}/.claude/plugins/cache/other-mkt/skill-sentry/0.1.0/scripts/guard.mjs`,
+    ]) {
+      const r = decide({ toolName: tool, toolInput: { file_path: f, content: 'x' }, origin: null, allowlist: EMPTY, ...o });
+      assert.equal(r.decision, 'ask', `${tool}: ${f}`);
+      assert.equal(r.ruleId, 'SELF_PROTECT_WRITE', `${tool}: ${f}`);
+    }
+    for (const f of ['C:/Users/x/src/skill-sentry/README.md', `${base}/src/skill-sentry/scripts/guard.mjs`]) {
+      assert.equal(decide({ toolName: tool, toolInput: { file_path: f, content: 'x' }, origin: null, allowlist: EMPTY, ...o }).decision, 'none', f);
+    }
+  }
 });

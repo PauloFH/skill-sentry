@@ -17,9 +17,27 @@ export function readJsonSafe(file) {
   } catch (e) {
     return { ok: false, error: e && e.code === 'ENOENT' ? 'missing' : String((e && e.message) || e) };
   }
+  const src = text.replace(/^﻿/, '');
   try {
-    return { ok: true, value: JSON.parse(text.replace(/^﻿/, '')) };
+    return { ok: true, value: JSON.parse(src) };
   } catch (e) {
-    return { ok: false, error: String((e && e.message) || e) };
+    return { ok: false, error: jsonErrorAt(src, e) };
   }
+}
+
+/**
+ * Parse error as a position only. V8's message quotes the source near the error (on Node 20+ e.g.
+ * `..."I_TOKEN": 'value... is not valid JSON`), which may be a credential: it is never returned.
+ */
+function jsonErrorAt(src, e) {
+  const msg = String((e && e.message) || '');
+  const lc = /\(line (\d+) column (\d+)\)/.exec(msg);
+  if (lc) return `invalid JSON at line ${lc[1]} column ${lc[2]}`;
+  const pos = /at position (\d+)/.exec(msg);
+  if (pos) {
+    const before = src.slice(0, Number(pos[1]));
+    const line = before.split('\n').length;
+    return `invalid JSON at line ${line} column ${before.length - before.lastIndexOf('\n')}`;
+  }
+  return 'invalid JSON';
 }

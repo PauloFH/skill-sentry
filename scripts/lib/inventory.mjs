@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { readJsonSafe } from './jsonsafe.mjs';
 import { normalizePath, truncate, redactSecrets, redactArgs } from './text.mjs';
+import { realDir, isCopyOfSelf, markSkillSentryCopy } from './selfcopy.mjs';
 
 const isObj = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const normDir = p => normalizePath(path.resolve(p)).replace(/\/+$/, '');
@@ -14,12 +15,7 @@ function canonJson(v) {
   return JSON.stringify(sort(v) ?? null);
 }
 
-/** Canonical directory key: realpath when it exists (symlinks/junctions resolved), case-insensitive on win32. */
-function realDir(p) {
-  let r = path.resolve(p);
-  try { r = fs.realpathSync.native(r); } catch { /* missing: compare the resolved form */ }
-  return normDir(r);
-}
+export { realDir, isCopyOfSelf };
 
 const DEFAULT_LIMITS = { maxFiles: 2000, maxDirs: 2000, maxDepth: 6 };
 
@@ -46,7 +42,7 @@ export function isRemoteLinkText(text) {
 }
 
 /** Link text of `p` when it is a symlink/junction to a remote path, else null (no I/O beyond lstat/readlink). */
-function remoteLinkTarget(p) {
+export function remoteLinkTarget(p) {
   try {
     if (!fs.lstatSync(p).isSymbolicLink()) return null;
     const t = fs.readlinkSync(p);
@@ -120,6 +116,23 @@ export function listFiles(dir, limits, { deadline } = {}) {
   return { files, truncated, skipped, timedOut, outside };
 }
 
+/**
+ * True when `rp` stays inside `root`: lexically first (no fs call on an outside or UNC path), then
+ * with no remote link on the way, then by real path (a link may point out). A missing file that is
+ * lexically inside counts as inside (the caller's read reports it).
+ */
+export function isInsideRoot(root, rp) {
+  let inside = isInside(normDir(rp), normDir(root));
+  if (inside) {
+    const rel = path.relative(root, rp).split(/[\\/]/).filter(Boolean);
+    for (let i = 1; inside && i <= rel.length; i++) if (remoteLinkTarget(path.join(root, ...rel.slice(0, i))) !== null) inside = false;
+  }
+  if (inside) {
+    try { inside = isInside(realKey(rp), realDir(root)); } catch { /* missing */ }
+  }
+  return inside;
+}
+
 // Stored config -> unredacted copy, for the scanner's rules only (never serialized: a WeakMap entry
 // survives `{ ...component }` copies and is invisible to JSON.stringify).
 const RAW_CONFIG = new WeakMap();
@@ -127,6 +140,12 @@ const RAW_CONFIG = new WeakMap();
 /** Unredacted config of a discovered component (falls back to the stored config). */
 export function rawConfigOf(config) {
   return (config && RAW_CONFIG.get(config)) ?? config;
+}
+
+/** Attach the unredacted `raw` copy to a stored (redacted) config object; returns `stored`. */
+export function bindRawConfig(stored, raw) {
+  RAW_CONFIG.set(stored, raw);
+  return stored;
 }
 
 /**
@@ -155,8 +174,11 @@ function redactRaw(raw, extra = {}) {
  * - A relative `installPath` in installed_plugins.json is resolved against `<claudeHome>/plugins`.
  * - Hook index `n` counts within one event across all matcher groups of one source; the user
  *   (or project) `settings.json` and `settings.local.json` form a single source, read in that order.
+ * - `releases` replaces the embedded known-release table (tests only; see selfcopy.mjs).
+ * - `copyChecks: false` skips the skill-sentry copy / known-release check (only a real-path match is self):
+ *   the guard passes it when the origin cannot name a plugin called skill-sentry (Ruling R23).
  */
-export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits, deadline, skillFiles = true }) {
+export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits, deadline, skillFiles = true, releases, copyChecks = true }) {
   const components = [];
   const configFindings = [];
   const seen = new Set();
@@ -164,6 +186,7 @@ export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits, de
   // Never drop a colliding entry: later ones get a deterministic "#2", "#3" ... suffix.
   const add = (c, source) => {
     if (source) c.meta = { ...c.meta, source };
+    c.agent = 'claude';
     const base = c.id;
     for (let n = 2; seen.has(c.id); n++) c.id = `${base}#${n}`;
     seen.add(c.id);
@@ -258,7 +281,9 @@ export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits, de
       id: `plugin:${key}`, kind: 'plugin', name: key, scope: 'user', root,
       meta: { version: e.version, installScope: e.scope },
     };
+    // The name only decides whether the copy check runs; the running scanner vouching for the bytes decides self.
     if (selfReal && rk === selfReal) comp.self = true;
+    else if (selfReal && copyChecks && name === 'skill-sentry') markSkillSentryCopy(comp, root, selfRoot, { releases, deadline });
     add(comp);
 
     // Each JSON file is read once per plugin even if referenced several times.
@@ -273,16 +298,7 @@ export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits, de
     // Manifest-referenced files must stay inside the plugin root: lexically first (no fs call on an
     // outside or UNC path), then no remote link on the way, then by real path (a link may point out).
     const readInside = rp => {
-      const rootN = normDir(root);
-      let inside = isInside(normDir(rp), rootN);
-      if (inside) {
-        const rel = path.relative(root, rp).split(/[\\/]/).filter(Boolean);
-        for (let i = 1; inside && i <= rel.length; i++) if (remoteLinkTarget(path.join(root, ...rel.slice(0, i))) !== null) inside = false;
-      }
-      if (inside) {
-        try { inside = isInside(realKey(rp), realDir(root)); } catch { /* missing: read() stays silent */ }
-      }
-      if (!inside) {
+      if (!isInsideRoot(root, rp)) {
         configFindings.push({ ruleId: 'CONFIG_UNREADABLE', category: 'config', severity: 'info', line: 0, snippet: 'path outside plugin root', file: rp });
         return null;
       }

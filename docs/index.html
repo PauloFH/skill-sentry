@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title data-i18n="meta.title">skill-sentry — audit the plugins, skills and hooks in your Claude Code</title>
-<meta name="description" content="A zero-dependency Claude Code plugin that audits installed plugins, skills, hooks and MCP servers for malicious behavior, guards risky tool calls and hardens your settings." data-i18n-attr="content:meta.desc">
+<title data-i18n="meta.title">skill-sentry — audit the plugins, skills and hooks in Claude Code and Codex</title>
+<meta name="description" content="A zero-dependency plugin for Claude Code and OpenAI Codex that audits installed plugins, skills, hooks and MCP servers for malicious behavior, guards risky tool calls and hardens your settings." data-i18n-attr="content:meta.desc">
 <meta name="theme-color" content="#000000">
 <meta property="og:type" content="website">
-<meta property="og:title" content="skill-sentry — audit the plugins, skills and hooks in your Claude Code" data-i18n-attr="content:meta.title">
-<meta property="og:description" content="A zero-dependency Claude Code plugin that audits installed plugins, skills, hooks and MCP servers for malicious behavior, guards risky tool calls and hardens your settings." data-i18n-attr="content:meta.desc">
+<meta property="og:title" content="skill-sentry — audit the plugins, skills and hooks in Claude Code and Codex" data-i18n-attr="content:meta.title">
+<meta property="og:description" content="A zero-dependency plugin for Claude Code and OpenAI Codex that audits installed plugins, skills, hooks and MCP servers for malicious behavior, guards risky tool calls and hardens your settings." data-i18n-attr="content:meta.desc">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2318181b'/%3E%3Cpath d='M16 5 7 8.5v7c0 5.4 3.8 9.6 9 11 5.2-1.4 9-5.6 9-11v-7z' fill='none' stroke='%2360a5fa' stroke-width='2.4' stroke-linejoin='round'/%3E%3Cpath d='m12 16 3 3 5.5-6' fill='none' stroke='%2393c5fd' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="assets/site.css">
 <script src="assets/site.js" defer></script>
@@ -48,6 +48,7 @@
       <a href="#why" data-i18n="nav.why">Why</a>
       <a href="#what" data-i18n="nav.what">Features</a>
       <a href="#how" data-i18n="nav.how">How it works</a>
+      <a href="#codex" data-i18n="nav.codex">Codex</a>
       <a href="#limits" data-i18n="nav.limits">Limits</a>
       <a href="#install" data-i18n="nav.install">Install</a>
     </nav>
@@ -69,12 +70,12 @@
 <section id="hero" class="hero">
   <div class="wrap">
     <div class="hero-copy">
-      <p class="eyebrow"><span class="dot" aria-hidden="true"></span><span data-i18n="hero.eyebrow">Security plugin for Claude Code</span></p>
+      <p class="eyebrow"><span class="dot" aria-hidden="true"></span><span data-i18n="hero.eyebrow">Security plugin for Claude Code and Codex</span></p>
       <h1>
         <span class="line" data-i18n="hero.title">Your plugins run with your privileges.</span>
         <span class="line line-2"><span data-i18n="hero.title2">Watch them with</span> <span class="badge-tilt"><span class="badge"><span class="grad-text">&lt;skill-sentry/&gt;</span></span></span></span>
       </h1>
-      <p class="hero-lead" data-i18n="hero.lead">It audits the plugins, skills, hooks and MCP servers you install, guards risky tool calls as they happen, and hardens your Claude Code settings.</p>
+      <p class="hero-lead" data-i18n="hero.lead">It audits the plugins, skills, hooks and MCP servers you install in Claude Code and OpenAI Codex, guards risky tool calls as they happen, hardens your Claude Code settings and recommends hardening for Codex.</p>
       <p class="hero-tagline" data-i18n="hero.tagline">Local and readable, with zero dependencies. No network calls, no telemetry.</p>
       <div class="hero-ctas">
         <a class="btn btn-primary" href="#install"><svg aria-hidden="true"><use href="#i-download"/></svg><span data-i18n="hero.ctaInstall">Install</span></a>
@@ -221,7 +222,7 @@
             </tr>
             <tr>
               <th scope="row"><span class="pill pill-log">log</span><span class="pill-sub" data-i18n="how.logSub">recorded</span></th>
-              <td data-i18n="how.log">A high-risk rule matches, but no skill or plugin is behind it: you typed it yourself. Written to <code>guard.log</code>, without interrupting you.</td>
+              <td data-i18n="how.log">A high-risk rule matches, but no skill or plugin is attributed as its origin. Written to <code>guard.log</code>, without interrupting you.</td>
             </tr>
           </tbody>
         </table>
@@ -235,7 +236,7 @@
           <p><span class="t-blue">●</span> <span class="t-bold">Bash</span>(node ".../scripts/scan.mjs" --json)<br><span class="t-dim">  ⎿ </span>{ "tool": "skill-sentry", … "summary": { "components": 24, "byVerdict": { "malicious": 0, "suspicious": 1, "review": 2, "ok": 21 }, … }<br><span class="t-dim">    … +412 lines</span></p>
           <p><span class="t-blue">●</span> <span data-i18n="how.t1">24 components scanned: 21 ok, 2 review, 1 suspicious. New since the baseline:</span> <span class="t-blue">plugin:example-plugin@example-market</span>.</p>
           <div class="t-table">
-            <div class="t-row t-head"><span data-i18n="how.tCol1">Component</span><span data-i18n="how.tCol2">Verdict</span><span data-i18n="how.tCol3">Claude assessment</span></div>
+            <div class="t-row t-head"><span data-i18n="how.tCol1">Component</span><span data-i18n="how.tCol2">Verdict</span><span data-i18n="how.tCol3">Agent assessment</span></div>
             <div class="t-row"><span class="t-blue">plugin:example-plugin@example-market</span><span class="t-amber">suspicious</span><span data-i18n="how.tA1">Agree: its SessionStart hook archives ~/.ssh and uploads the file. Remove it.</span></div>
             <div class="t-row"><span class="t-blue">skill:user:release-notes</span><span class="t-dim">review</span><span data-i18n="how.tA2">Likely false positive: it only reads .env.example.</span></div>
           </div>
@@ -246,7 +247,72 @@
   </div>
 </section>
 
-<!-- 5. Tested for real -->
+<!-- 5. Codex -->
+<section id="codex" class="section">
+  <div class="wrap">
+    <p class="kicker reveal" data-i18n="codex.kicker">Also in Codex</p>
+    <h2 class="reveal" data-i18n="codex.title">Same checks, now in OpenAI Codex.</h2>
+    <p class="lead reveal" data-i18n="codex.lead">The audit reads your Codex setup, Windows and WSL included: <code>config.toml</code>, execution rules, plugins, hooks and their trust state, MCP servers, skills and <code>AGENTS.md</code>. The guard runs as a PreToolUse hook with five tiers. Codex has no “ask”, so every decision is allow or deny.</p>
+
+    <div class="how-grid">
+      <div class="reveal">
+        <table class="decisions">
+          <thead>
+            <tr><th scope="col" data-i18n="codex.thTier">Tier</th><th scope="col" data-i18n="codex.thDoes">What the guard does in Codex</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row"><span class="pill pill-deny">deny</span><span class="pill-sub" data-i18n="codex.tier1">tier 1</span></th>
+              <td data-i18n="codex.d1">A critical rule matches. Denied.</td>
+            </tr>
+            <tr>
+              <th scope="row"><span class="pill pill-deny">deny</span><span class="pill-sub" data-i18n="codex.tier2">tier 2</span></th>
+              <td data-i18n="codex.d2">A high rce, exfil, miner or destructive rule; a secret and network egress in one command; or a network-capable call after a skill or plugin call that read a secret was allowed on retry earlier in the session. Denied: if you meant it, run it yourself in a terminal.</td>
+            </tr>
+            <tr>
+              <th scope="row"><span class="pill pill-ask">retry</span><span class="pill-sub" data-i18n="codex.tier3">tier 3</span></th>
+              <td data-i18n="codex.d3">Any other high rule with a skill or plugin behind it. Denied the first time, with the reason. An identical retry in the same session within 10 minutes is allowed once.</td>
+            </tr>
+            <tr>
+              <th scope="row"><span class="pill pill-log">log</span><span class="pill-sub" data-i18n="codex.tier4">tier 4</span></th>
+              <td data-i18n="codex.d4">A high rule with no skill or plugin attributed. Logged only.</td>
+            </tr>
+            <tr>
+              <th scope="row"><span class="pill pill-deny">deny</span><span class="pill-sub" data-i18n="codex.tier5">tier 5</span></th>
+              <td data-i18n="codex.d5">Writes to skill-sentry's own files (any installed copy), or through unusual path forms. Denied.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="fails-open"><svg aria-hidden="true"><use href="#i-info"/></svg><span data-i18n="codex.patch">Patches sent through <code>apply_patch</code> are inspected too. Most patches the guard cannot read, from a file, a pipe or shell expansion, are denied. Dynamic or obfuscated shell is not analysed.</span></p>
+      </div>
+
+      <figure class="window reveal from-right" style="margin:0">
+        <div class="window-bar"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span data-i18n="codex.termLabel">Install in Codex</span></div>
+        <div class="window-body">
+          <p><span class="t-blue">$</span> <span class="t-bold">codex plugin marketplace add PauloFH/skill-sentry</span></p>
+          <p><span class="t-blue">$</span> <span class="t-bold">codex plugin add skill-sentry@skill-sentry</span></p>
+          <p class="t-dim" data-i18n="codex.untested">Installing from the public GitHub repo is not tested end to end yet. The same commands were verified against a local copy.</p>
+          <p style="margin-top:12px"><span class="t-blue">●</span> <span data-i18n="codex.trust">Then open <code>/hooks</code>, review the skill-sentry hook and trust it. Codex does not run a hook until you do, and enabling a plugin does not trust its hooks.</span></p>
+        </div>
+      </figure>
+    </div>
+
+    <aside class="mitigate reveal" style="margin-top:32px">
+      <h3 data-i18n="codex.limTitle">Main limits under Codex</h3>
+      <ul class="checks">
+        <li data-i18n="codex.lim1">No “ask”: the guard can only allow or deny.</li>
+        <li data-i18n="codex.lim2">It fails open: if the hook errors or runs past Codex's timeout, about 5 seconds, the call runs.</li>
+        <li data-i18n="codex.lim3">Until you trust the hook in <code>/hooks</code>, the guard does not run.</li>
+        <li data-i18n="codex.lim6">Commands that build names or paths at run time (<code>eval</code>, variables, globs, <code>python -c</code>) are not analysed.</li>
+        <li data-i18n="codex.lim4">Harden is recommend-only: skill-sentry never edits Codex files. <code>harden.mjs check --agent codex</code> prints snippets for you to apply.</li>
+        <li data-i18n="codex.lim5">Update both installs after each release, so the Claude Code and Codex copies match.</li>
+      </ul>
+    </aside>
+    <p class="note reveal" data-i18n="codex.note">The README lists every limit, with the WSL notes.</p>
+  </div>
+</section>
+
+<!-- 6. Tested for real -->
 <section id="tested" class="section">
   <div class="wrap">
     <p class="kicker reveal" data-i18n="tested.kicker">Tested for real</p>
@@ -265,7 +331,7 @@
   </div>
 </section>
 
-<!-- 6. Honest limits -->
+<!-- 7. Honest limits -->
 <section id="limits" class="section alt">
   <div class="wrap">
     <p class="kicker reveal" data-i18n="limits.kicker">Honest limits</p>
@@ -293,7 +359,7 @@
   </div>
 </section>
 
-<!-- 7. Install -->
+<!-- 8. Install -->
 <section id="install" class="cta">
   <div class="wrap">
     <div class="reveal">
@@ -310,6 +376,7 @@
         <button type="button" class="copy-btn" data-copy="cmd-2" aria-label="Copy command" title="Copy command" data-i18n-attr="aria-label:install.copyOne,title:install.copyOne"><svg class="i-copy" aria-hidden="true"><use href="#i-copy"/></svg><svg class="i-check" aria-hidden="true"><use href="#i-check"/></svg></button>
       </div>
       <p class="install-then" data-i18n="install.then">Paste them one at a time into Claude Code, then run <code>/skill-sentry:audit</code> for your first report.</p>
+      <p class="install-then"><a href="#codex" data-i18n="install.codex">Using Codex? Its install and the hook trust step are in the Codex section.</a></p>
       <div class="install-actions">
         <a class="btn btn-solid" href="https://github.com/PauloFH/skill-sentry#install"><svg aria-hidden="true"><use href="#i-arrow"/></svg><span data-i18n="install.guide">Full install guide</span></a>
         <p class="copy-status" id="copy-status" role="status" aria-live="polite"></p>
@@ -324,7 +391,7 @@
 
 </main>
 
-<!-- 8. Footer -->
+<!-- 9. Footer -->
 <footer id="footer" class="site-footer">
   <div class="wrap">
     <div class="footer-grid">
@@ -333,7 +400,7 @@
           <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="url(#g-blue)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4.5 6v6c0 4.6 3.2 8.2 7.5 9.4 4.3-1.2 7.5-4.8 7.5-9.4V6z"/><path d="m9 12 2.2 2.2L15.5 10"/></svg>
           <span>skill-sentry</span>
         </a>
-        <p data-i18n="footer.tagline">A second look at what you let into Claude Code.</p>
+        <p data-i18n="footer.tagline">A second look at what you let into Claude Code and Codex.</p>
         <p class="by"><span data-i18n="footer.by">Built by</span> <a href="https://paulofh.github.io/">Paulo Holanda</a></p>
       </div>
       <div>
@@ -367,22 +434,23 @@
 <script type="application/json" id="i18n">
 {
   "pt": {
-    "meta.title": "skill-sentry — audite os plugins, skills e hooks do seu Claude Code",
-    "meta.desc": "Um plugin do Claude Code sem dependências que audita plugins, skills, hooks e servidores MCP instalados em busca de comportamento malicioso, vigia chamadas de ferramentas arriscadas e reforça as suas configurações.",
+    "meta.title": "skill-sentry — audite os plugins, skills e hooks do Claude Code e do Codex",
+    "meta.desc": "Um plugin sem dependências para o Claude Code e o OpenAI Codex que audita plugins, skills, hooks e servidores MCP instalados em busca de comportamento malicioso, vigia chamadas de ferramentas arriscadas e reforça as suas configurações.",
     "nav.skip": "Pular para o conteúdo",
     "a11y.nav": "Seções",
     "nav.why": "Por quê",
     "nav.what": "Recursos",
     "nav.how": "Como funciona",
+    "nav.codex": "Codex",
     "nav.limits": "Limites",
     "nav.install": "Instalar",
     "a11y.github": "skill-sentry no GitHub",
     "a11y.lang": "Idioma",
 
-    "hero.eyebrow": "Plugin de segurança para o Claude Code",
+    "hero.eyebrow": "Plugin de segurança para o Claude Code e o Codex",
     "hero.title": "Seus plugins rodam com os seus privilégios.",
     "hero.title2": "Fique de olho neles com",
-    "hero.lead": "Ele audita os plugins, skills, hooks e servidores MCP que você instala, vigia chamadas de ferramentas arriscadas no momento em que acontecem e reforça as configurações do seu Claude Code.",
+    "hero.lead": "Ele audita os plugins, skills, hooks e servidores MCP que você instala no Claude Code e no OpenAI Codex, vigia chamadas de ferramentas arriscadas no momento em que acontecem, reforça as configurações do seu Claude Code e recomenda ajustes de segurança para o Codex.",
     "hero.tagline": "Local e legível, sem nenhuma dependência. Sem chamadas de rede, sem telemetria.",
     "hero.ctaInstall": "Instalar",
     "hero.ctaGithub": "Ver no GitHub",
@@ -453,16 +521,44 @@
     "how.askSub": "você confirma",
     "how.ask": "Uma regra de alto risco dispara e uma skill ou um plugin é a provável origem. Também sempre que algo tenta escrever nos arquivos do próprio skill-sentry, ou usa formas incomuns de caminho do Windows, como caminhos de dispositivo, caminhos UNC, nomes curtos 8.3 e fluxos NTFS.",
     "how.logSub": "registra",
-    "how.log": "Uma regra de alto risco dispara, mas nenhuma skill ou plugin está por trás: foi você quem digitou. Fica registrado no <code>guard.log</code>, sem interromper você.",
+    "how.log": "Uma regra de alto risco dispara, mas nenhuma skill ou plugin é apontado como origem. Fica registrado no <code>guard.log</code>, sem interromper você.",
     "how.failsOpen": "O resto passa sem interferência. Os dados ficam em <code>~/.claude/skill-sentry/</code>.",
     "how.termLabel": "Auditoria ilustrativa. Os nomes dos componentes são inventados.",
     "how.t1": "24 componentes analisados: 21 ok, 2 review, 1 suspicious. Novo desde a baseline:",
     "how.tCol1": "Componente",
     "how.tCol2": "Veredito",
-    "how.tCol3": "Avaliação do Claude",
+    "how.tCol3": "Avaliação do agente",
     "how.tA1": "Concordo: o hook SessionStart dele compacta o ~/.ssh e envia o arquivo. Remova.",
     "how.tA2": "Provável falso positivo: só lê o .env.example.",
     "how.t2": "Quer que eu aceite este estado como a nova baseline? Só faço isso depois do seu sim.",
+
+    "codex.kicker": "Também no Codex",
+    "codex.title": "As mesmas verificações, agora no OpenAI Codex.",
+    "codex.lead": "A auditoria lê a sua configuração do Codex, incluindo Windows e WSL: <code>config.toml</code>, regras de execução, plugins, hooks e o estado de confiança deles, servidores MCP, skills e <code>AGENTS.md</code>. A guarda roda como um hook PreToolUse com cinco níveis. O Codex não tem “ask”, então toda decisão é permitir ou negar.",
+    "codex.thTier": "Nível",
+    "codex.thDoes": "O que a guarda faz no Codex",
+    "codex.tier1": "nível 1",
+    "codex.d1": "Uma regra crítica dispara. Negado.",
+    "codex.tier2": "nível 2",
+    "codex.d2": "Uma regra alta de rce, exfil, miner ou destructive; um segredo e saída de rede no mesmo comando; ou uma chamada capaz de usar a rede depois que, antes na mesma sessão, uma chamada de skill ou plugin que leu um segredo foi liberada na nova tentativa. Negado: se era isso mesmo que você queria, execute você mesmo num terminal.",
+    "codex.tier3": "nível 3",
+    "codex.d3": "Qualquer outra regra alta com uma skill ou um plugin por trás. Negado na primeira vez, com o motivo. Uma nova tentativa idêntica na mesma sessão, em até 10 minutos, é permitida uma vez.",
+    "codex.tier4": "nível 4",
+    "codex.d4": "Uma regra alta sem nenhuma skill ou plugin apontado como origem. Só registrado.",
+    "codex.tier5": "nível 5",
+    "codex.d5": "Escritas nos arquivos do próprio skill-sentry (qualquer cópia instalada), ou por formas incomuns de caminho. Negado.",
+    "codex.patch": "Os patches enviados pelo <code>apply_patch</code> também são inspecionados. A maioria dos patches que a guarda não consegue ler, vindos de um arquivo, de um pipe ou de expansão de shell, é negada. Shell dinâmico ou ofuscado não é analisado.",
+    "codex.termLabel": "Instalação no Codex",
+    "codex.untested": "A instalação a partir do repositório público do GitHub ainda não foi testada de ponta a ponta. Os mesmos comandos foram verificados contra uma cópia local.",
+    "codex.trust": "Depois, abra <code>/hooks</code>, revise o hook do skill-sentry e confie nele. O Codex não executa um hook enquanto você não confiar, e ativar um plugin não faz o Codex confiar nos hooks dele.",
+    "codex.limTitle": "Principais limites no Codex",
+    "codex.lim1": "Sem “ask”: a guarda só pode permitir ou negar.",
+    "codex.lim2": "Ela falha aberta: se o hook der erro ou passar do tempo limite do Codex, cerca de 5 segundos, a chamada roda.",
+    "codex.lim3": "Até você confiar no hook em <code>/hooks</code>, a guarda não roda.",
+    "codex.lim6": "Comandos que montam nomes ou caminhos em tempo de execução (<code>eval</code>, variáveis, globs, <code>python -c</code>) não são analisados.",
+    "codex.lim4": "O harden só recomenda: o skill-sentry nunca edita arquivos do Codex. O <code>harden.mjs check --agent codex</code> mostra trechos para você aplicar.",
+    "codex.lim5": "Atualize as duas instalações a cada versão, para que as cópias do Claude Code e do Codex fiquem iguais.",
+    "codex.note": "O README lista todos os limites, com as observações sobre o WSL.",
 
     "tested.kicker": "Testado de verdade",
     "tested.title": "Rodado numa instalação real, não só em fixtures.",
@@ -494,11 +590,12 @@
     "install.note": "Este repositório é ao mesmo tempo o plugin e o seu próprio marketplace. Requer Node 18 ou superior.",
     "install.copyOne": "Copiar comando",
     "install.guide": "Guia completo de instalação",
+    "install.codex": "Usa o Codex? A instalação dele e a etapa de confiar no hook estão na seção do Codex.",
     "install.then": "Cole um de cada vez no Claude Code e depois rode <code>/skill-sentry:audit</code> para ver o seu primeiro relatório.",
     "ui.copied": "Copiado para a área de transferência",
     "ui.selected": "Selecionado. Tecle Ctrl+C para copiar.",
 
-    "footer.tagline": "Uma segunda olhada no que você deixa entrar no Claude Code.",
+    "footer.tagline": "Uma segunda olhada no que você deixa entrar no Claude Code e no Codex.",
     "footer.by": "Feito por",
     "footer.project": "Projeto",
     "footer.source": "Código-fonte no GitHub",

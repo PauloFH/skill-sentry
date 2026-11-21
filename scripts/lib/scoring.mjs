@@ -1,5 +1,8 @@
 const WEIGHT = { critical: 40, high: 15, medium: 5, info: 0 };
 const ESCALATES_OBF = new Set(['rce', 'exfil', 'secret']);
+// A credential stored in config is not code that reads secrets: it never feeds the combination
+// escalations (secret + exfil -> critical, obfuscation + secret -> high). Ruling R10.
+const NO_COMBINATION = new Set(['CODEX_SECRET_IN_CONFIG']);
 
 /**
  * Turn findings into a score and verdict, applying per-file combination escalation.
@@ -12,7 +15,7 @@ export function scoreComponent(findings) {
   const catsByFile = new Map();
   for (const f of findings) {
     if (!catsByFile.has(f.file)) catsByFile.set(f.file, new Set());
-    catsByFile.get(f.file).add(f.category);
+    if (!NO_COMBINATION.has(f.ruleId)) catsByFile.get(f.file).add(f.category);
   }
   const out = findings.map(f => {
     const cats = catsByFile.get(f.file);

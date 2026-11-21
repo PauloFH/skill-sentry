@@ -14,6 +14,8 @@ Skills e plugins de terceiros são código e instruções que rodam com os seus 
 
 Requer Node 18 ou superior. Sem dependências npm.
 
+Desde a 0.1.1 ele também funciona no OpenAI Codex: veja [Suporte ao Codex](#suporte-ao-codex).
+
 ## Modelo de ameaça e limites honestos
 
 O skill-sentry é um segundo par de olhos, não um escudo. Leia isto antes de confiar nele.
@@ -44,7 +46,7 @@ Este repositório é ao mesmo tempo o plugin e o seu próprio marketplace.
 /skill-sentry:audit
 ```
 
-O Claude executa o scanner e apresenta um resumo (componentes por veredito, o que mudou desde a baseline), cada problema encontrado ao ler as configurações e uma tabela para cada componente que não seja `ok`. O veredito do scanner nunca é rebaixado: se o Claude discordar, ele acrescenta a própria opinião em uma coluna separada "Claude assessment", e você vê sempre as duas. Texto copiado dos arquivos analisados é tratado como dado não confiável e nunca é seguido como instrução.
+O Claude executa o scanner e apresenta um resumo (componentes por veredito, o que mudou desde a baseline), cada problema encontrado ao ler as configurações e uma tabela para cada componente que não seja `ok`. O veredito do scanner nunca é rebaixado: se o Claude discordar, ele acrescenta a própria opinião em uma coluna separada "Agent assessment", e você vê sempre as duas. Texto copiado dos arquivos analisados é tratado como dado não confiável e nunca é seguido como instrução.
 
 Os vereditos vêm de uma pontuação: achados críticos valem 40, altos 15, médios 5. Cada regra conta uma vez por componente, na sua maior severidade, e a pontuação é limitada a 100.
 
@@ -100,8 +102,8 @@ A guarda é um hook PreToolUse instalado com o plugin. Ela observa chamadas de B
 | Decisão | Quando |
 | --- | --- |
 | deny | Uma regra crítica casa (por exemplo, pipes de baixar e executar, shells reversos, execução de mineradores de criptomoedas, apagamento de disco ou do diretório pessoal). Sempre bloqueado, a menos que você tenha colocado aquele comando exato na allowlist. |
-| ask | Uma regra de risco alto casa e uma skill ou plugin é a origem provável da chamada. Também sempre para escritas no diretório de dados ou de instalação do próprio skill-sentry, comandos de shell que mencionam esses diretórios e escritas por formas incomuns de caminho do Windows (caminhos de dispositivo, caminhos UNC, nomes curtos 8.3, streams NTFS, ponto ou espaço no final). |
-| log | Uma regra de risco alto casa, mas nenhuma skill ou plugin é a origem provável (você mesmo digitou). Registrado em `guard.log`, sem interrupção. |
+| ask | Uma regra de risco alto casa e uma skill ou plugin é a origem provável da chamada. Também sempre para escritas no diretório de dados ou de instalação do próprio skill-sentry (ou em qualquer outra cópia instalada do skill-sentry, como a instalada para o Codex), comandos de shell que mencionam esses diretórios e escritas por formas incomuns de caminho do Windows (caminhos de dispositivo, caminhos UNC, nomes curtos 8.3, streams NTFS, ponto ou espaço no final). |
+| log | Uma regra de risco alto casa, mas nenhuma skill ou plugin é apontado como origem provável. Registrado em `guard.log`, sem interrupção. |
 
 Se a própria guarda falhar, ela falha aberta: grava uma linha em `guard.log` e deixa a chamada seguir, em vez de quebrar a sua sessão.
 
@@ -119,11 +121,102 @@ Uma entrada fica atrelada ao sha256 daquele arquivo, então **deixa de valer ass
 
 Se o comando `skillspector` estiver instalado, a auditoria pode oferecer uma segunda opinião com ele. O skill-sentry nunca o instala.
 
+## Suporte ao Codex
+
+A versão 0.1.1 do skill-sentry leva a mesma auditoria e a mesma guarda para o OpenAI Codex, além de um harden que só recomenda.
+
+### O que a auditoria cobre no Codex
+
+- `config.toml`: configurações de aprovação e sandbox, servidores MCP, segredos literais, projetos confiáveis, a política de ambiente do shell
+- arquivos de política de execução `rules/*.rules`
+- plugins e os hooks que eles trazem, junto com o estado de confiança de cada hook
+- servidores MCP
+- skills, incluindo `~/.agents/skills`
+- arquivos de instruções `AGENTS.md`
+- o programa `notify`
+
+Os diretórios do Codex no Windows e no WSL são detectados automaticamente. Escolha o que auditar com `--agent claude|codex|all` (padrão `all`), adicione um diretório com `--codex-home <dir>` (repetível) e pule o WSL com `--no-wsl`:
+
+```
+node scripts/scan.mjs --agent codex
+node scripts/scan.mjs --agent all --codex-home <dir> --no-wsl
+```
+
+### Instalação no Codex
+
+```
+codex plugin marketplace add PauloFH/skill-sentry
+codex plugin add skill-sentry@skill-sentry
+```
+
+A instalação a partir do repositório público do GitHub ainda não foi testada de ponta a ponta. Os mesmos dois comandos foram verificados contra uma cópia local deste repositório.
+
+Depois, **confie no hook da guarda**. O Codex não executa um hook enquanto você não confiar nele, e ativar um plugin não faz o Codex confiar nos hooks dele. Abra `/hooks` no Codex (ou "Review hooks" no app desktop), revise o hook do skill-sentry e confie nele. Até você fazer isso, a guarda não roda. Confie de novo a cada atualização, porque um hook alterado aparece como `modified`.
+
+Em seguida, peça ao Codex que execute a auditoria do skill-sentry para ver o seu primeiro relatório. Isso foi verificado só no Codex do WSL. No Codex do Windows, pode ser preciso você aprovar os comandos de shell que ele executa.
+
+### Guarda no Codex
+
+Aqui a guarda também é um hook PreToolUse. O Codex não tem "ask", então ela só pode permitir ou negar. Os níveis são:
+
+| Nível | Quando | Comportamento no Codex |
+| --- | --- | --- |
+| 1 | Uma regra crítica casa | deny |
+| 2 | Uma regra alta de rce, exfil, miner ou destructive; um segredo e saída de rede no mesmo comando; uma chamada capaz de usar a rede depois que, antes na mesma sessão, uma chamada atribuída a uma skill ou plugin leu um segredo e foi liberada na nova tentativa | deny. Se era isso mesmo que você queria, execute você mesmo num terminal. |
+| 3 | Qualquer outra regra alta com origem atribuída (uma skill ou plugin) | negado na primeira vez, com o motivo. Uma nova tentativa idêntica na mesma sessão, em até 10 minutos, é permitida uma vez. |
+| 4 | Uma regra alta sem nenhuma skill ou plugin apontado como origem | só registrado |
+| 5 | Escritas nos arquivos do próprio skill-sentry (qualquer cópia instalada) ou formas incomuns de caminho | deny |
+
+Os patches do `apply_patch` também são inspecionados. A maioria dos patches que a guarda não consegue ler é negada: os que vêm de um arquivo ou de um pipe, ou que usam expansão de shell. Um comando de patch escondido atrás de shell dinâmico ou ofuscado (veja os limites abaixo) não é detectado.
+
+### Limites no Codex
+
+- O Codex não tem "ask": a guarda só pode permitir ou negar.
+- Ela falha aberta: se o hook der erro ou passar do tempo limite do Codex (cerca de 5 segundos), a chamada roda.
+- Hooks precisam de confiança (`/hooks`). A flag `dangerously-bypass-hook-trust` do Codex desliga essa proteção.
+- A nova tentativa do nível 3 é confirmada pelo modelo, não por você.
+- Entrada interativa enviada a um shell em execução (`write_stdin`) não passa pelo hook.
+- Comandos que montam nomes ou caminhos em tempo de execução não são analisados: `eval`, variáveis, globs, comandos de uma linha de interpretador como `python -c`, ou um script escrito numa chamada e executado numa chamada seguinte.
+- A atribuição de origem se perde quando mais de cerca de 1 MiB de saída vem depois da leitura da skill na sessão; a chamada passa a contar como nível 4.
+- No WSL, se a sessão começar em `/mnt/c` e a sua toolchain de node (por exemplo, o mise) se recusar a iniciar ali, a guarda falha aberta. Comece a sessão em `/home/...`.
+- O Codex do WSL e o do Windows mantêm dados separados do skill-sentry (taint, baseline, allowlist).
+- Com o sandbox `workspace-write`, a auditoria precisa da sua aprovação para gravar o relatório em `~/.claude/skill-sentry`.
+- Ler o `SKILL.md` do próprio skill-sentry por um comando de shell encadeado (`cd ... && cat ...`) pode ser negado. A leitura simples funciona.
+- Mencionar um caminho `skill-sentry` solto num comando de shell ainda pode gerar um pedido de confirmação no Claude Code (autoproteção).
+
+### Harden no Codex
+
+```
+node scripts/harden.mjs check --agent codex
+```
+
+O `check` sem flag continua só para o Claude. O harden do Codex **só recomenda**: o skill-sentry nunca edita arquivos do Codex. Cada recomendação traz um trecho para você aplicar por conta própria:
+
+| Id | O que recomenda |
+| --- | --- |
+| `approval-sandbox` | Manter `approval_policy` e `sandbox_mode` nos padrões com sandbox e pedido de aprovação |
+| `broad-allow-rules` | Trocar regras de allow da política de execução que terminam num shell ou interpretador por regras de prompt |
+| `secrets-in-config` | Tirar segredos literais do `config.toml` e referenciar uma variável de ambiente |
+| `env-excludes` | Manter as exclusões de ambiente padrão, para que variáveis com cara de segredo não sejam passadas aos comandos |
+| `mcp-auto-approve` | Não aprovar servidores ou ferramentas MCP automaticamente |
+| `approvals-reviewer` | Manter `approvals_reviewer` em `user` |
+| `trusted-tmp-projects` | Não confiar em projetos que ficam em diretórios temporários |
+| `hooks-enabled` | Manter os hooks do Codex ativos, para a guarda poder rodar |
+| `trust-guard-hook` | Confiar no hook do skill-sentry em `/hooks` |
+
+### Duas instalações, uma versão
+
+Se o Claude Code e o Codex rodarem versões diferentes do skill-sentry, um scanner mais novo reconhece versões anteriores e mostra um aviso de "atualize as duas instalações". Um scanner mais antigo pode apontar a cópia mais nova como suspicious ou malicious (um falso positivo) até as duas instalações serem atualizadas. **Atualize as duas instalações** a cada versão nova.
+
+### skills.sh
+
+Ainda não é suportado (previsto): o skills.sh copia só a pasta da skill, então não consegue instalar o hook da guarda.
+
 ## Dados e privacidade
 
 - **Sem chamadas de rede e sem telemetria.** Tudo roda localmente.
 - Ele grava somente em `~/.claude/skill-sentry/`: `baseline.json`, `allowlist.json`, `guard.log` e `reports/`. A única exceção é o `harden`, que edita o seu `settings.json` após aprovação, com backup.
-- Variáveis de ambiente (principalmente para testes): `SKILL_SENTRY_DATA_DIR` (diretório de dados), `SKILL_SENTRY_CLAUDE_HOME` (padrão `~/.claude`), `SKILL_SENTRY_HOME_DIR` (de onde `~/.claude.json` é lido).
+- Variáveis de ambiente (principalmente para testes): `SKILL_SENTRY_DATA_DIR` (diretório de dados), `SKILL_SENTRY_CLAUDE_HOME` (padrão `~/.claude`), `SKILL_SENTRY_HOME_DIR` (de onde `~/.claude.json` é lido), `SKILL_SENTRY_CODEX_HOME` (substitui o diretório padrão do Codex) e `SKILL_SENTRY_NO_WSL=1` (não procura diretórios do Codex dentro do WSL).
 
 ## Validação
 
