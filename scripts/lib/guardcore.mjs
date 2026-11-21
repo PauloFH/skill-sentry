@@ -442,7 +442,22 @@ const GROUPING_TOKENS = new Set(['{', '(', '&', '.']);
 // `pwsh -c` script) that creates or removes a drive can redefine even a real letter. Any such token asks,
 // module-qualified too (`Microsoft.PowerShell.Management\New-PSDrive`).
 const PS_DRIVE_TOKEN = /^[({@&.]*(?:microsoft\.powershell\.management\/)?(?:new-psdrive|ndr|mount|remove-psdrive|rdr)[)};]*$/i;
-const changesPsDrive = script => shellWords(script, true).some(w => w.value.split(/[\s;|&]+/).some(t => PS_DRIVE_TOKEN.test(t)));
+// The cmdlet names (and module-qualified forms) count anywhere; the short aliases are everyday words.
+const PS_DRIVE_EXPLICIT = /new-psdrive|remove-psdrive|microsoft\.powershell\.management\//i;
+const PIPE_BEFORE = /(?:^|[^|])\|\s*$/;
+/**
+ * Final review I2: `mount`, `ndr` and `rdr` (in `git commit -m "fix mount"`, `findstr mount`, `npm run ndr`)
+ * count only as a command, with arguments or fed by a pipe (bare `mount` cannot create a drive without its
+ * mandatory parameters); anywhere only when the text can build a command at run time (psDynamicCore).
+ */
+function changesPsDrive(script) {
+  const words = shellWords(script, true);
+  const tokens = w => w.value.split(/[\s;|&]+/).filter(t => PS_DRIVE_TOKEN.test(t));
+  if (words.some(w => tokens(w).some(t => PS_DRIVE_EXPLICIT.test(t)))) return true;
+  if (psDynamicCore(script)) return words.some(w => tokens(w).length > 0);
+  return words.some((w, k) => w.cmd && PS_DRIVE_TOKEN.test(w.value)
+    && ((k + 1 < words.length && !words[k + 1].cmd) || PIPE_BEFORE.test(script.slice(0, w.start))));
+}
 
 // Ruling R14 (X5): a drive can also be made with no drive token in sight: an alias or `iex` of a name built
 // at run time (`sal zq ('New-PS'+'Drive')`), the call operator, `gcm` wildcards, dot-sourcing, or the .NET
@@ -455,8 +470,12 @@ const RUNS_PWSH = /(?:^|[\s;|&('"/\\])(?:pwsh|powershell)(?:\.exe)?(?=$|[\s;|&)'
 const PS_DYNAMIC_CHAR = /[$({[@+`]/;
 const PS_DOT_SOURCE = /(?:^|[;|{(\r\n]|&&)\s*\.(?=[\s'"])/;
 const PS_DYNAMIC_WORD = /(?<![\w-])(?:(?:iex|invoke-expression|invoke-command|icm|sal|set-alias|nal|new-alias|gcm|get-command|new-object|add-type|new-psdrive|ndr|mount|remove-psdrive|rdr)(?![\w-])|(?:alias|function):)/i;
+// The same without the drive words themselves (I2: a drive word must not make its own text "dynamic").
+const PS_DYNAMIC_WORD_CORE = /(?<![\w-])(?:(?:iex|invoke-expression|invoke-command|icm|sal|set-alias|nal|new-alias|gcm|get-command|new-object|add-type)(?![\w-])|(?:alias|function):)/i;
+const psDynamicWith = words => c => PS_DYNAMIC_CHAR.test(c) || /(?<!>)&/.test(c.replace(/&&/g, '  ')) || PS_DOT_SOURCE.test(c) || words.test(c);
 /** PowerShell text that can build a command at run time (call operator `&`, not `&&` or `2>&1`). */
-const psDynamic = c => PS_DYNAMIC_CHAR.test(c) || /(?<!>)&/.test(c.replace(/&&/g, '  ')) || PS_DOT_SOURCE.test(c) || PS_DYNAMIC_WORD.test(c);
+const psDynamic = psDynamicWith(PS_DYNAMIC_WORD);
+const psDynamicCore = psDynamicWith(PS_DYNAMIC_WORD_CORE);
 const CLAUDE_SEGMENT = /(?:^|[^\w.-])\.claude[. ]*(?=$|[^\w.-])/i;
 
 /** A glob component (`.cl*`, `.c?aude`, `.cl{a,}ude`, `[.]claude`) that can match `.claude`. */

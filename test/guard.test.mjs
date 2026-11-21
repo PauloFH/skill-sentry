@@ -1462,6 +1462,35 @@ test('guard p50 under 150ms for a none decision', async () => {
   assert.ok(median < 150, `median ${median.toFixed(1)} ms`);
 });
 
+// ---------------------------------------------------------------- final review I2: R14 drive words
+test('I2: mount/ndr/rdr count only as PowerShell commands; plain text mentions do not ask', () => {
+  for (const c of [
+    'rg -n "mount" src',
+    'git commit -m "fix mount handling"',
+    'echo "mount the volume"',
+    'kubectl get pv | findstr mount',
+    'npm run ndr',
+    'mount',
+    'git log --grep=rdr',
+    'docker run --mount type=bind,src=C:/a,dst=/a img',
+  ]) noneSelf('PowerShell', c);
+  const home = fwdSlash(os.homedir());
+  for (const c of [
+    `mount C FileSystem ${home}`,
+    `ndr -Name C -PSProvider FileSystem -Root ${home}`,
+    'git status; rdr C -Force',
+    'Get-PSDrive C | rdr',
+    'Import-Csv drives.csv | mount',
+    'echo New-PSDrive',
+    'Write-Output Remove-PSDrive',
+    `Microsoft.PowerShell.Management\\ndr C FileSystem ${home}`,
+    `$n = 'C'; ndr $n FileSystem ${home}`,
+    'iex "mount C FileSystem D:/x"',
+    'echo "x" | & { rdr C }',
+    `M\`ount C FileSystem ${home}`,
+  ]) asksSelf('PowerShell', c);
+});
+
 // ---------------------------------------------------------------- final review C1: sibling installs
 // The Claude guard must also protect a skill-sentry copy installed for Codex (and any plugin-cache copy),
 // although it is neither its own install dir nor under ~/.claude. Paths are only resolved, never written.

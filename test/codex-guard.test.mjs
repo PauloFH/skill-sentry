@@ -1253,6 +1253,19 @@ test('codex on Windows (R15): drive-table changes still deny under the PowerShel
     assert.match(assertDeny(JSON.parse(r.stdout), command), RUN_YOURSELF, command);
   }
 });
+test('codex on Windows (I2): everyday commands that mention mount/ndr words are not denied', { skip: process.platform !== 'win32' }, async () => {
+  for (const command of [
+    'rg -n "mount" src', 'git commit -m "fix mount handling"', 'echo "mount the volume"',
+    'kubectl get pv | findstr mount', 'npm run ndr', 'mount',
+  ]) {
+    const r = await runGuard(codex('Bash', { command }));
+    assert.equal(r.stdout, '', command);
+  }
+  for (const command of ['Get-PSDrive C | rdr', 'mount C FileSystem D:\\']) {
+    const r = await runGuard(codex('Bash', { command }));
+    assert.match(assertDeny(JSON.parse(r.stdout), command), RUN_YOURSELF, command);
+  }
+});
 test('codex on Windows (R15): backslash checkout paths of a skill-sentry folder are not self-protect', { skip: process.platform !== 'win32' }, async () => {
   for (const command of ['Get-Content C:\\Users\\x\\skill-sentry\\README.md', 'Get-ChildItem "C:\\src\\skill-sentry\\scripts"']) {
     const r = await runGuard(codex('Bash', { command }));
