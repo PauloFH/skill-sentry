@@ -782,6 +782,18 @@ export function formatReason(d, originLabel, summary) {
   return s;
 }
 
+/**
+ * Ruling R23: whether `originToComponentId` could map this origin onto a plugin named skill-sentry (a
+ * `skill-sentry:<skill>` skill, MCP plugin `skill-sentry`, or a qualified MCP name starting `skill-sentry_`).
+ * Only then does the guard need to know whether an installed skill-sentry copy is self.
+ */
+export function originMayNameSkillSentry(origin) {
+  if (!origin || typeof origin !== 'object') return false;
+  const name = 'skill-sentry';
+  if (str(origin.mcpPlugin)) return origin.mcpPlugin === name || (str(origin.mcpQualified) && origin.mcpQualified.startsWith(`${name}_`));
+  return str(origin.skill) && origin.skill.startsWith(`${name}:`);
+}
+
 /** Map an origin onto an inventoried component id (skill-sentry itself is never returned). */
 export function originToComponentId(origin, components) {
   if (!origin || !Array.isArray(components)) return null;

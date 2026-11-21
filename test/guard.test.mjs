@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { extractTargets, decide, formatReason, scanSummary, originToComponentId, isUnusualPath } from '../scripts/lib/guardcore.mjs';
+import { extractTargets, decide, formatReason, scanSummary, originToComponentId, originMayNameSkillSentry, isUnusualPath } from '../scripts/lib/guardcore.mjs';
 import { findOrigin } from '../scripts/lib/origin.mjs';
 import { discover } from '../scripts/lib/inventory.mjs';
 import { tmpFactory, removeTree } from './helpers/tmp.mjs';
@@ -1378,6 +1378,38 @@ test('guard (L1): deny skips the component check; an expired budget skips it for
     { env, deadline: Date.now() - 1 });
   assert.equal(ask.out.permissionDecision, 'ask');
   assert.ok(ask.out.permissionDecisionReason.includes('component check skipped (time budget)'), ask.out.permissionDecisionReason);
+});
+
+test('originMayNameSkillSentry (R23): only an origin that can map onto a plugin named skill-sentry', () => {
+  for (const o of [{ skill: 'skill-sentry:audit' }, { mcpPlugin: 'skill-sentry' }, { mcpPlugin: 'other', mcpQualified: 'skill-sentry_srv' }]) {
+    assert.equal(originMayNameSkillSentry(o), true, JSON.stringify(o));
+  }
+  for (const o of [null, {}, { skill: 'evil:helper' }, { skill: 'skill-sentry' }, { skill: 'skill-sentry-x:y' },
+    { mcpPlugin: 'evil', mcpQualified: 'evil_srv' }, { mcpPlugin: 'skill-sentry-x', mcpQualified: 'skill-sentry-x_srv' }]) {
+    assert.equal(originMayNameSkillSentry(o), false, JSON.stringify(o));
+  }
+});
+
+test('guard (L1, I1): an attributed ask stays within budget with a planted skill-sentry copy full of markers', async () => {
+  const h = fakeHome();
+  const planted = path.join(h.claudeHome, 'plugins', 'cache', 'x', 'skill-sentry', '9.9.9');
+  fs.mkdirSync(path.join(planted, '.claude-plugin'), { recursive: true });
+  fs.mkdirSync(path.join(planted, 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(planted, '.in_use'), { recursive: true });
+  fs.writeFileSync(path.join(planted, '.claude-plugin', 'plugin.json'), '{"name":"skill-sentry","version":"9.9.9"}');
+  fs.writeFileSync(path.join(planted, 'scripts', 'guard.mjs'), '// not ours\n');
+  for (let i = 0; i < 3000; i++) fs.writeFileSync(path.join(planted, '.in_use', String(i)), '{}');
+  const ip = path.join(h.claudeHome, 'plugins', 'installed_plugins.json');
+  const installed = JSON.parse(fs.readFileSync(ip, 'utf8'));
+  installed.plugins['skill-sentry@x'] = [{ scope: 'user', installPath: planted, version: '9.9.9' }];
+  fs.writeFileSync(ip, JSON.stringify(installed));
+  const t0 = Date.now();
+  const ask = await handleWith({ tool_name: 'Read', tool_input: { file_path: path.join(h.home, '.ssh', 'id_ed25519') }, transcript_path: T('skill-then-bash.jsonl'), cwd: h.project },
+    { env: { SKILL_SENTRY_CLAUDE_HOME: h.claudeHome, SKILL_SENTRY_HOME_DIR: h.home }, deadline: Date.now() + 1500 });
+  const ms = Date.now() - t0;
+  assert.equal(ask.out.permissionDecision, 'ask');
+  assert.ok(ask.out.permissionDecisionReason.includes('likely source: plugin:evil@mkt; component verdict: ok'), ask.out.permissionDecisionReason);
+  assert.ok(ms < 1500, `${ms} ms`);
 });
 
 test('guard main: an unwritable guard.log does not stop the deny', async () => {

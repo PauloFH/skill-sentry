@@ -1,7 +1,7 @@
 // Hook handling for guard.mjs, kept out of the entry script so guard.mjs can load it inside a try.
 import os from 'node:os';
 import path from 'node:path';
-import { decide, formatReason, scanSummary, originToComponentId } from './guardcore.mjs';
+import { decide, formatReason, scanSummary, originToComponentId, originMayNameSkillSentry } from './guardcore.mjs';
 import { findOrigin } from './origin.mjs';
 import { dataDirPath } from './datadir.mjs';
 import { loadAllowlist, isFindingAllowed } from './allowlist.mjs';
@@ -29,8 +29,9 @@ async function checkComponent(origin, cwd, selfRoot, deadline) {
   const claudeHome = path.resolve(process.env.SKILL_SENTRY_CLAUDE_HOME || path.join(os.homedir(), '.claude'));
   const homeDir = path.resolve(process.env.SKILL_SENTRY_HOME_DIR || os.homedir());
   const projectDir = typeof cwd === 'string' && cwd ? path.resolve(cwd) : undefined;
-  // Skill folders are not walked here: only the attributed component is scanned below.
-  const { components } = discover({ claudeHome, homeDir, projectDir, selfRoot, deadline, skillFiles: false });
+  // Skill folders are not walked here: only the attributed component is scanned below. The skill-sentry copy
+  // check runs only when the origin could name a plugin called skill-sentry (R23): elsewhere `self` is moot.
+  const { components } = discover({ claudeHome, homeDir, projectDir, selfRoot, deadline, skillFiles: false, copyChecks: originMayNameSkillSentry(origin) });
   const id = originToComponentId(origin, components);
   if (!id) return { id: null, summary: Date.now() >= deadline ? SKIPPED() : null };
   if (Date.now() >= deadline) return { id, summary: SKIPPED() };

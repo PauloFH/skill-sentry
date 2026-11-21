@@ -26,12 +26,16 @@ export const lfBytes = buf => Buffer.from(buf.toString('latin1').replace(/\r\n/g
 /** SHA-256 (hex) of the LF-normalised bytes: the hash stored in KNOWN_RELEASES. */
 export const lfSha256 = buf => crypto.createHash('sha256').update(lfBytes(buf)).digest('hex');
 
-// Claude Code writes `.in_use/<pid>` (a 48-byte JSON lock: pid and process start time) into every plugin
-// cache dir it has loaded. Only that exact shape is ignored: a top-level `.in_use` dir, a digits-only name, a
-// small regular file. Anything else there (another name, a subdir, a bigger file) is an unknown file.
-const INSTALL_MARKER = /^\.in_use\/\d{1,10}$/;
-const INSTALL_MARKER_MAX_BYTES = 256;
-const isInstallMarker = (rel, size) => INSTALL_MARKER.test(rel) && size <= INSTALL_MARKER_MAX_BYTES;
+// Claude Code writes `.in_use/<pid>` into every plugin cache dir it has loaded: a JSON lock of exactly the form
+// {"pid":<pid>,"procStartFt":"<digits>"} (48 bytes as seen; the pid equals the file name). Only that exact shape
+// is left out of a tree: a top-level `.in_use` dir, a digits-only name, content matching the form byte for byte
+// (read with a bounded read), at most MAX_MARKERS files and MAX_MARKER_BYTES in total. Anything else (another
+// name or content, a subdir, one marker too many) makes the tree unknown, so markers can never carry a payload.
+const INSTALL_MARKER = /^\.in_use\/(\d{1,10})$/;
+const MARKER_BODY = /^\{"pid":(\d{1,10}),"procStartFt":"\d{1,20}"\}$/;
+const MARKER_MAX_SIZE = 64;
+const MAX_MARKERS = 16;
+const MAX_MARKER_BYTES = 4096;
 
 // Never shipped: VCS and gitignored dev dirs of a checkout. Skipped on the running scanner's side only (it may
 // run from a dev checkout); on the side of the copy under inspection they are files like any other.
@@ -41,31 +45,78 @@ const late = deadline => deadline !== undefined && Date.now() >= deadline;
 const abs = (root, rel) => path.join(root, ...rel.split('/'));
 
 /**
- * Regular files under `root` as a Map of relpath (`/`-separated) -> size, without reading any file.
- * null when the tree cannot be vouched for: a link or special file, a read error, a limit or `deadline` hit,
- * or (with `allowed`) the first file whose relpath is not in `allowed`. Install markers are left out.
- * Directories in `skipDirs` (relpaths) are not entered. Never throws.
+ * Bytes of `file` when it is still a regular file of exactly `size` bytes (the size seen when listing), else
+ * null. The descriptor is checked with fstat after opening (a file swapped or resized since the listing does
+ * not match) and at most `size` bytes are read. Never throws.
+ */
+export function readListed(file, size) {
+  if (!Number.isInteger(size) || size < 0) return null;
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const st = fs.fstatSync(fd);
+    if (!st.isFile() || st.size !== size) return null;
+    const buf = Buffer.alloc(size);
+    for (let off = 0; off < size;) {
+      const n = fs.readSync(fd, buf, off, size - off, off);
+      if (n === 0) return null; // shrank while reading
+      off += n;
+    }
+    return buf;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch { /* already closed */ }
+  }
+}
+
+/** True for a Claude Code in-use marker of exactly the expected shape (see INSTALL_MARKER). */
+function isInstallMarker(root, rel, size) {
+  const m = INSTALL_MARKER.exec(rel);
+  if (!m || size > MARKER_MAX_SIZE) return false;
+  const body = MARKER_BODY.exec(readListed(abs(root, rel), size)?.toString('latin1') ?? '');
+  return body !== null && body[1] === m[1];
+}
+
+/**
+ * Regular files under `root` as a Map of relpath (`/`-separated) -> size. Only install markers are read
+ * (bounded); they are left out of the Map. null when the tree cannot be vouched for: a link or special file, a
+ * read error, a limit (files, dirs, bytes, markers) or `deadline` hit (checked on every entry), or (with
+ * `allowed`) the first file whose relpath is not in `allowed`. Directories in `skipDirs` (relpaths) are not
+ * entered. Never throws.
  */
 export function shippedFiles(root, { allowed = null, skipDirs = null, limits = COPY_LIMITS, deadline } = {}) {
   const { maxFiles, maxDirs, maxBytes } = { ...COPY_LIMITS, ...limits };
   const out = new Map();
   let dirs = 0;
   let bytes = 0;
+  let markers = 0;
+  let markerBytes = 0;
   const stack = [''];
   try {
     while (stack.length) {
       if (late(deadline) || ++dirs > maxDirs) return null;
       const rel = stack.pop();
-      for (const e of fs.readdirSync(rel ? abs(root, rel) : root, { withFileTypes: true })) {
-        const r = rel ? `${rel}/${e.name}` : e.name;
-        if (e.isDirectory()) { if (!skipDirs?.has(r)) stack.push(r); continue; }
-        if (!e.isFile()) return null; // symlink, junction, FIFO, socket, device
-        const st = fs.lstatSync(abs(root, r));
-        if (!st.isFile()) return null;
-        if (isInstallMarker(r, st.size)) continue;
-        if (allowed && !allowed.has(r)) return null;
-        if (out.size >= maxFiles || (bytes += st.size) > maxBytes) return null;
-        out.set(r, st.size);
+      // Iterated entry by entry (not readdirSync): a huge directory is abandoned as soon as a check fails.
+      const dir = fs.opendirSync(rel ? abs(root, rel) : root);
+      try {
+        for (let e = dir.readSync(); e !== null; e = dir.readSync()) {
+          if (late(deadline)) return null;
+          const r = rel ? `${rel}/${e.name}` : e.name;
+          if (e.isDirectory()) { if (!skipDirs?.has(r)) stack.push(r); continue; }
+          if (!e.isFile()) return null; // symlink, junction, FIFO, socket, device
+          const st = fs.lstatSync(abs(root, r));
+          if (!st.isFile()) return null;
+          if (INSTALL_MARKER.test(r)) {
+            if (++markers > MAX_MARKERS || (markerBytes += st.size) > MAX_MARKER_BYTES) return null;
+            if (isInstallMarker(root, r, st.size)) continue;
+          }
+          if (allowed && !allowed.has(r)) return null;
+          if (out.size >= maxFiles || (bytes += st.size) > maxBytes) return null;
+          out.set(r, st.size);
+        }
+      } finally {
+        dir.closeSync();
       }
     }
   } catch {
@@ -96,11 +147,11 @@ export function isCopyOfSelf(root, selfRoot, { limits = COPY_LIMITS, deadline } 
     const theirs = shippedFiles(root, { allowed: new Set(mine.keys()), limits, deadline });
     if (!theirs || theirs.size !== mine.size) return false;
     for (const [rel, size] of theirs) if (!sameUpToEol(size, mine.get(rel))) return false;
-    for (const rel of theirs.keys()) {
+    for (const [rel, size] of theirs) {
       if (late(deadline)) return false;
-      const x = fs.readFileSync(abs(root, rel));
-      const y = fs.readFileSync(abs(selfRoot, rel));
-      if (!x.equals(y) && !lfBytes(x).equals(lfBytes(y))) return false;
+      const x = readListed(abs(root, rel), size);
+      const y = readListed(abs(selfRoot, rel), mine.get(rel));
+      if (!x || !y || (!x.equals(y) && !lfBytes(x).equals(lfBytes(y)))) return false;
     }
     return true;
   } catch {
@@ -141,8 +192,8 @@ export function knownRelease(root, { releases = { hashes: KNOWN_RELEASES, sizes:
       }
       for (const n of names) {
         if (late(deadline)) return null;
-        const buf = fs.readFileSync(abs(root, n));
-        if (buf.length > 2 * sizes[v][n] || lfSha256(buf) !== hashes[v][n]) continue candidates;
+        const buf = readListed(abs(root, n), files.get(n)); // size already within [lfSize, 2*lfSize]
+        if (!buf || lfSha256(buf) !== hashes[v][n]) continue candidates;
       }
       return v;
     }

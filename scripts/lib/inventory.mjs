@@ -175,8 +175,10 @@ function redactRaw(raw, extra = {}) {
  * - Hook index `n` counts within one event across all matcher groups of one source; the user
  *   (or project) `settings.json` and `settings.local.json` form a single source, read in that order.
  * - `releases` replaces the embedded known-release table (tests only; see selfcopy.mjs).
+ * - `copyChecks: false` skips the skill-sentry copy / known-release check (only a real-path match is self):
+ *   the guard passes it when the origin cannot name a plugin called skill-sentry (Ruling R23).
  */
-export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits, deadline, skillFiles = true, releases }) {
+export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits, deadline, skillFiles = true, releases, copyChecks = true }) {
   const components = [];
   const configFindings = [];
   const seen = new Set();
@@ -281,7 +283,7 @@ export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits, de
     };
     // The name only decides whether the copy check runs; the running scanner vouching for the bytes decides self.
     if (selfReal && rk === selfReal) comp.self = true;
-    else if (selfReal && name === 'skill-sentry') markSkillSentryCopy(comp, root, selfRoot, { releases, deadline });
+    else if (selfReal && copyChecks && name === 'skill-sentry') markSkillSentryCopy(comp, root, selfRoot, { releases, deadline });
     add(comp);
 
     // Each JSON file is read once per plugin even if referenced several times.
