@@ -1636,16 +1636,13 @@ test('P3: a relative skill-sentry segment under a literal, known, unprotected ba
     ['Bash', `cd ${VAULT} &&\n  ls -la ./skill-sentry/scripts`, { cwd: HOME_CLAUDE }],
     ['Bash', 'ls skill-sentry'],
     ['Bash', 'ls skill-sentry 2>&1 | head -5'],
-    ['Bash', 'cd skill-sentry && git status'],
+    ['Bash', 'rm -r skill-sentry/build'],
     ['Bash', 'git commit -m "fix skill-sentry notes"'],
     ['Bash', 'grep -rn skill-sentry notes.md'],
     ['Bash', 'cat skill-sentry/README.md docs/skill-sentry.md'],
     ['PowerShell', `Set-Location ${VAULT} && Get-ChildItem skill-sentry`, { cwd: HOME_CLAUDE }],
     ['PowerShell', 'Get-ChildItem skill-sentry'],
     ['PowerShell', 'Get-Content skill-sentry\\README.md'],
-    // a search by name stays under the base, which is outside every agent home and protected root
-    ['PowerShell', 'Get-ChildItem -Recurse -Filter skill-sentry | Remove-Item -Recurse'],
-    ['Bash', 'find . -name skill-sentry -type d'],
   ].filter(([, c, o]) => onThisOs(c) && onThisOs(o?.cwd ?? VAULT))) {
     noneSelf(tool, c, o);
   }
@@ -1777,6 +1774,38 @@ test('P3 fix round 1 (I1): a lone CR is a PowerShell statement break, and cd.. /
   assert.equal(r.ruleId, 'SELF_PROTECT');
   // control: the same commands with LF already asked in v0.1.1
   asksSelf('PowerShell', 'Get-Date\ncd..\nRemove-Item -Recurse -Force skill-sentry', data);
+});
+
+test('P3 fix round 1 (I2, M1): relative cd targets and searches by name keep asking', () => {
+  for (const [tool, c, o = atVault] of [
+    // I2: a relative cd operand goes through CDPATH or a zoxide `cd` first, so its target is not known
+    ['Bash', 'cd skill-sentry && git status'],
+    ['Bash', 'cd skill-sentry && rm -rf ./*'],
+    ['Bash', `cd ${VAULT} && cd skill-sentry && rm -rf ./*`],
+    ['Bash', 'pushd skill-sentry && rm -rf ./*'],
+    ['Bash', 'chdir skill-sentry'],
+    ['PowerShell', 'Set-Location skill-sentry; Remove-Item -Recurse -Force .'],
+    ['PowerShell', 'sl skill-sentry'],
+    ['PowerShell', 'Push-Location -Path skill-sentry'],
+    // M1: a name pattern or a recursive / link-following walk is not a path under the base
+    ['Bash', 'find . -name skill-sentry -type d'],
+    ['Bash', 'find -L . -name skill-sentry -delete'],
+    ['Bash', 'find . -iname skill-sentry -delete'],
+    ['Bash', 'find . -path ./x/skill-sentry -delete'],
+    ['Bash', 'find . -ipath x/skill-sentry'],
+    ['Bash', 'find . -regex skill-sentry'],
+    ['Bash', 'find skill-sentry -follow -delete'],
+    ['Bash', 'cp -L -r skill-sentry out'],
+    ['Bash', 'fd skill-sentry'],
+    ['PowerShell', 'Get-ChildItem -Recurse -Filter skill-sentry | Remove-Item -Recurse -Force'],
+    ['PowerShell', 'Get-ChildItem -Filter skill-sentry'],
+    ['PowerShell', 'Remove-Item -Recurse -Include skill-sentry -Path ./*'],
+    ['PowerShell', 'gci -r -fi skill-sentry'],
+    ['PowerShell', 'Get-ChildItem skill-sentry -Recurse'],
+    ['PowerShell', 'Get-ChildItem -Filter:skill-sentry'],
+  ].filter(([, c, o]) => onThisOs(c) && onThisOs(o?.cwd ?? VAULT))) {
+    asksSelf(tool, c, o);
+  }
 });
 
 test('P3: relative resolutions share the 16-per-decision realpath cap', () => {

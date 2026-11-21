@@ -824,6 +824,8 @@ test('codex P3: relative skill-sentry segments: a literal cd base passes; the ho
     ['cd ~/.claude && rm -rf skill-sentry', P3_VAULT],
     [`cd ${os.homedir().replace(/\\/g, '/')}/.codex/plugins/cache/m && rm -rf skill-sentry`, P3_VAULT],
     [`cd ${P3_VAULT}; rm -rf skill-sentry`, P3_VAULT],
+    [`cd ${P3_VAULT} && cd skill-sentry && rm -rf ./*`, P3_VAULT], // fix round 1 I2: a relative cd target is not known
+    [`cd ${P3_VAULT} && find . -name skill-sentry -delete`, P3_VAULT], // fix round 1 M1: a name search
   ]) {
     const r = await runGuard(codex('Bash', { command }, { cwd }));
     const reason = assertDeny(JSON.parse(r.stdout), command);

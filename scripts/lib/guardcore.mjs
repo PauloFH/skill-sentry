@@ -484,7 +484,14 @@ const REL_KILL_WORDS = new Set([
 const wordName = v => v.toLowerCase().replace(/^.*\//, '').replace(/\.(?:exe|cmd|bat|ps1)$/, '');
 // PowerShell's built-in `cd..` and `cd\` functions (Set-Location .. and \); `\` reads as `/` in a word value.
 const CD_SHORTHAND = /^cd(?:\.\.|[/\\~])$/i;
-const UNICODE_BREAKS = [0x85, 0x2028, 0x2029].map(n => String.fromCharCode(n)); // NEL, LINE and PARAGRAPH SEPARATOR
+// Fix round 1 (M1). A word right after a find name test or a PowerShell -Filter / -Include (any unique prefix) is a
+// pattern; a link-following flag anywhere in the statement (find -L / -follow, cp -L), a PowerShell -Recurse or -Depth
+// (any prefix), or a name-search verb makes every relative word of the statement ask.
+const NAME_FLAG = /^(?:-(?:i?name|i?path|i?regex|i?wholename|i?lname)|-f(?:i(?:l(?:t(?:e(?:r)?)?)?)?)?|-i(?:n(?:c(?:l(?:u(?:d(?:e)?)?)?)?)?)?)$/i;
+const FOLLOW_FLAG = /^(?:-L|-follow|--dereference)$/;
+const RECURSE_FLAG = /^-(?:r(?:e(?:c(?:u(?:r(?:s(?:e)?)?)?)?)?)?|de(?:p(?:t(?:h)?)?)?)$/i;
+const SEARCH_VERBS = new Set(['fd', 'fdfind', 'locate', 'plocate', 'mlocate', 'es']);
+const UNICODE_BREAKS =[0x85, 0x2028, 0x2029].map(n => String.fromCharCode(n)); // NEL, LINE and PARAGRAPH SEPARATOR
 const killWord = v =>REL_KILL_WORDS.has(wordName(v)) || CD_SHORTHAND.test(v);
 const DOT_DOT = /(?:^|\/)\.\.(?:\/|$)/;
 const NAMES_AGENT_HOME = /\.claude|\.codex|claude_config_dir|codex_home/i;
@@ -525,7 +532,9 @@ function relativeContext(cmd, words, ps, cwd, shellCwd, placeOk) {
           targets[n] = t;
           continue;
         }
-        if (!relativePiece(ops[0].value)) return fail; // `cd skill-sentry` is fine; later words then have no base
+        // Fix round 1 (I2): a relative target is not known either: bash looks it up through CDPATH first, and a
+        // zoxide-style `cd` from the shell snapshot jumps to a frecency match (`~/.claude/plugins/cache/…`).
+        return fail;
       }
       if (/^[A-Za-z_]\w*=/.test(st[0].value)) return fail; // prefix assignment (HOME=…, CDPATH=…)
       for (const [i, w] of st.entries()) {
@@ -557,13 +566,19 @@ function relativeContext(cmd, words, ps, cwd, shellCwd, placeOk) {
       const b = path.resolve(cwd);
       if (placeOk(b, true)) cwdBase = b;
     }
-    return { ok: true, starts, stmtOf, targets, cwdBase };
+    return { ok: true, starts, stmts, stmtOf, targets, cwdBase };
   };
   const baseOf = k => {
     ctx ??= build();
     if (!ctx.ok) return null;
     for (let i = 1; i <= k; i++) if (words[i].sep.includes('|')) return null;
     const n = ctx.stmtOf[k];
+    // Fix round 1 (M1): a name pattern, or a statement that walks a tree or follows links, is not a path under the base.
+    const st = ctx.stmts[n];
+    const at = k - ctx.starts[n];
+    if (at > 0 && NAME_FLAG.test(st[at - 1].value)) return null;
+    if (SEARCH_VERBS.has(wordName(st[0].value))) return null;
+    if (st.some(w => FOLLOW_FLAG.test(w.value) || (ps && RECURSE_FLAG.test(w.value)))) return null;
     if (n === 0) return ctx.cwdBase;
     const t = ctx.targets[n - 1];
     if (t === undefined || !/^&&\n*$/.test(words[ctx.starts[n]].sep)) return null;
