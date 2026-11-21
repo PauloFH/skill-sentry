@@ -9,7 +9,10 @@ import fs from 'node:fs';
 // A skip whose name or reason mentions one of these means the checkout lacks tags or history.
 const FORBIDDEN_SKIP = /\b(tags?|git archive|fetch-depth|shallow|v\d+\.\d+\.\d+)\b/i;
 
-const child = spawn(process.execPath, ['--test', '--test-reporter=tap', 'test/'], { stdio: ['ignore', 'pipe', 'inherit'] });
+// Explicit file list: `node --test test/` is not portable (Node 22 on Linux/macOS treats the argument as a
+// module path and fails; Node 18 runs every .mjs under test/, helpers included). test/e2e/ is not part of it.
+const files = fs.readdirSync('test').filter(f => f.endsWith('.test.mjs')).sort().map(f => `test/${f}`);
+const child = spawn(process.execPath, ['--test', '--test-reporter=tap', ...files], { stdio: ['ignore', 'pipe', 'inherit'] });
 let tap = '';
 child.stdout.on('data', c => { tap += c; process.stdout.write(c); });
 const code = await new Promise(resolve => child.on('close', resolve));
