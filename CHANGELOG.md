@@ -1,15 +1,5 @@
 # Changelog
 
-## 0.1.2
-
-### Fixed
-- The scanner no longer reports a skill-sentry copy installed by Codex as malicious (score 100) when it sees it from Claude Code, or the other way round. Codex writes an install file (`.codex-marketplace-install.json`) into the plugin folder on its first start, and the copy check now accepts that file in its exact shape, on both sides.
-- A relative `skill-sentry` folder in a shell command (`cd /c/Users/me/vault && ls skill-sentry`) no longer asks in Claude Code when the folder it resolves to is outside the Claude and Codex homes, plugin caches and skill-sentry's own folders. Codex gets this only after a literal `cd <absolute path> &&`.
-- skill-sentry 0.1.2 recognises 0.1.1 copies (Claude Code or Codex) and shows the "update both installs" note instead of scanning them as a third-party plugin.
-
-### Docs
-- The Codex install from GitHub is verified. Start Codex once after installing, then trust the hook in `/hooks`: the install file Codex writes on its first start changes the hook's fingerprint, and until you trust it again the hook does not run.
-
 ## 0.1.1
 
 ### Added
