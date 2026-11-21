@@ -30,13 +30,15 @@ export function removeTree(dir) {
 
 /**
  * `tmp(name?)` creates `%TEMP%/<prefix><name>-XXXXXX`; every dir created is removed in an `after()` hook
- * of the calling test file. Call at module top level.
+ * of the calling test file. Call at module top level. The path is canonical (realpath): on a Windows runner whose
+ * %TEMP% is an 8.3 alias (`C:\Users\RUNNER~1\…`), an absolute path built from it would otherwise be an unusual
+ * form (Ruling K) in every test that writes one out. Tests of the 8.3 forms build them on purpose.
  */
 export function tmpFactory(prefix) {
   const dirs = [];
   after(() => { for (const d of dirs) removeTree(d); });
   return (name = '') => {
-    const d = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}${name ? `${name}-` : ''}`));
+    const d = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}${name ? `${name}-` : ''}`)));
     dirs.push(d);
     return d;
   };
