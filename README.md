@@ -46,7 +46,7 @@ This repository is both the plugin and its own marketplace.
 /skill-sentry:audit
 ```
 
-Claude runs the scanner, then presents a summary (components per verdict, what changed since the baseline), every problem found while reading configs, and a table for each component that is not `ok`. The scanner's verdict is never lowered: if Claude disagrees it adds its own opinion in a separate "Claude assessment" column, so you always see both. Text copied from scanned files is treated as untrusted data and never followed as instructions.
+Claude runs the scanner, then presents a summary (components per verdict, what changed since the baseline), every problem found while reading configs, and a table for each component that is not `ok`. The scanner's verdict is never lowered: if Claude disagrees it adds its own opinion in a separate "Agent assessment" column, so you always see both. Text copied from scanned files is treated as untrusted data and never followed as instructions.
 
 Verdicts come from a score: critical findings weigh 40, high 15, medium 5. Each rule counts once per component, at its highest severity, and the score is capped at 100.
 
@@ -102,8 +102,8 @@ The guard is a PreToolUse hook installed with the plugin. It watches Bash, Power
 | Decision | When |
 | --- | --- |
 | deny | A critical rule matches (for example download-and-execute pipes, reverse shells, crypto-miner launches, disk or home-directory wipes). Always blocked unless you allowlisted that exact command. |
-| ask | A high-risk rule matches and a skill or plugin is the likely origin of the call. Also always for writes to skill-sentry's own data or install directory, shell commands that mention those directories, and writes through unusual Windows path forms (device paths, UNC paths, 8.3 short names, NTFS streams, trailing dot or space). |
-| log | A high-risk rule matches but no skill or plugin is the likely origin (you typed it yourself). Recorded in `guard.log`, not interrupted. |
+| ask | A high-risk rule matches and a skill or plugin is the likely origin of the call. Also always for writes to skill-sentry's own data or install directory (or to any other installed skill-sentry copy, such as the one installed for Codex), shell commands that mention those directories, and writes through unusual Windows path forms (device paths, UNC paths, 8.3 short names, NTFS streams, trailing dot or space). |
+| log | A high-risk rule matches but no skill or plugin is attributed as the likely origin. Recorded in `guard.log`, not interrupted. |
 
 If the guard itself fails, it fails open: it writes a line to `guard.log` and lets the call proceed rather than breaking your session.
 
@@ -162,12 +162,12 @@ The guard is a PreToolUse hook here too. Codex has no "ask", so it can only allo
 | Tier | When | Codex behaviour |
 | --- | --- | --- |
 | 1 | A critical rule matches | deny |
-| 2 | A high rule for rce, exfil, miner or destructive; a secret and network egress in one command; a secret read earlier in the session followed by a network-capable call | deny. If you really meant it, run it yourself in a terminal. |
+| 2 | A high rule for rce, exfil, miner or destructive; a secret and network egress in one command; a network-capable call after an attributed (skill or plugin) call that read a secret was allowed on retry earlier in the session | deny. If you really meant it, run it yourself in a terminal. |
 | 3 | Any other high rule with an attributed origin (a skill or plugin) | denied the first time, with the reason. An identical retry in the same session within 10 minutes is allowed once. |
-| 4 | A high rule without an origin (you typed it) | logged only |
-| 5 | Writes to skill-sentry's own files, or unusual path forms | deny |
+| 4 | A high rule with no skill or plugin attributed | logged only |
+| 5 | Writes to skill-sentry's own files (any installed copy), or unusual path forms | deny |
 
-`apply_patch` patches are inspected too. A patch the guard cannot read (one that comes from a file or a pipe, or that uses shell expansion) is denied.
+`apply_patch` patches are inspected too. Most patches the guard cannot read are denied: one that comes from a file or a pipe, or that uses shell expansion. A patch command hidden behind dynamic or obfuscated shell (see the limits below) is not detected.
 
 ### Codex limits
 
@@ -176,6 +176,8 @@ The guard is a PreToolUse hook here too. Codex has no "ask", so it can only allo
 - Hooks need trust (`/hooks`). The `dangerously-bypass-hook-trust` flag of Codex turns that protection off.
 - The tier 3 retry is confirmed by the model, not by you.
 - Interactive input sent to a running shell (`write_stdin`) is not hooked.
+- Commands that build names or paths at run time are not analysed: `eval`, variables, globs, interpreter one-liners such as `python -c`, or a script written in one call and run in a later one.
+- Origin attribution is lost when more than about 1 MiB of output follows the skill read in the session; the call then counts as tier 4.
 - Under WSL, if the session starts under `/mnt/c` and your node toolchain (for example mise) refuses to start there, the guard fails open. Start the session under `/home/...`.
 - WSL Codex and Windows Codex keep separate skill-sentry data (taint, baseline, allowlist).
 - Under the `workspace-write` sandbox the audit needs your approval to write its report to `~/.claude/skill-sentry`.

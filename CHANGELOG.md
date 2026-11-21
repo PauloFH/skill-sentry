@@ -11,12 +11,20 @@
 - Windows and WSL Codex home detection.
 - Known-release recognition: a newer scanner recognises older skill-sentry copies and shows an "update both installs" note when Claude Code and Codex run different versions.
 
+### Changed
+- The default audit (`--agent all`) now also reads the Codex home (`~/.codex` or `$CODEX_HOME`) and, on Windows, probes WSL distros for Codex homes. Use `--agent claude` or `--no-wsl` to skip them.
+- New Claude Code prompts:
+  - a move, link or rename verb (`mv`, `ln`, `mklink`, `Rename-Item`, `Move-Item`, `New-Item -ItemType Junction`, ...) whose operand names a `.claude` directory;
+  - PowerShell commands that create or remove a drive (`New-PSDrive`, `Remove-PSDrive`, and `ndr`, `mount` or `rdr` used as a command);
+  - shell commands and writes that touch any installed skill-sentry copy, including the one installed for Codex;
+  - writes to Codex control files (`config.toml`, `hooks.json`, `requirements.toml`, `rules/`) when a skill or plugin is the likely origin.
+
 ### Fixed
 - Self-protect no longer prompts for unrelated folders that happen to be named skill-sentry.
 
 ### Security
 - `apply_patch` patches are inspected by the Codex guard.
-- A patch the guard cannot read is denied (fail closed).
+- A patch that comes from a file, a pipe or shell expansion is denied (fail closed).
 - Hardened secret redaction in audit output.
 
 ## 0.1.0

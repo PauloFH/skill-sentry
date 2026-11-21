@@ -46,7 +46,7 @@ Este repositório é ao mesmo tempo o plugin e o seu próprio marketplace.
 /skill-sentry:audit
 ```
 
-O Claude executa o scanner e apresenta um resumo (componentes por veredito, o que mudou desde a baseline), cada problema encontrado ao ler as configurações e uma tabela para cada componente que não seja `ok`. O veredito do scanner nunca é rebaixado: se o Claude discordar, ele acrescenta a própria opinião em uma coluna separada "Claude assessment", e você vê sempre as duas. Texto copiado dos arquivos analisados é tratado como dado não confiável e nunca é seguido como instrução.
+O Claude executa o scanner e apresenta um resumo (componentes por veredito, o que mudou desde a baseline), cada problema encontrado ao ler as configurações e uma tabela para cada componente que não seja `ok`. O veredito do scanner nunca é rebaixado: se o Claude discordar, ele acrescenta a própria opinião em uma coluna separada "Agent assessment", e você vê sempre as duas. Texto copiado dos arquivos analisados é tratado como dado não confiável e nunca é seguido como instrução.
 
 Os vereditos vêm de uma pontuação: achados críticos valem 40, altos 15, médios 5. Cada regra conta uma vez por componente, na sua maior severidade, e a pontuação é limitada a 100.
 
@@ -102,8 +102,8 @@ A guarda é um hook PreToolUse instalado com o plugin. Ela observa chamadas de B
 | Decisão | Quando |
 | --- | --- |
 | deny | Uma regra crítica casa (por exemplo, pipes de baixar e executar, shells reversos, execução de mineradores de criptomoedas, apagamento de disco ou do diretório pessoal). Sempre bloqueado, a menos que você tenha colocado aquele comando exato na allowlist. |
-| ask | Uma regra de risco alto casa e uma skill ou plugin é a origem provável da chamada. Também sempre para escritas no diretório de dados ou de instalação do próprio skill-sentry, comandos de shell que mencionam esses diretórios e escritas por formas incomuns de caminho do Windows (caminhos de dispositivo, caminhos UNC, nomes curtos 8.3, streams NTFS, ponto ou espaço no final). |
-| log | Uma regra de risco alto casa, mas nenhuma skill ou plugin é a origem provável (você mesmo digitou). Registrado em `guard.log`, sem interrupção. |
+| ask | Uma regra de risco alto casa e uma skill ou plugin é a origem provável da chamada. Também sempre para escritas no diretório de dados ou de instalação do próprio skill-sentry (ou em qualquer outra cópia instalada do skill-sentry, como a instalada para o Codex), comandos de shell que mencionam esses diretórios e escritas por formas incomuns de caminho do Windows (caminhos de dispositivo, caminhos UNC, nomes curtos 8.3, streams NTFS, ponto ou espaço no final). |
+| log | Uma regra de risco alto casa, mas nenhuma skill ou plugin é apontado como origem provável. Registrado em `guard.log`, sem interrupção. |
 
 Se a própria guarda falhar, ela falha aberta: grava uma linha em `guard.log` e deixa a chamada seguir, em vez de quebrar a sua sessão.
 
@@ -162,12 +162,12 @@ Aqui a guarda também é um hook PreToolUse. O Codex não tem "ask", então ela 
 | Nível | Quando | Comportamento no Codex |
 | --- | --- | --- |
 | 1 | Uma regra crítica casa | deny |
-| 2 | Uma regra alta de rce, exfil, miner ou destructive; um segredo e saída de rede no mesmo comando; um segredo lido antes na sessão seguido de uma chamada capaz de usar a rede | deny. Se era isso mesmo que você queria, execute você mesmo num terminal. |
+| 2 | Uma regra alta de rce, exfil, miner ou destructive; um segredo e saída de rede no mesmo comando; uma chamada capaz de usar a rede depois que, antes na mesma sessão, uma chamada atribuída a uma skill ou plugin leu um segredo e foi liberada na nova tentativa | deny. Se era isso mesmo que você queria, execute você mesmo num terminal. |
 | 3 | Qualquer outra regra alta com origem atribuída (uma skill ou plugin) | negado na primeira vez, com o motivo. Uma nova tentativa idêntica na mesma sessão, em até 10 minutos, é permitida uma vez. |
-| 4 | Uma regra alta sem origem (você mesmo digitou) | só registrado |
-| 5 | Escritas nos arquivos do próprio skill-sentry ou formas incomuns de caminho | deny |
+| 4 | Uma regra alta sem nenhuma skill ou plugin apontado como origem | só registrado |
+| 5 | Escritas nos arquivos do próprio skill-sentry (qualquer cópia instalada) ou formas incomuns de caminho | deny |
 
-Os patches do `apply_patch` também são inspecionados. Um patch que a guarda não consegue ler (vindo de um arquivo ou de um pipe, ou com expansão de shell) é negado.
+Os patches do `apply_patch` também são inspecionados. A maioria dos patches que a guarda não consegue ler é negada: os que vêm de um arquivo ou de um pipe, ou que usam expansão de shell. Um comando de patch escondido atrás de shell dinâmico ou ofuscado (veja os limites abaixo) não é detectado.
 
 ### Limites no Codex
 
@@ -176,6 +176,8 @@ Os patches do `apply_patch` também são inspecionados. Um patch que a guarda n�
 - Hooks precisam de confiança (`/hooks`). A flag `dangerously-bypass-hook-trust` do Codex desliga essa proteção.
 - A nova tentativa do nível 3 é confirmada pelo modelo, não por você.
 - Entrada interativa enviada a um shell em execução (`write_stdin`) não passa pelo hook.
+- Comandos que montam nomes ou caminhos em tempo de execução não são analisados: `eval`, variáveis, globs, comandos de uma linha de interpretador como `python -c`, ou um script escrito numa chamada e executado numa chamada seguinte.
+- A atribuição de origem se perde quando mais de cerca de 1 MiB de saída vem depois da leitura da skill na sessão; a chamada passa a contar como nível 4.
 - No WSL, se a sessão começar em `/mnt/c` e a sua toolchain de node (por exemplo, o mise) se recusar a iniciar ali, a guarda falha aberta. Comece a sessão em `/home/...`.
 - O Codex do WSL e o do Windows mantêm dados separados do skill-sentry (taint, baseline, allowlist).
 - Com o sandbox `workspace-write`, a auditoria precisa da sua aprovação para gravar o relatório em `~/.claude/skill-sentry`.
