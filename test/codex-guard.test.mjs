@@ -686,14 +686,23 @@ test('taint marker: the TTL counts in whole milliseconds (ext4/APFS keep sub-ms 
   // utimes takes seconds as a double: on Linux and macOS (ns timestamps) the mtime read back for t ms is a hair
   // below t (CI: ubuntu and macOS failed "TTL counts from the latest read"). Reproduced here with 1 us less (a few
   // double ulps at this epoch; NTFS keeps 100 ns).
+  // The stat is stubbed: Node 18 on Windows stores whole ms, so the sub-ms mtime cannot be made on disk there (CI).
   const dir = path.join(tmp('marker-ms'), 'skill-sentry');
   const t = 1_800_000_000_030;
   assert.equal(markTaint(dir, SID_A, t), true);
   const m = taintMarker(dir, SID_A);
-  fs.utimesSync(m, (t - 0.001) / 1000, (t - 0.001) / 1000);
-  assert.ok(fs.statSync(m).mtimeMs < t, `mtime below t: ${fs.statSync(m).mtimeMs}`);
-  assert.equal(readTaint(dir, SID_A, t + TAINT_LIMITS.ttlMs), true, 'exactly the TTL after the read');
-  assert.equal(readTaint(dir, SID_A, t + TAINT_LIMITS.ttlMs + 1), false, 'one ms later');
+  const orig = fs.lstatSync;
+  fs.lstatSync = (p, ...a) => {
+    const st = orig(p, ...a);
+    return p === m && st ? Object.assign(Object.create(Object.getPrototypeOf(st)), st, { mtimeMs: t - 0.0005 }) : st;
+  };
+  try {
+    assert.ok(fs.lstatSync(m).mtimeMs < t && fs.lstatSync(m).isFile(), 'stub in place');
+    assert.equal(readTaint(dir, SID_A, t + TAINT_LIMITS.ttlMs), true, 'exactly the TTL after the read');
+    assert.equal(readTaint(dir, SID_A, t + TAINT_LIMITS.ttlMs + 1), false, 'one ms later');
+  } finally {
+    fs.lstatSync = orig;
+  }
 });
 test('taint store: at most 500 files, oldest pruned', () => {
   const dir = path.join(tmp('prune'), 'skill-sentry');

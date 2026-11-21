@@ -1403,6 +1403,7 @@ test('guard main (L1): critical command with a 20k-directory user skill is denie
   const out = JSON.parse(r.stdout).hookSpecificOutput;
   assert.equal(out.permissionDecision, 'deny');
   assert.ok(r.firstMs < 1500, `deny printed after ${r.firstMs.toFixed(0)} ms (exit after ${r.ms.toFixed(0)} ms)`);
+  assert.ok(r.ms < 1500, `guard exited after ${r.ms.toFixed(0)} ms (deny printed at ${r.firstMs.toFixed(0)} ms)`);
 });
 
 test('guard main (L1): ask whose attributed plugin holds 20k directories answers within the budget', async () => {
@@ -1728,10 +1729,12 @@ test('P3: a relative skill-sentry segment under a literal, known, unprotected ba
     ['Bash', 'git commit -m "fix skill-sentry notes"'],
     ['Bash', 'grep -rn skill-sentry notes.md'],
     ['Bash', 'cat skill-sentry/README.md docs/skill-sentry.md'],
-    ['PowerShell', `Set-Location ${VAULT} && Get-ChildItem skill-sentry`, { cwd: HOME_CLAUDE }],
+    // PowerShell never exempts a driveless root (Ruling R9: `Join-Path $p '/x'` appends it), so the POSIX
+    // `/home/x/vault` form is not a literal base there; it asks on every OS (see the ask list).
+    ['PowerShell', `Set-Location ${VAULT} && Get-ChildItem skill-sentry`, { cwd: HOME_CLAUDE }, process.platform === 'win32'],
     ['PowerShell', 'Get-ChildItem skill-sentry'],
     ['PowerShell', 'Get-Content skill-sentry\\README.md'],
-  ].filter(([, c, o]) => onThisOs(c) && onThisOs(o?.cwd ?? VAULT))) {
+  ].filter(([, , , onlyIf = true]) => onlyIf).filter(([, c, o]) => onThisOs(c) && onThisOs(o?.cwd ?? VAULT))) {
     noneSelf(tool, c, o);
   }
 });
@@ -1807,6 +1810,7 @@ test('P3: relative segments keep asking when the base is protected, unknown or n
     ['PowerShell', 'sl ~/.claude; Remove-Item -Recurse skill-sentry'],
     ['PowerShell', 'Set-Location ~/.claude && Remove-Item -Recurse skill-sentry'],
     ['PowerShell', `Set-Location ${VAULT}; Remove-Item -Recurse skill-sentry`, { cwd: HOME_CLAUDE }],
+    ['PowerShell', 'Set-Location /home/x/vault && Get-ChildItem skill-sentry', { cwd: HOME_CLAUDE }], // driveless root under PowerShell
     ['PowerShell', 'Push-Location $env:X && Remove-Item skill-sentry'],
     ['PowerShell', 'Get-ChildItem -Path ~ -Recurse -Filter skill-sentry | Remove-Item'],
     ['PowerShell', 'Get-ChildItem | Remove-Item skill-sentry'],
