@@ -2,11 +2,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { codexHomes } from '../scripts/lib/codex/homes.mjs';
 import { discoverCodex } from '../scripts/lib/codex/inventory.mjs';
 import { discover, rawConfigOf } from '../scripts/lib/inventory.mjs';
+import { knownRelease, isCopyOfSelf } from '../scripts/lib/selfcopy.mjs';
+import { KNOWN_RELEASES, KNOWN_RELEASE_SIZES } from '../scripts/lib/releases.mjs';
+import { buildReport, renderMarkdown } from '../scripts/lib/report.mjs';
 import { scanComponent } from '../scripts/lib/scanner.mjs';
 import { fileMap } from '../scripts/lib/baseline.mjs';
 import { readJsonSafe } from '../scripts/lib/jsonsafe.mjs';
@@ -167,11 +171,40 @@ test('discoverCodex: an installed copy byte-identical to the running scanner is 
   assert.equal(scanComponent(comp).findings.filter(f => f.severity === 'critical').length, 0);
 });
 
-test('discoverCodex: a copy whose files are a subset of the running scanner (dev tree with extra files) is self', () => {
+test('discoverCodex: a copy must hold the exact shipped set of the running scanner (a subset is not self)', () => {
   const self = buildSelfTree(tmp('self'));
   const { home } = codexHomeWithCopy(self);
-  fs.writeFileSync(path.join(self, 'NOTES.md'), 'dev only\n'); // the running tree has more files than the copy
+  fs.writeFileSync(path.join(self, 'NOTES.md'), 'shipped by the running tree only\n'); // the copy lacks a shipped file
+  assert.ok(!pluginOf(discoverCodex({ homes: [home], projectDir: null, selfRoot: self }).components).self);
+});
+
+test('discoverCodex: a crippled same-version copy (a lib file missing) is not self', () => {
+  const self = buildSelfTree(tmp('self'));
+  const { home } = codexHomeWithCopy(self, c => fs.rmSync(path.join(c, 'scripts', 'lib', 'rules.mjs')));
+  assert.ok(!pluginOf(discoverCodex({ homes: [home], projectDir: null, selfRoot: self }).components).self);
+});
+
+test('discoverCodex: dev-only dirs of the running checkout are not part of its shipped set', () => {
+  const self = buildSelfTree(tmp('self'));
+  const { home } = codexHomeWithCopy(self);
+  for (const rel of ['.git/HEAD', '.omc/state.json', '.superpowers/x.md', 'docs/superpowers/plan.md', 'node_modules/x/index.js']) {
+    fs.mkdirSync(path.dirname(path.join(self, rel)), { recursive: true });
+    fs.writeFileSync(path.join(self, rel), 'dev\n');
+  }
   assert.equal(pluginOf(discoverCodex({ homes: [home], projectDir: null, selfRoot: self }).components).self, true);
+});
+
+test('discoverCodex: Claude Code in-use markers (.in_use/<pid>) on either side do not break a same-version match', () => {
+  const marker = (dir, pid) => {
+    fs.mkdirSync(path.join(dir, '.in_use'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.in_use', pid), JSON.stringify({ pid: Number(pid), procStartFt: '134080000000000000' }));
+  };
+  const self = buildSelfTree(tmp('self'));
+  marker(self, '31700');
+  const { home } = codexHomeWithCopy(self, c => { fs.rmSync(path.join(c, '.in_use'), { recursive: true }); marker(c, '23496'); });
+  assert.equal(pluginOf(discoverCodex({ homes: [home], projectDir: null, selfRoot: self }).components).self, true);
+  const { home: h2 } = codexHomeWithCopy(self, c => fs.writeFileSync(path.join(c, '.in_use', 'run.mjs'), '// code\n'));
+  assert.ok(!pluginOf(discoverCodex({ homes: [h2], projectDir: null, selfRoot: self }).components).self, 'other files under .in_use count');
 });
 
 test('discoverCodex: a copy that differs only in line endings (git autocrlf checkout vs LF bundle) is self', () => {
@@ -210,6 +243,161 @@ test('discover (Claude): an installed skill-sentry copy identical to the running
   const comp = discover({ claudeHome, homeDir: tmp('hd'), projectDir: null, selfRoot: self }).components
     .find(c => c.kind === 'plugin' && c.name === 'skill-sentry@skill-sentry');
   assert.equal(comp.self, true);
+});
+
+// --- T7b: known older releases (version skew) ---
+// Claude Code may run 0.1.0 while Codex runs 0.1.1: neither copy is byte-identical to the other, so the newer
+// scanner recognises the older one only through its embedded table of release hashes.
+
+const lfOf = b => Buffer.from(b.toString('latin1').replace(/\r\n/g, '\n'), 'latin1');
+/** Independent table builder (test-only): LF-normalised SHA-256 and LF size of every file under dir. */
+function releaseTableOf(dir, version) {
+  const hashes = {};
+  const sizes = {};
+  const walk = rel => {
+    for (const e of fs.readdirSync(path.join(dir, rel), { withFileTypes: true })) {
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) { walk(r); continue; }
+      const b = lfOf(fs.readFileSync(path.join(dir, r)));
+      hashes[r] = crypto.createHash('sha256').update(b).digest('hex');
+      sizes[r] = b.length;
+    }
+  };
+  walk('');
+  return { hashes: { [version]: hashes }, sizes: { [version]: sizes } };
+}
+/** Running scanner = a newer tree; the installed copy = an older release the injected table knows. */
+function skewSetup(mutate = () => {}) {
+  const self = buildSelfTree(tmp('self'));
+  fs.appendFileSync(path.join(self, 'scripts', 'guard.mjs'), '// newer release\n');
+  const old = buildSelfTree(tmp('old'));
+  fs.writeFileSync(path.join(old, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'skill-sentry', version: '0.0.9' }));
+  const releases = releaseTableOf(old, '0.0.9');
+  const { home, copy } = codexHomeWithCopy(old, c => mutate(c, old));
+  return { self, old, home, copy, releases };
+}
+const notesOf = r => r.findings.filter(f => f.ruleId === 'SKILL_SENTRY_OLD_VERSION');
+
+test('discoverCodex: a copy equal to a known older release is self with a SKILL_SENTRY_OLD_VERSION note, not malicious', () => {
+  const { self, home, copy, releases } = skewSetup();
+  const control = pluginOf(discoverCodex({ homes: [home], projectDir: null, selfRoot: self }).components);
+  assert.ok(!control.self, 'unknown to the embedded table: scanned as usual');
+  const comp = pluginOf(discoverCodex({ homes: [home], projectDir: null, selfRoot: self, releases }).components);
+  assert.equal(comp.self, true);
+  assert.equal(comp.meta.knownRelease, '0.0.9');
+  const r = scanComponent(comp);
+  assert.deepEqual(r.findings.filter(f => f.severity !== 'info'), []);
+  const notes = notesOf(r);
+  assert.equal(notes.length, 1);
+  assert.equal(notes[0].severity, 'info');
+  assert.ok(notes[0].snippet.startsWith('skill-sentry 0.0.9 (older) installed at '), notes[0].snippet);
+  assert.ok(notes[0].snippet.includes(copy));
+  assert.match(notes[0].snippet, /update both installs/);
+  const report = buildReport({ results: [r], meta: { version: '0.1.1' } });
+  assert.equal(report.components[0].scannerVerdict, 'ok');
+  const md = renderMarkdown(report);
+  assert.match(md, /\[info\] SKILL_SENTRY_OLD_VERSION/, 'the note is shown although the component is ok');
+});
+
+test('discover (Claude): an install equal to a known older release (with its .in_use marker) is self with the note', () => {
+  const { self, old, releases } = skewSetup();
+  const claudeHome = path.join(tmp('ch'), '.claude');
+  const installPath = path.join(claudeHome, 'plugins', 'cache', 'skill-sentry', 'skill-sentry', '0.0.9');
+  fs.cpSync(old, installPath, { recursive: true });
+  fs.mkdirSync(path.join(installPath, '.in_use'));
+  fs.writeFileSync(path.join(installPath, '.in_use', '31700'), JSON.stringify({ pid: 31700, procStartFt: '134080000000000000' }));
+  fs.writeFileSync(path.join(claudeHome, 'plugins', 'installed_plugins.json'), JSON.stringify({
+    version: 2, plugins: { 'skill-sentry@skill-sentry': [{ scope: 'user', installPath, version: '0.0.9' }] },
+  }));
+  const comp = discover({ claudeHome, homeDir: tmp('hd'), projectDir: null, selfRoot: self, releases }).components
+    .find(c => c.kind === 'plugin' && c.name === 'skill-sentry@skill-sentry');
+  assert.equal(comp.self, true);
+  assert.equal(notesOf(scanComponent(comp)).length, 1);
+});
+
+test('discoverCodex: a skill-sentry copy that differs from every known release in any way is scanned as usual', () => {
+  const cases = [
+    ['extra file', c => fs.writeFileSync(path.join(c, 'scripts', 'extra.mjs'), '// added\n')],
+    ['missing file', c => fs.rmSync(path.join(c, 'skills', 'audit', 'SKILL.md'))],
+    ['one byte changed (same size)', c => {
+      const f = path.join(c, 'scripts', 'guard.mjs');
+      const b = fs.readFileSync(f);
+      b[3] ^= 1;
+      fs.writeFileSync(f, b);
+    }],
+    ['manifest claims the release, other content', c => fs.appendFileSync(path.join(c, 'scripts', 'lib', 'rules.mjs'), '// more\n')],
+    ['code under .in_use', c => { fs.mkdirSync(path.join(c, '.in_use')); fs.writeFileSync(path.join(c, '.in_use', 'run.mjs'), '// x\n'); }],
+    ['oversized marker', c => { fs.mkdirSync(path.join(c, '.in_use')); fs.writeFileSync(path.join(c, '.in_use', '123'), 'x'.repeat(4096)); }],
+    ['linked entry', (c, old) => {
+      // A file symlink needs a privilege on Windows: fall back to a directory junction (also a link).
+      try {
+        fs.rmSync(path.join(c, 'scripts', 'guard.mjs'));
+        fs.symlinkSync(path.join(old, 'scripts', 'guard.mjs'), path.join(c, 'scripts', 'guard.mjs'), 'file');
+      } catch {
+        fs.cpSync(path.join(old, 'scripts', 'guard.mjs'), path.join(c, 'scripts', 'guard.mjs'));
+        fs.rmSync(path.join(c, 'skills'), { recursive: true });
+        fs.symlinkSync(path.join(old, 'skills'), path.join(c, 'skills'), 'junction');
+      }
+    }],
+  ];
+  for (const [label, mutate] of cases) {
+    const { self, home, releases } = skewSetup(mutate);
+    const comp = pluginOf(discoverCodex({ homes: [home], projectDir: null, selfRoot: self, releases }).components);
+    assert.ok(!comp.self, label);
+    const r = scanComponent(comp);
+    assert.deepEqual(notesOf(r), [], label);
+    assert.ok(r.findings.some(f => f.severity === 'critical'), `${label}: still scanned`);
+  }
+});
+
+test('knownRelease: huge files are rejected by size before any hashing; the deadline is honoured', () => {
+  const old = buildSelfTree(tmp('old'));
+  const releases = releaseTableOf(old, '0.0.9');
+  assert.equal(knownRelease(old, { releases }), '0.0.9');
+  assert.equal(knownRelease(old, { releases, deadline: Date.now() - 1 }), null, 'past deadline');
+  const big = path.join(old, 'skills', 'audit', 'SKILL.md');
+  fs.truncateSync(big, 256 * 1024 * 1024); // same name, same count: only the size check can stop it cheaply
+  try {
+    const t0 = Date.now();
+    assert.equal(knownRelease(old, { releases }), null);
+    assert.equal(isCopyOfSelf(old, buildSelfTree(tmp('self'))), false);
+    assert.ok(Date.now() - t0 < 1000, `rejected without reading 256 MiB (${Date.now() - t0} ms)`);
+  } finally {
+    fs.rmSync(big);
+  }
+});
+
+test('releases: the embedded table knows v0.1.0 (the tagged tree) with a hash and an LF size per shipped file', () => {
+  const e = KNOWN_RELEASES['0.1.0'];
+  assert.ok(e, 'v0.1.0 entry');
+  const names = Object.keys(e);
+  assert.ok(names.length >= 40 && names.length <= 80, `plausible file count: ${names.length}`);
+  for (const must of ['scripts/guard.mjs', 'scripts/scan.mjs', 'scripts/lib/rules.mjs', '.claude-plugin/plugin.json', 'hooks/hooks.json', 'skills/audit/SKILL.md']) {
+    assert.ok(names.includes(must), must);
+  }
+  assert.deepEqual(Object.keys(KNOWN_RELEASE_SIZES['0.1.0']).sort(), [...names].sort());
+  for (const n of names) {
+    assert.match(e[n], /^[0-9a-f]{64}$/, n);
+    assert.ok(Number.isInteger(KNOWN_RELEASE_SIZES['0.1.0'][n]) && KNOWN_RELEASE_SIZES['0.1.0'][n] >= 0, n);
+  }
+  assert.ok(!names.some(n => /^(?:\.git|\.omc|\.superpowers|docs\/superpowers|node_modules|\.in_use)\//.test(n)), 'nothing unshipped');
+});
+
+test('tools/release-hashes.mjs prints the entry the runtime matches, and the runtime never references it', () => {
+  const old = buildSelfTree(tmp('old'));
+  const gen = path.resolve(path.dirname(SCAN), '..', 'tools', 'release-hashes.mjs');
+  const r = spawnSync(process.execPath, [gen, old, '0.0.9'], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  const out = JSON.parse(r.stdout);
+  const expectedTable = releaseTableOf(old, '0.0.9');
+  assert.equal(out.version, '0.0.9');
+  assert.deepEqual(out.hashes, expectedTable.hashes['0.0.9']);
+  assert.deepEqual(out.sizes, expectedTable.sizes['0.0.9']);
+  assert.equal(knownRelease(old, { releases: { hashes: { [out.version]: out.hashes }, sizes: { [out.version]: out.sizes } } }), '0.0.9');
+  const scripts = path.dirname(SCAN);
+  const walk = d => fs.readdirSync(d, { withFileTypes: true }).flatMap(e => (e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]));
+  const importsGenerator = /(?:\bfrom|\bimport\s*\()\s*['"`][^'"`]*release-hashes/;
+  for (const f of walk(scripts)) assert.ok(!importsGenerator.test(fs.readFileSync(f, 'utf8')), f);
 });
 
 // --- discoverCodex ---

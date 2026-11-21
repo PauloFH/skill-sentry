@@ -8,7 +8,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { listFiles, realDir, isCopyOfSelf, remoteLinkTarget, isInsideRoot, isRemoteLinkText, bindRawConfig } from '../inventory.mjs';
+import { markSkillSentryCopy } from '../selfcopy.mjs';
+import { listFiles, realDir, remoteLinkTarget, isInsideRoot, isRemoteLinkText, bindRawConfig } from '../inventory.mjs';
 import { readJsonSafe } from '../jsonsafe.mjs';
 import { parseToml } from '../toml.mjs';
 import { parseRules } from '../codexrules.mjs';
@@ -79,7 +80,7 @@ const subdirs = dir => dirents(dir).filter(e => e.isDirectory() || (e.isSymbolic
  * AGENTS.md is left to the Claude inventory (`instructions:project:AGENTS.md`), which always runs too.
  * @returns {{ components: object[], configFindings: object[] }}
  */
-export function discoverCodex({ homes = [], projectDir, selfRoot, deadline, limits } = {}) {
+export function discoverCodex({ homes = [], projectDir, selfRoot, deadline, limits, releases } = {}) {
   const components = [];
   const configFindings = [];
   const late = () => deadline !== undefined && Date.now() >= deadline;
@@ -91,7 +92,7 @@ export function discoverCodex({ homes = [], projectDir, selfRoot, deadline, limi
       return;
     }
     try {
-      inventoryHome({ home, projectDir: i === 0 ? projectDir : null, homes, components, configFindings, late, selfReal, maxDirs, limits, deadline });
+      inventoryHome({ home, projectDir: i === 0 ? projectDir : null, homes, components, configFindings, late, selfReal, maxDirs, limits, deadline, releases });
     } catch (e) {
       configFindings.push({ ruleId: 'CONFIG_UNREADABLE', category: 'config', severity: 'info', line: 0, file: home.root, snippet: truncate(`Codex home inventory failed: ${e?.code ?? e?.message ?? 'error'}`) });
     }
@@ -99,7 +100,7 @@ export function discoverCodex({ homes = [], projectDir, selfRoot, deadline, limi
   return { components, configFindings };
 }
 
-function inventoryHome({ home, projectDir, homes, components, configFindings, late, selfReal, maxDirs, limits, deadline }) {
+function inventoryHome({ home, projectDir, homes, components, configFindings, late, selfReal, maxDirs, limits, deadline, releases }) {
   const { label, root } = home;
   if (!isDir(root)) return;
   const seen = new Set(components.map(c => c.id));
@@ -381,8 +382,9 @@ function inventoryHome({ home, projectDir, homes, components, configFindings, la
     if (manifestRel) meta.manifest = manifestRel;
     if (hasOwn(plugCfg, key) && typeof plugCfg[key]?.enabled === 'boolean') meta.enabled = plugCfg[key].enabled;
     const comp = { id: `plugin:${key}`, kind: 'plugin', name: key, scope: 'user', root: proot, meta };
-    // The name only decides whether the byte comparison runs; being a copy of the running scanner decides self.
-    if (selfReal && (realDir(proot) === selfReal || (p === 'skill-sentry' && isCopyOfSelf(proot, selfReal)))) comp.self = true;
+    // The name only decides whether the copy check runs; the running scanner vouching for the bytes decides self.
+    if (selfReal && realDir(proot) === selfReal) comp.self = true;
+    else if (selfReal && p === 'skill-sentry') markSkillSentryCopy(comp, proot, selfReal, { releases, deadline });
     add(comp);
 
     const readOnce = new Set();

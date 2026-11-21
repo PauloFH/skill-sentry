@@ -90,6 +90,12 @@ export function scanComponent(c, opts = {}) {
     if (!rel || rel.startsWith('../') || path.isAbsolute(rel)) rel = abs.replace(/\\/g, '/');
     return rel;
   };
+  // Another install that is a known older release (selfcopy.mjs): not scanned as third party, but the user
+  // must still hear that two different versions are installed. The version comes from the scanner's table.
+  if (c.self && typeof c.meta?.knownRelease === 'string') {
+    findings.push(finding('SKILL_SENTRY_OLD_VERSION', 'config', 'info', '<scan>',
+      `skill-sentry ${c.meta.knownRelease} (older) installed at ${c.root}; update both installs`));
+  }
   if (c.meta?.filesTruncated && !c.self) {
     findings.push(finding('SCAN_TRUNCATED', 'config', 'info', '<scan>', 'File listing was truncated by a limit; some files were not scanned'));
   }

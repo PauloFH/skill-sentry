@@ -12,6 +12,8 @@ const AGENT_LABEL = { claude: 'Claude Code', codex: 'Codex' };
 const agentOf = c => (c.agent === 'codex' ? 'codex' : 'claude');
 // Info findings saying the component was not evaluated: never better than `review` (like incomplete).
 const FORCES_REVIEW = new Set(['CODEX_RULES_ERROR']);
+// Info findings the user must see even on an `ok` component (they ask the user to act).
+const NOTICES = new Set(['SKILL_SENTRY_OLD_VERSION']);
 
 /** Idempotent: escape invisible characters first, then cap the length (ids, names, paths, snippets). */
 const safe = untrusted;
@@ -149,7 +151,7 @@ export function renderMarkdown(report) {
 
     for (const c of list) {
       // A lone medium finding scores 5 (verdict ok) but is still a warning: list it (e.g. CODEX_HOOKS_DISABLED).
-      const warned = c.findings.filter(f => !f.allowlisted && WARN.has(f.severity));
+      const warned = c.findings.filter(f => !f.allowlisted && (WARN.has(f.severity) || NOTICES.has(f.ruleId)));
       if (c.scannerVerdict === 'ok' && !warned.length) continue;
       L.push(`### ${cell(c.id)} - ${c.scannerVerdict} (${c.score})`, '');
       for (const f of c.findings) {

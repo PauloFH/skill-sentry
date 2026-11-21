@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { readJsonSafe } from './jsonsafe.mjs';
 import { normalizePath, truncate, redactSecrets, redactArgs } from './text.mjs';
+import { realDir, isCopyOfSelf, markSkillSentryCopy } from './selfcopy.mjs';
 
 const isObj = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const normDir = p => normalizePath(path.resolve(p)).replace(/\/+$/, '');
@@ -14,55 +15,7 @@ function canonJson(v) {
   return JSON.stringify(sort(v) ?? null);
 }
 
-/** Canonical directory key: realpath when it exists (symlinks/junctions resolved), case-insensitive on win32. */
-export function realDir(p) {
-  let r = path.resolve(p);
-  try { r = fs.realpathSync.native(r); } catch { /* missing: compare the resolved form */ }
-  return normDir(r);
-}
-
-const COPY_LIMITS = { maxFiles: 3000, maxBytes: 64 * 1024 * 1024 };
-const lf = buf => buf.toString('latin1').replace(/\r\n/g, '\n'); // byte-preserving
-
-/**
- * Another installed copy of the running scanner (e.g. the Codex and Claude installs of skill-sentry): every
- * regular file under `root` exists under `selfRoot` with identical bytes (CRLF and LF line ends count as
- * equal), and the copy carries
- * `scripts/guard.mjs` and `.claude-plugin/plugin.json`. A copy can hold fewer files (a release bundle next to a
- * dev checkout) but never a file the running scanner lacks or a changed one, so no foreign code is ever
- * skipped. Links, special files, limits or read errors -> false (scanned as usual). Never throws.
- */
-export function isCopyOfSelf(root, selfRoot, limits = COPY_LIMITS) {
-  if (!root || !selfRoot) return false;
-  try {
-    if (realDir(root) === realDir(selfRoot)) return true;
-    for (const must of ['scripts/guard.mjs', '.claude-plugin/plugin.json']) {
-      if (!fs.lstatSync(path.join(root, ...must.split('/'))).isFile()) return false;
-    }
-    let files = 0, bytes = 0;
-    const stack = [''];
-    while (stack.length) {
-      const rel = stack.pop();
-      for (const e of fs.readdirSync(path.join(root, rel), { withFileTypes: true })) {
-        const r = rel ? `${rel}/${e.name}` : e.name;
-        if (e.isDirectory()) { stack.push(r); continue; }
-        if (!e.isFile()) return false;
-        if (++files > limits.maxFiles) return false;
-        const mine = path.join(root, ...r.split('/'));
-        const theirs = path.join(selfRoot, ...r.split('/'));
-        const a = fs.lstatSync(mine), b = fs.lstatSync(theirs);
-        if (!b.isFile()) return false;
-        if ((bytes += a.size) > limits.maxBytes) return false;
-        const x = fs.readFileSync(mine), y = fs.readFileSync(theirs);
-        // CRLF vs LF only (a git autocrlf checkout next to an LF bundle of the same release) still matches.
-        if (!x.equals(y) && lf(x) !== lf(y)) return false;
-      }
-    }
-    return files > 0;
-  } catch {
-    return false;
-  }
-}
+export { realDir, isCopyOfSelf };
 
 const DEFAULT_LIMITS = { maxFiles: 2000, maxDirs: 2000, maxDepth: 6 };
 
@@ -221,8 +174,9 @@ function redactRaw(raw, extra = {}) {
  * - A relative `installPath` in installed_plugins.json is resolved against `<claudeHome>/plugins`.
  * - Hook index `n` counts within one event across all matcher groups of one source; the user
  *   (or project) `settings.json` and `settings.local.json` form a single source, read in that order.
+ * - `releases` replaces the embedded known-release table (tests only; see selfcopy.mjs).
  */
-export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits, deadline, skillFiles = true }) {
+export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits, deadline, skillFiles = true, releases }) {
   const components = [];
   const configFindings = [];
   const seen = new Set();
@@ -325,7 +279,9 @@ export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits, de
       id: `plugin:${key}`, kind: 'plugin', name: key, scope: 'user', root,
       meta: { version: e.version, installScope: e.scope },
     };
-    if (selfReal && (rk === selfReal || (name === 'skill-sentry' && isCopyOfSelf(root, selfRoot)))) comp.self = true;
+    // The name only decides whether the copy check runs; the running scanner vouching for the bytes decides self.
+    if (selfReal && rk === selfReal) comp.self = true;
+    else if (selfReal && name === 'skill-sentry') markSkillSentryCopy(comp, root, selfRoot, { releases, deadline });
     add(comp);
 
     // Each JSON file is read once per plugin even if referenced several times.
