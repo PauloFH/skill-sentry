@@ -114,8 +114,9 @@ jobs:
         id: app
         uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
-          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
-          app-id: ${{ vars.RELEASE_APP_CLIENT_ID == '' && vars.RELEASE_APP_ID || '' }}
+          # v3.4.0 main.js: `getInput("client-id") || getInput("app-id")`, passed on as the App id: a client ID or
+          # the numeric App ID both work here.
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID || vars.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           permission-contents: write
           permission-issues: write
@@ -142,8 +143,9 @@ jobs:
           } >> "$GITHUB_ENV"
       - name: semantic-release
         env:
+          # GITHUB_TOKEN only: on Actions semantic-release pushes with `x-access-token:<token>`, the form an App
+          # installation token needs; @semantic-release/github reads the same variable.
           GITHUB_TOKEN: ${{ steps.app.outputs.token }}
-          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: tools/ci/release/node_modules/.bin/semantic-release --extends ./tools/ci/release/release.config.cjs
       - name: Result
         id: result
