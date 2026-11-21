@@ -810,6 +810,26 @@ test('codex tier 5: shell command touching the data dir → deny with "run it yo
   assert.match(reason, /SELF_PROTECT/);
   assert.match(reason, RUN_YOURSELF);
 });
+// v0.1.2 P3: a relative skill-sentry segment is exempt after a literal absolute `cd … &&`. Codex's hook `cwd` is not
+// used as a base: a Codex shell call can carry its own `workdir`, which the hook payload does not show.
+const P3_VAULT = process.platform === 'win32' ? 'C:/Users/x/vault' : '/home/x/vault';
+test('codex P3: relative skill-sentry segments: a literal cd base passes; the hook cwd alone and protected bases are denied', async () => {
+  for (const command of [`cd ${P3_VAULT} && ls skill-sentry`, `cd ${P3_VAULT} && git -C skill-sentry status`]) {
+    const r = await runGuard(codex('Bash', { command }, { cwd: P3_VAULT }));
+    assert.equal(r.stdout, '', command);
+  }
+  for (const [command, cwd] of [
+    ['ls skill-sentry', P3_VAULT],
+    ['cd ~/.codex/plugins/cache/m && rm -rf skill-sentry', P3_VAULT],
+    ['cd ~/.claude && rm -rf skill-sentry', P3_VAULT],
+    [`cd ${os.homedir().replace(/\\/g, '/')}/.codex/plugins/cache/m && rm -rf skill-sentry`, P3_VAULT],
+    [`cd ${P3_VAULT}; rm -rf skill-sentry`, P3_VAULT],
+  ]) {
+    const r = await runGuard(codex('Bash', { command }, { cwd }));
+    const reason = assertDeny(JSON.parse(r.stdout), command);
+    assert.match(reason, /SELF_PROTECT/, command);
+  }
+});
 test('codex: Ruling M read-only self invocation still passes', async () => {
   const cmd = `node ${path.join(SELF, 'scripts', 'scan.mjs').replace(/\\/g, '/')} --json`;
   const r = await runGuard(codex('Bash', { command: cmd }));

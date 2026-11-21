@@ -282,7 +282,9 @@ const siblingInstall = f => SIBLING_INSTALL.test(f) || AGENT_HOME_CHILD.test(f);
  * removed, escapes applied, `\` -> `/` where it is a separator), `raw` the source text with `\` -> `/`,
  * `literal` false when the word uses an escape (bash `\`, PowerShell backtick, cmd `^`) or an
  * unbalanced quote, and `cmd` true for a word in command position (statement start, or after
- * `;`, `&`, `|` or a newline). Never throws.
+ * `;`, `&`, `|` or a newline). `sep` holds the unquoted separators (`;`, `&`, `|`, newline) seen since
+ * the previous word ('' inside a statement; the `&` of `2>&1` and `&>` is a redirect, not a separator).
+ * Never throws.
  */
 function shellWords(cmd, ps) {
   const words = [];
@@ -291,7 +293,13 @@ function shellWords(cmd, ps) {
   let quote = null;
   let atCommand = true;
   let afterRedirect = false;
-  const begin = i => { if (!cur) cur = { value: '', raw: '', start: i, literal: true, cmd: atCommand && !afterRedirect }; };
+  let pendingSep = '';
+  const begin = i => {
+    if (!cur) {
+      cur = { value: '', raw: '', start: i, literal: true, cmd: atCommand && !afterRedirect, sep: pendingSep };
+      pendingSep = '';
+    }
+  };
   const end = i => {
     if (cur) {
       cur.raw = s.slice(cur.start, i).replace(/\\/g, '/');
@@ -318,10 +326,15 @@ function shellWords(cmd, ps) {
     }
     if (/\s/.test(ch)) {
       end(i);
-      if (ch === '\n') atCommand = true;
+      if (ch === '\n') { atCommand = true; pendingSep += '\n'; }
       continue;
     }
-    if (ch === ';' || ch === '&' || ch === '|') { end(i); atCommand = true; continue; }
+    if (ch === ';' || ch === '&' || ch === '|') {
+      end(i);
+      atCommand = true;
+      if (!(ch === '&' && (s[i - 1] === '>' || s[i - 1] === '<' || next === '>'))) pendingSep += ch;
+      continue;
+    }
     if (ch === '<' || ch === '>') { end(i); afterRedirect = true; continue; }
     begin(i);
     if (ch === "'" || ch === '"') { quote = ch; continue; }
@@ -400,26 +413,159 @@ function makeSegmentCheck(roots) {
     .filter(str).flatMap(rootForms));
   const hits = f => siblingInstall(f) || claudeForms().some(c => isUnder(f, c)) || roots.some(r => isUnder(f, r) || isUnder(r, f));
   const canon = new Map();
-  const pieceAsks = (v, tildeOk, ps) => {
-    const abs = exemptPiece(v, tildeOk, ps);
+  /** Canonical (realpath) key of `abs`, deduped and capped per decision; null when the cap is hit or it throws. */
+  const realKey = abs => {
+    const key = lowerOnWin(slashes(abs));
+    if (!canon.has(key)) {
+      if (canon.size >= MAX_SEGMENT_REALPATHS) return null;
+      let c;
+      try { c = normForCompare(realpathish(abs)); } catch { return null; }
+      canon.set(key, c);
+    }
+    return canon.get(key);
+  };
+  // P3: a directory a relative word may resolve against, or a path its command names: not protected (hits),
+  // not above an agent home or protected root, not a home dir or above one, as written and through realpath;
+  // with `noSegment`, not inside any `skill-sentry` dir either (a checkout or an install the guard cannot vouch for).
+  const placeOk = (abs, noSegment) => {
+    const c = realKey(abs);
+    if (c === null) return false;
+    return [lowerOnWin(slashes(abs)), c].every(f => !hits(f) && !claudeForms().some(h => isUnder(h, f))
+      && !HOME_SHAPED.test(f) && !(noSegment && SELF_SEGMENT.test(f)));
+  };
+  const pieceAsks = (v, tildeOk, ps, rel) => {
+    const abs = exemptPiece(v, tildeOk, ps) ?? (rel ? rel(v) : null);
     if (abs === null) return true;
     const key = lowerOnWin(slashes(abs));
     if (hits(key)) return true;
-    if (!canon.has(key)) {
-      if (canon.size >= MAX_SEGMENT_REALPATHS) return true;
-      let c;
-      try { c = normForCompare(realpathish(abs)); } catch { return true; }
-      canon.set(key, c);
-    }
-    return hits(canon.get(key));
+    const c = realKey(abs);
+    return c === null || hits(c);
   };
-  return (w, ps, afterScriptFlag) => {
+  /**
+   * `rel` (P3): null, or a function giving the absolute form of a relative piece of this word (null when its base
+   * is unknown or protected; see relativeContext).
+   */
+  const check = (w, ps, afterScriptFlag, rel = null) => {
     if (!w.literal || isUnusualPath(w.value) || /^\s/.test(w.value)) return true;
     // `~` is home only when unquoted and followed directly by a separator (`~"/x"`, `~''/x` are not).
-    if (!/\s/.test(w.value)) return pieceAsks(w.value, /^~\//.test(w.raw), ps);
+    if (!/\s/.test(w.value)) return pieceAsks(w.value, /^~\//.test(w.raw), ps, rel);
     if (afterScriptFlag) return true;
     const segs = w.value.split(/\s+/).filter(v => SELF_SEGMENT.test(v));
-    return !segs.length || segs.some(v => pieceAsks(v, false, ps));
+    return !segs.length || segs.some(v => pieceAsks(v, false, ps, rel));
+  };
+  return { check, placeOk };
+}
+
+// ---- v0.1.2 P3: relative `skill-sentry` segments ----
+// A relative occurrence resolves against the shell's working directory, so it is exempt only when that directory
+// is literal and known: the target of a literal absolute `cd`/`chdir`/`pushd`/`Set-Location`/`sl`/`Push-Location`
+// in the statement right before it, joined by `&&` (it runs only if that cd succeeded), or, when nothing precedes
+// it, the hook cwd (Claude Code only: a Codex shell call can carry its own `workdir`, which the hook payload does not
+// show). The base and the result must pass placeOk. Anything in the command that can move, redefine or hide the
+// working directory, run code in another shell or host, or re-anchor a name keeps the prompt for every relative
+// word: expansions and grouping, escapes, a pipe or lone `&` before the word, `..`, a cd that is not literal (or
+// whose target is protected), shell keywords and builtins that define or run code, prefix assignments, other shells
+// and hosts, wrappers that run a command elsewhere, `claude`/`codex` (`codex plugin marketplace remove skill-sentry`
+// names the plugin, not a path), a word naming `.claude`/`.codex`, and any absolute operand that is not placeOk.
+
+// A home dir or a dir above one (keys: `/`-separated, lowercased on win32, no trailing slash; `/` is '').
+const HOME_SHAPED = /^(?:[a-z]:(?:\/(?:users|documents and settings)(?:\/[^/]+)?)?|\/(?:home|users)(?:\/[^/]+)?|\/root|\/var\/root|\/mnt\/[a-z](?:\/users(?:\/[^/]+)?)?|\/mnt|)$/i;
+const CD_ABS_VERBS = new Set(['cd', 'chdir', 'pushd', 'set-location', 'sl', 'push-location']);
+const REL_KILL_WORDS = new Set([
+  'cd', 'chdir', 'pushd', 'popd', 'set-location', 'sl', 'push-location', 'pop-location', 'z', 'zi', 'j', 'zoxide', 'autojump',
+  'builtin', 'command', 'eval', 'exec', 'source', '.', 'alias', 'unalias', 'function', 'enable', 'shopt', 'set', 'export',
+  'declare', 'typeset', 'local', 'readonly', 'trap', 'if', 'then', 'else', 'elif', 'fi', 'while', 'until', 'do', 'done', 'for',
+  'case', 'esac', 'select', 'coproc', 'xargs', 'parallel', 'watch', '-exec', '-execdir', '-ok', '-okdir', '-x', '--exec', '--exec-batch',
+  'env', 'sudo', 'doas', 'su', 'runas', 'runuser', 'ssh', 'wsl', 'docker', 'podman', 'kubectl', 'start', 'start-process', 'saps',
+  'bash', 'sh', 'zsh', 'dash', 'ksh', 'fish', 'cmd', 'pwsh', 'powershell', 'set-alias', 'sal', 'new-alias', 'nal',
+  'invoke-expression', 'iex', 'invoke-command', 'icm', 'claude', 'codex',
+]);
+const wordName = v => v.toLowerCase().replace(/^.*\//, '').replace(/\.(?:exe|cmd|bat|ps1)$/, '');
+const DOT_DOT = /(?:^|\/)\.\.(?:\/|$)/;
+const NAMES_AGENT_HOME = /\.claude|\.codex|claude_config_dir|codex_home/i;
+const NULL_DEVICES = new Set(['/dev/null', '/dev/stdout', '/dev/stderr', 'nul']);
+const PATH_LIKE = /^(?:[/~]|[a-z]:)/i;
+/** A relative piece that can be resolved against a base: literal, no drive or `:`, no `..`, not an option. */
+const relativePiece = v => LITERAL_PATH.test(v) && !v.includes(':') && !/^[/~-]/.test(v) && !DOT_DOT.test(v);
+
+/**
+ * Per-command P3 context: `forWord(k)` returns null or a resolver for relative pieces of word `k` (see above).
+ * Lazy: built on the first relative piece. Never throws (any doubt -> no resolver -> the word asks).
+ */
+function relativeContext(words, ps, cwd, shellCwd, placeOk) {
+  let ctx;
+  const build = () => {
+    const starts = words.flatMap((w, i) => (i === 0 || w.sep ? [i] : []));
+    const stmtOf = [];
+    const stmts = starts.map((s, n) => {
+      const e = starts[n + 1] ?? words.length;
+      for (let i = s; i < e; i++) stmtOf[i] = n;
+      return words.slice(s, e);
+    });
+    const targets = [];
+    const fail = { ok: false };
+    if (words.some(w => w.sep.replace(/&&/g, '').includes('&'))) return fail;
+    for (const [n, st] of stmts.entries()) {
+      const verb = wordName(st[0].value);
+      if (CD_ABS_VERBS.has(verb)) {
+        let ops = st.slice(1);
+        if (ps && ops.length === 2 && /^-(?:literal)?path$/i.test(ops[0].value)) ops = ops.slice(1);
+        if (ops.length !== 1 || !ops[0].literal) return fail;
+        const t = exemptPiece(ops[0].value, /^~\//.test(ops[0].raw), ps);
+        if (t !== null) {
+          if (!placeOk(t, false)) return fail;
+          targets[n] = t;
+          continue;
+        }
+        if (!relativePiece(ops[0].value)) return fail; // `cd skill-sentry` is fine; later words then have no base
+      }
+      if (/^[A-Za-z_]\w*=/.test(st[0].value)) return fail; // prefix assignment (HOME=…, CDPATH=…)
+      for (const [i, w] of st.entries()) {
+        const name = wordName(w.value);
+        if (!(i === 0 && CD_ABS_VERBS.has(verb)) && REL_KILL_WORDS.has(name) && (name !== '.' || i === 0)) return fail;
+      }
+    }
+    for (const w of words) {
+      if (!w.literal || /[$`(){}%]/.test(w.raw) || NAMES_AGENT_HOME.test(w.raw) || NAMES_AGENT_HOME.test(w.value)) return fail;
+      const pieces = w.value.split(/\s+/).filter(Boolean);
+      if (pieces.length > 1) { // a quoted command line handed to something else
+        if (/[;&|]/.test(w.value) || pieces.some(p => REL_KILL_WORDS.has(wordName(p)))) return fail;
+        continue;
+      }
+      if (!pieces.length || SELF_SEGMENT.test(w.value) || NULL_DEVICES.has(w.value.toLowerCase())) continue;
+      const v = w.value;
+      const forms = [v];
+      if (v.includes('=')) forms.push(v.slice(v.indexOf('=') + 1));
+      if (/^-[A-Za-z][/~]/.test(v)) forms.push(v.slice(2));
+      for (const f of forms) {
+        if (DOT_DOT.test(f)) return fail;
+        if (!PATH_LIKE.test(f)) continue;
+        const abs = exemptPiece(f, f === v && /^~\//.test(w.raw), ps);
+        if (abs === null || !placeOk(abs, false)) return fail;
+      }
+    }
+    let cwdBase = null;
+    if (shellCwd && str(cwd) && (process.platform === 'win32' ? /^[a-z]:[\\/]/i.test(cwd) : cwd.startsWith('/')) && !isUnusualPath(cwd)) {
+      const b = path.resolve(cwd);
+      if (placeOk(b, true)) cwdBase = b;
+    }
+    return { ok: true, starts, stmtOf, targets, cwdBase };
+  };
+  const baseOf = k => {
+    ctx ??= build();
+    if (!ctx.ok) return null;
+    for (let i = 1; i <= k; i++) if (words[i].sep.includes('|')) return null;
+    const n = ctx.stmtOf[k];
+    if (n === 0) return ctx.cwdBase;
+    const t = ctx.targets[n - 1];
+    if (t === undefined || !/^&&\n*$/.test(words[ctx.starts[n]].sep)) return null;
+    return placeOk(t, true) ? t : null;
+  };
+  return k => v => {
+    if (!relativePiece(v)) return null;
+    let base;
+    try { base = baseOf(k); } catch { return null; }
+    return base === null ? null : path.resolve(base, v);
   };
 }
 
@@ -737,11 +883,12 @@ const synthetic = (ruleId, p) => ({ ruleId, category: 'path', severity: 'high', 
  * decision depends on them (origin for `high`, allowlist for `critical`).
  * `extraWritePaths` (Codex apply_patch header paths) join the write targets; Claude callers never pass it.
  * `selfViews` (Codex only) exempts a plain read of one of our own SKILL.md files from SELF_PROTECT.
+ * `shellCwd` (P3): `cwd` is the directory the shell command runs in (Claude Code); Codex passes false.
  * A `high` decision also carries `highs` (every high match: ruleId, category, snippet) for the Codex tiers.
  * @returns {{ decision: 'deny'|'ask'|'log'|'none', ruleId?: string, severity?: string, reason?: string, snippet?: string,
  *   highs?: { ruleId: string, category: string, snippet: string }[] }}
  */
-export function decide({ toolName, toolInput, origin = null, allowlist = null, selfRoot, dataDir, cwd, extraWritePaths = null, selfViews = false }) {
+export function decide({ toolName, toolInput, origin = null, allowlist = null, selfRoot, dataDir, cwd, extraWritePaths = null, selfViews = false, shellCwd = true }) {
   const { targets: t, mcp, truncated } = extractTargetsEx(toolName, toolInput, cwd);
   if (Array.isArray(extraWritePaths)) t.writePaths.push(...extraWritePaths.filter(str));
   const matches = [];
@@ -764,12 +911,13 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
   // Shell commands that mention the data dir or the install dir (any access, read or write) always ask:
   // a redirect like `echo ... > ~/.claude/skill-sentry/allowlist.json` must not slip through (§6.2).
   // Any other `skill-sentry` segment asks too (Ruling J), unless its word is a literal absolute path
-  // that resolves away from Claude's home and the protected roots (Ruling R9 revised).
+  // that resolves away from Claude's home and the protected roots (Ruling R9 revised), or a relative one
+  // whose literal, known base and resolution do (P3, relativeContext).
   if (t.commands.length) {
     const ps = toolName === 'PowerShell';
     const roots = [dataDir, selfRoot].filter(str).flatMap(rootForms);
     const needles = [...roots, lowerOnWin('.claude/skill-sentry')];
-    const segmentAsks = makeSegmentCheck(roots);
+    const { check: segmentAsks, placeOk } = makeSegmentCheck(roots);
     for (const c of t.commands) {
       const ask = reason => ({ decision: 'ask', ruleId: 'SELF_PROTECT', severity: 'high', reason, snippet: snip(c) });
       if (ps && changesPsDrive(c)) return ask('PowerShell command creates or removes a drive (Ruling R14)');
@@ -784,8 +932,9 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
       const scriptAt = words.findIndex(w => SCRIPT_FLAG.test(w.value));
       const segAt = words.flatMap((w, k) => (SELF_SEGMENT.test(w.value) || SELF_SEGMENT.test(w.raw) ? [k] : []));
       const dynamicPs = segAt.length > 0 && (ps || RUNS_PWSH.test(c)) && psDynamic(String(c));
+      const rel = segAt.length ? relativeContext(words, ps, cwd, shellCwd, placeOk) : null; // P3
       if (texts.some(text => needles.some(n => mentions(text, n)))
-        || segAt.some(k => dynamicPs || segmentAsks(words[k], ps, scriptAt !== -1 && k > scriptAt))
+        || segAt.some(k => dynamicPs || segmentAsks(words[k], ps, scriptAt !== -1 && k > scriptAt, rel(k)))
         || (!segAt.length && texts.some(text => SELF_SEGMENT.test(text)))) {
         return ask('shell command touches skill-sentry data or install directory');
       }

@@ -1618,3 +1618,145 @@ test('C1: Write/Edit to a sibling skill-sentry install asks (SELF_PROTECT_WRITE)
     }
   }
 });
+
+// ---------------------------------------------------------------- v0.1.2 P3: relative skill-sentry segments
+// A relative occurrence is exempt only when its base is literal and known: the target of a literal absolute cd
+// joined to it by `&&`, else the hook cwd (Claude only). The base and the result must stay outside every agent
+// home, plugin cache and protected root (and must not be a home dir or above one).
+const VAULT = process.platform === 'win32' ? 'C:/Users/x/vault' : '/home/x/vault';
+const VAULT_SH = process.platform === 'win32' ? '/c/Users/x/vault' : '/home/x/vault';
+const HOME_FWD = fwdSlash(os.homedir());
+const atVault = { cwd: VAULT };
+
+test('P3: a relative skill-sentry segment under a literal, known, unprotected base does not ask (Claude)', () => {
+  for (const [tool, c, o = atVault] of [
+    ['Bash', `cd ${VAULT_SH} && ls skill-sentry`, { cwd: CHECKOUT }],
+    ['Bash', `cd ${VAULT} && ls skill-sentry`, { cwd: HOME_CLAUDE }],
+    ['Bash', `cd ${VAULT} && rm -rf skill-sentry/x`, { cwd: HOME_CLAUDE }],
+    ['Bash', `cd ${VAULT} &&\n  ls -la ./skill-sentry/scripts`, { cwd: HOME_CLAUDE }],
+    ['Bash', 'ls skill-sentry'],
+    ['Bash', 'ls skill-sentry 2>&1 | head -5'],
+    ['Bash', 'cd skill-sentry && git status'],
+    ['Bash', 'git commit -m "fix skill-sentry notes"'],
+    ['Bash', 'grep -rn skill-sentry notes.md'],
+    ['Bash', 'cat skill-sentry/README.md docs/skill-sentry.md'],
+    ['PowerShell', `Set-Location ${VAULT} && Get-ChildItem skill-sentry`, { cwd: HOME_CLAUDE }],
+    ['PowerShell', 'Get-ChildItem skill-sentry'],
+    ['PowerShell', 'Get-Content skill-sentry\\README.md'],
+    // a search by name stays under the base, which is outside every agent home and protected root
+    ['PowerShell', 'Get-ChildItem -Recurse -Filter skill-sentry | Remove-Item -Recurse'],
+    ['Bash', 'find . -name skill-sentry -type d'],
+  ].filter(([, c, o]) => onThisOs(c) && onThisOs(o?.cwd ?? VAULT))) {
+    noneSelf(tool, c, o);
+  }
+});
+
+test('P3: relative segments keep asking when the base is protected, unknown or not literal', () => {
+  const H = HOME_FWD;
+  for (const [tool, c, o = atVault] of [
+    // the brief's cases
+    ['Bash', 'cd ~/.claude && rm -rf skill-sentry'],
+    ['Bash', 'cd ~/.codex/plugins/cache/m && rm -rf skill-sentry'],
+    ['Bash', `cd ${VAULT} && cd .. && cd .claude && rm skill-sentry/allowlist.json`],
+    ['Bash', 'ls skill-sentry', { cwd: HOME_CLAUDE }],
+    // literal bases that are protected, a home dir, above one, or inside a skill-sentry dir
+    ['Bash', `cd ${H}/.claude && rm -rf skill-sentry`],
+    ['Bash', `cd ${H}/.claude/plugins/cache/mkt && rm -rf skill-sentry`],
+    ['Bash', `cd ${H}/.codex/plugins/cache/m && rm -rf skill-sentry`],
+    ['Bash', `cd ${H} && rm -rf skill-sentry`],
+    ['Bash', 'cd C:/Users/x && ls skill-sentry/x'],
+    ['Bash', 'cd C:/ && find . -name skill-sentry -delete'],
+    ['Bash', 'cd / && find . -name skill-sentry -delete'],
+    ['Bash', 'cd /home/x && ls skill-sentry'],
+    ['Bash', `cd ${VAULT}/skill-sentry && rm -rf skill-sentry`],
+    ['Bash', `cd ${VAULT}/plugins/cache/m && rm -rf skill-sentry`],
+    // a cd outside command position, conditional, grouped, wrapped or not literal
+    ['Bash', '(cd ~/.claude && rm -rf skill-sentry/x )'],
+    ['Bash', '{ cd ~/.claude; rm -rf skill-sentry/x; }'],
+    ['Bash', 'if cd ~/.claude; then rm -rf skill-sentry; fi'],
+    ['Bash', 'builtin cd ~/.claude; rm -rf skill-sentry'],
+    ['Bash', 'command cd ~/.claude && rm -rf skill-sentry'],
+    ['Bash', `cd ${VAULT} || cd ~/.claude; rm -rf skill-sentry`],
+    ['Bash', `false && cd ${VAULT}; rm -rf skill-sentry`, { cwd: HOME_CLAUDE }],
+    ['Bash', `cd ${VAULT}; rm -rf skill-sentry`, { cwd: HOME_CLAUDE }],
+    ['Bash', `cd ${VAULT}\nrm -rf skill-sentry`, { cwd: HOME_CLAUDE }],
+    ['Bash', `cd ${VAULT} & rm -rf skill-sentry`, { cwd: HOME_CLAUDE }],
+    ['Bash', `cd ${VAULT} | rm -rf skill-sentry`, { cwd: HOME_CLAUDE }],
+    ['Bash', `echo x | cd ${VAULT} && rm -rf skill-sentry`, { cwd: HOME_CLAUDE }],
+    ['Bash', `cd ${VAULT} && git pull && rm -rf skill-sentry`],
+    ['Bash', `pushd ${VAULT} && popd && rm -rf skill-sentry`],
+    ['Bash', 'cd - && rm -rf skill-sentry'],
+    ['Bash', 'cd && rm -rf skill-sentry'],
+    ['Bash', 'cd $X && rm -rf skill-sentry'],
+    ['Bash', 'cd "$X" && rm -rf skill-sentry'],
+    ['Bash', 'cd ~/.cl* && rm -rf skill-sentry'],
+    ['Bash', `cd -P ${VAULT} && rm -rf skill-sentry`],
+    ['Bash', `HOME=${H}/.claude; cd ~/x && rm -rf skill-sentry`],
+    ['Bash', 'alias ls=x; ls skill-sentry'],
+    ['Bash', '. ./env.sh && rm -rf skill-sentry'],
+    ['Bash', `cd ${VAULT} && eval x && rm -rf skill-sentry`],
+    // operands that re-anchor or reach a protected place
+    ['Bash', 'find ~/.claude -name skill-sentry -delete'],
+    ['Bash', 'git -C ~/.claude/plugins/cache clean -fdx skill-sentry'],
+    ['Bash', 'env -C ~/.claude rm -rf skill-sentry'],
+    ['Bash', `env --chdir=${H}/.claude rm -rf skill-sentry`],
+    ['Bash', 'tar -C ~/.codex/plugins/cache/m -cf x.tar skill-sentry'],
+    ['Bash', 'cp -r skill-sentry ~/.claude/'],
+    ['Bash', 'fd -H skill-sentry ~ -X rm -rf'],
+    ['Bash', 'rm -rf skill-sentry .claude'],
+    ['Bash', 'echo skill-sentry | xargs rm -rf'],
+    ['Bash', 'ssh host rm -rf skill-sentry'],
+    ['Bash', 'powershell "cd ~/.claude; Remove-Item -Recurse skill-sentry"'],
+    // names, not paths
+    ['Bash', 'codex plugin marketplace remove skill-sentry'],
+    ['Bash', 'claude plugin uninstall skill-sentry'],
+    // the relative word itself
+    ['Bash', 'rm -rf ../skill-sentry'],
+    ['Bash', 'rm -rf x/../../skill-sentry'],
+    ['Bash', 'rm -rf C:skill-sentry'],
+    ['Bash', 'rm -rf skill-sentry*'],
+    ['Bash', 'rm -rf skill-sen\\try'],
+    ['Bash', 'git commit -m "skill-sentry: fix"'],
+    ['Bash', 'bash -c "rm -rf skill-sentry"'],
+    // PowerShell
+    ['PowerShell', 'sl ~/.claude; Remove-Item -Recurse skill-sentry'],
+    ['PowerShell', 'Set-Location ~/.claude && Remove-Item -Recurse skill-sentry'],
+    ['PowerShell', `Set-Location ${VAULT}; Remove-Item -Recurse skill-sentry`, { cwd: HOME_CLAUDE }],
+    ['PowerShell', 'Push-Location $env:X && Remove-Item skill-sentry'],
+    ['PowerShell', 'Get-ChildItem -Path ~ -Recurse -Filter skill-sentry | Remove-Item'],
+    ['PowerShell', 'Get-ChildItem | Remove-Item skill-sentry'],
+    ['PowerShell', 'Get-ChildItem -Recurse -Include skill-sentry -Path ~'],
+    ['PowerShell', 'Get-ChildItem -Recurse -Include skill-sentry -Path C:/'],
+  ].filter(([, c, o]) => onThisOs(c) && onThisOs(o?.cwd ?? VAULT))) {
+    asksSelf(tool, c, o);
+  }
+});
+
+test('P3: the hook cwd base is used only when it is literal, absolute and away from protected places', () => {
+  const h = r9Home();
+  const prev = process.env.CODEX_HOME;
+  const cxh = fwdSlash(fs.realpathSync.native(tmp('p3cxh')));
+  process.env.CODEX_HOME = cxh;
+  try {
+    for (const cwd of [HOME_CLAUDE, `${HOME_FWD}/.claude/plugins`, HOME_FWD, `${HOME_FWD}/.codex/plugins/cache/m`, 'relative/dir', '',
+      undefined, 'C:/Users/x', 'C:/', '/', CHECKOUT, `${cxh}/plugins`, cxh, `${VAULT}/plugins/cache/m`]) {
+      if (cwd !== undefined && !onThisOs(cwd)) continue;
+      asksSelf('Bash', 'rm -rf skill-sentry', { cwd });
+    }
+    // protected roots of a synthetic home: inside the data dir, above it, inside the install dir
+    for (const cwd of [h.data, h.claude, path.dirname(h.claude), h.self, h.inst]) asksSelf('Bash', 'rm -rf skill-sentry', { ...h.o, cwd });
+    // the base is realpath-checked: a junction to the synthetic Claude home asks
+    const link = path.join(fs.realpathSync.native(tmp('p3j')), 'vault');
+    fs.symlinkSync(h.claude, link, 'junction');
+    asksSelf('Bash', 'rm -rf skill-sentry', { ...h.o, cwd: link });
+    asksSelf('Bash', `cd ${fwdSlash(link)} && rm -rf skill-sentry`, { ...h.o, cwd: VAULT });
+  } finally {
+    if (prev === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = prev;
+  }
+});
+
+test('P3: relative resolutions share the 16-per-decision realpath cap', () => {
+  const words = n => Array.from({ length: n }, (_, i) => `d${i}/skill-sentry`).join(' ');
+  noneSelf('Bash', `ls ${words(3)}`, atVault);
+  asksSelf('Bash', `ls ${words(20)}`, atVault);
+});
