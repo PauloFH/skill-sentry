@@ -149,9 +149,9 @@ codex plugin marketplace add PauloFH/skill-sentry
 codex plugin add skill-sentry@skill-sentry
 ```
 
-A instalação a partir do repositório público do GitHub ainda não foi testada de ponta a ponta. Os mesmos dois comandos foram verificados contra uma cópia local deste repositório.
+Esta instalação a partir do repositório público do GitHub foi verificada no Codex do Windows e do WSL.
 
-Depois, **confie no hook da guarda**. O Codex não executa um hook enquanto você não confiar nele, e ativar um plugin não faz o Codex confiar nos hooks dele. Abra `/hooks` no Codex (ou "Review hooks" no app desktop), revise o hook do skill-sentry e confie nele. Até você fazer isso, a guarda não roda. Confie de novo a cada atualização, porque um hook alterado aparece como `modified`.
+Depois, **inicie o Codex uma vez e só então confie no hook da guarda**. O Codex não executa um hook enquanto você não confiar nele, e ativar um plugin não faz o Codex confiar nos hooks dele. Na primeira vez que inicia depois da instalação, o Codex grava um arquivo de instalação na pasta do plugin, o que muda a impressão digital do hook. Por isso, confie no hook depois desse primeiro início: abra `/hooks` no Codex (ou "Review hooks" no app desktop), revise o hook do skill-sentry e confie nele. Até você fazer isso, a guarda não roda.
 
 Em seguida, peça ao Codex que execute a auditoria do skill-sentry para ver o seu primeiro relatório. Isso foi verificado só no Codex do WSL. No Codex do Windows, pode ser preciso você aprovar os comandos de shell que ele executa.
 
@@ -174,6 +174,7 @@ Os patches do `apply_patch` também são inspecionados. A maioria dos patches qu
 - O Codex não tem "ask": a guarda só pode permitir ou negar.
 - Ela falha aberta: se o hook der erro ou passar do tempo limite do Codex (cerca de 5 segundos), a chamada roda.
 - Hooks precisam de confiança (`/hooks`). A flag `dangerously-bypass-hook-trust` do Codex desliga essa proteção.
+- Depois de qualquer atualização do plugin, o Codex pode pedir que você confie no hook de novo em `/hooks` (ele aparece como `modified`). Até você fazer isso, a guarda não roda.
 - A nova tentativa do nível 3 é confirmada pelo modelo, não por você.
 - Entrada interativa enviada a um shell em execução (`write_stdin`) não passa pelo hook.
 - Comandos que montam nomes ou caminhos em tempo de execução não são analisados: `eval`, variáveis, globs, comandos de uma linha de interpretador como `python -c`, ou um script escrito numa chamada e executado numa chamada seguinte.

@@ -108,6 +108,31 @@ test('the Codex section documents install, the hook trust step, the tiers and th
   assert.match(dictionary(src).pt['codex.title'], /Codex/);
 });
 
+test('v0.1.2: the GitHub install for Codex is documented as verified, with the trust step after the first start', () => {
+  const src = html();
+  const sec = /<section id="codex"[\s\S]*?<\/section>/.exec(src)[0];
+  const pt = dictionary(src).pt;
+  assert.doesNotMatch(src, /not tested end to end|ponta a ponta/i, 'no "untested" note left on the page');
+  assert.match(sec, /Start Codex once/, 'start Codex before trusting');
+  assert.match(sec, /install file/, 'why: Codex writes an install file on its first start');
+  assert.match(sec, /after any plugin update/i, 'limit: trust again after an update');
+  assert.match(Object.values(pt).join('\n'), /inicie o Codex uma vez/i, 'pt: start Codex once');
+  // The four READMEs stay parallel: same verified flow, same new limit.
+  const readme = f => fs.readFileSync(path.join(ROOT, f), 'utf8');
+  for (const [f, untested, startOnce, afterUpdate] of [
+    ['README.md', /not been tested end to end/, /start Codex once/i, /after any plugin update/i],
+    ['README.pt.md', /de ponta a ponta/, /inicie o Codex uma vez/i, /depois de qualquer atualização do plugin/i],
+    ['README.es.md', /de extremo a extremo/, /inicia Codex una vez/i, /después de cualquier actualización del plugin/i],
+    ['README.zh.md', /端到端/, /先启动一次 Codex/, /每次插件更新后/],
+  ]) {
+    const t = readme(f);
+    assert.doesNotMatch(t, untested, `${f}: untested note removed`);
+    assert.match(t, startOnce, `${f}: start Codex once before trusting`);
+    assert.match(t, afterUpdate, `${f}: re-trust limit`);
+    assert.match(t, /codex plugin marketplace add PauloFH\/skill-sentry\r?\ncodex plugin add skill-sentry@skill-sentry/, `${f}: install commands`);
+  }
+});
+
 test('English copy lives in the markup, not in JavaScript', () => {
   const src = html();
   assert.ok(src.includes('Your plugins run with your privileges.'), 'hero headline in the HTML');

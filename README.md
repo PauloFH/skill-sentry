@@ -149,9 +149,9 @@ codex plugin marketplace add PauloFH/skill-sentry
 codex plugin add skill-sentry@skill-sentry
 ```
 
-Installing from the public GitHub repository has not been tested end to end yet. The same two commands were verified against a local copy of this repository.
+This install from the public GitHub repository is verified on Windows and WSL Codex.
 
-Then **trust the guard hook**. Codex does not run a hook until you trust it, and enabling a plugin does not trust its hooks. Open `/hooks` in Codex (or "Review hooks" in the desktop app), review the skill-sentry hook and trust it. Until you do, the guard does not run. Trust it again after every update, because a changed hook shows as `modified`.
+Then **start Codex once, then trust the guard hook**. Codex does not run a hook until you trust it, and enabling a plugin does not trust its hooks. On its first start after the install, Codex writes an install file into the plugin folder, which changes the hook's fingerprint. So trust the hook after that first start: open `/hooks` in Codex (or "Review hooks" in the desktop app), review the skill-sentry hook and trust it. Until you do, the guard does not run.
 
 Then ask Codex to run the skill-sentry audit for your first report. This is verified on WSL Codex only. On Windows Codex it may need your approval for the shell commands it runs.
 
@@ -174,6 +174,7 @@ The guard is a PreToolUse hook here too. Codex has no "ask", so it can only allo
 - Codex has no "ask": the guard can only allow or deny.
 - It fails open: if the hook errors or exceeds Codex's timeout (about 5 seconds), the call runs.
 - Hooks need trust (`/hooks`). The `dangerously-bypass-hook-trust` flag of Codex turns that protection off.
+- After any plugin update, Codex may ask you to trust the hook again in `/hooks` (it shows as `modified`). Until you do, the guard does not run.
 - The tier 3 retry is confirmed by the model, not by you.
 - Interactive input sent to a running shell (`write_stdin`) is not hooked.
 - Commands that build names or paths at run time are not analysed: `eval`, variables, globs, interpreter one-liners such as `python -c`, or a script written in one call and run in a later one.
