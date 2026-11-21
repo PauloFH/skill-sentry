@@ -828,6 +828,10 @@ test('codex: reading our own SKILL.md with a plain read verb passes (Codex loads
     `cat '${SKILL_AUDIT}'`,
     `sed -n '1,200p' ${SKILL_AUDIT}`,
     `sed -n "1,80p" "${SKILL_HARDEN}"`,
+    // Shape seen in a real Windows Codex rollout: Get-Content -LiteralPath <file> -Raw.
+    `Get-Content -LiteralPath "${SKILL_AUDIT}" -Raw`,
+    `Get-Content -Raw -LiteralPath '${SKILL_AUDIT}'`,
+    `Get-Content -Path ${SKILL_HARDEN}`,
   ]) {
     const r = await runGuard(codex('Bash', { command }));
     assert.equal(r.stdout, '', command);
@@ -868,6 +872,10 @@ test('codex: anything beyond a single plain read of our own SKILL.md still denie
     `Get-Content ,'${SKILL_AUDIT}',x`,
     `Get-Content '' '${SKILL_AUDIT}'`,
     `Set-Content -Path '${SKILL_AUDIT}' -Value x`,
+    `Get-Content -LiteralPath '${SKILL_AUDIT}' '${SKILL_HARDEN}'`,
+    `Get-Content -LiteralPath '${SKILL_AUDIT}' -Raw -Stream x`,
+    `Get-Content -Stream x -LiteralPath '${SKILL_AUDIT}'`,
+    `Get-Content -LiteralPath -Raw '${SKILL_AUDIT}'`,
   ]) {
     const r = await runGuard(codex('Bash', { command }), { SKILL_SENTRY_DATA_DIR: data });
     assert.match(assertDeny(JSON.parse(r.stdout), command), RUN_YOURSELF, command);

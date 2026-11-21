@@ -577,15 +577,20 @@ export function isReadOnlySelfInvocation(cmd, selfRoot, toolName = 'Bash', { age
 }
 
 // Codex only (T7): Codex has no Skill tool, the model loads a skill by reading its SKILL.md with the shell.
-// Exempt fixed forms only: one read verb (`cat`, `type`, `sed -n 'N,Mp'`, `Get-Content`/`gc` [-Raw]) and one
-// operand that is an absolute literal path (same character rules as Ruling M) resolving exactly to
-// `<selfRoot>/skills/<name>/SKILL.md`. Redirects, pipes, chains, more operands, other files: no match.
-const SELF_VIEW = /^(?:cat|type|(?:get-content|gc)(?: +-raw)?|sed +-n +(?:'\d+,\d+p'|"\d+,\d+p"|\d+,\d+p)) +(?:"([^"]*)"|'([^']*)'|([^ "']+)) *$/i;
+// Exempt fixed forms only: one read verb (`cat`, `type`, `sed -n 'N,Mp'`, `Get-Content`/`gc` with optional
+// `-Raw` and `-LiteralPath`/`-Path`) and one operand that is an absolute literal path (same character rules as
+// Ruling M) resolving exactly to `<selfRoot>/skills/<name>/SKILL.md`. Redirects, pipes, chains, more operands,
+// other flags, other files: no match.
+const VIEW_OPERAND = String.raw`(?:"([^"]*)"|'([^']*)'|([^ "']+))`;
+const SELF_VIEWS = [
+  new RegExp(String.raw`^(?:cat|type|sed +-n +(?:'\d+,\d+p'|"\d+,\d+p"|\d+,\d+p)) +${VIEW_OPERAND} *$`, 'i'),
+  new RegExp(String.raw`^(?:get-content|gc)(?: +-raw)?(?: +-(?:literal)?path)? +${VIEW_OPERAND}(?: +-raw)? *$`, 'i'),
+];
 
 /** Exact read-only view of one of our own skills' SKILL.md (Codex only; callers opt in). */
 export function isReadOnlySelfView(cmd, selfRoot, toolName = 'Bash') {
   if (!str(cmd) || !str(selfRoot)) return false;
-  const m = SELF_VIEW.exec(cmd);
+  const m = SELF_VIEWS.map(re => re.exec(cmd)).find(Boolean);
   if (!m) return false;
   const file = m[1] ?? m[2] ?? m[3];
   if (!SELF_PATH.test(file) || (m[3] !== undefined && file.includes(' '))) return false;
