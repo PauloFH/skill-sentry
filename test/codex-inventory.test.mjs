@@ -174,6 +174,17 @@ test('discoverCodex: a copy whose files are a subset of the running scanner (dev
   assert.equal(pluginOf(discoverCodex({ homes: [home], projectDir: null, selfRoot: self }).components).self, true);
 });
 
+test('discoverCodex: a copy that differs only in line endings (git autocrlf checkout vs LF bundle) is self', () => {
+  const self = buildSelfTree(tmp('self'));
+  const { home } = codexHomeWithCopy(self, c => {
+    for (const rel of ['scripts/lib/rules.mjs', 'skills/audit/SKILL.md']) {
+      const f = path.join(c, ...rel.split('/'));
+      fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace(/\n/g, '\r\n'));
+    }
+  });
+  assert.equal(pluginOf(discoverCodex({ homes: [home], projectDir: null, selfRoot: self }).components).self, true);
+});
+
 test('discoverCodex: a plugin named skill-sentry that differs from the running scanner is scanned as usual', () => {
   const self = buildSelfTree(tmp('self'));
   for (const mutate of [

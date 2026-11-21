@@ -22,10 +22,12 @@ export function realDir(p) {
 }
 
 const COPY_LIMITS = { maxFiles: 3000, maxBytes: 64 * 1024 * 1024 };
+const lf = buf => buf.toString('latin1').replace(/\r\n/g, '\n'); // byte-preserving
 
 /**
  * Another installed copy of the running scanner (e.g. the Codex and Claude installs of skill-sentry): every
- * regular file under `root` exists under `selfRoot` with identical bytes, and the copy carries
+ * regular file under `root` exists under `selfRoot` with identical bytes (CRLF and LF line ends count as
+ * equal), and the copy carries
  * `scripts/guard.mjs` and `.claude-plugin/plugin.json`. A copy can hold fewer files (a release bundle next to a
  * dev checkout) but never a file the running scanner lacks or a changed one, so no foreign code is ever
  * skipped. Links, special files, limits or read errors -> false (scanned as usual). Never throws.
@@ -49,9 +51,11 @@ export function isCopyOfSelf(root, selfRoot, limits = COPY_LIMITS) {
         const mine = path.join(root, ...r.split('/'));
         const theirs = path.join(selfRoot, ...r.split('/'));
         const a = fs.lstatSync(mine), b = fs.lstatSync(theirs);
-        if (!b.isFile() || a.size !== b.size) return false;
+        if (!b.isFile()) return false;
         if ((bytes += a.size) > limits.maxBytes) return false;
-        if (!fs.readFileSync(mine).equals(fs.readFileSync(theirs))) return false;
+        const x = fs.readFileSync(mine), y = fs.readFileSync(theirs);
+        // CRLF vs LF only (a git autocrlf checkout next to an LF bundle of the same release) still matches.
+        if (!x.equals(y) && lf(x) !== lf(y)) return false;
       }
     }
     return files > 0;
