@@ -559,6 +559,28 @@ export function isReadOnlySelfInvocation(cmd, selfRoot, toolName = 'Bash') {
   return is('scan.mjs') && args.every(a => a === '--json' || a === '--diff-only');
 }
 
+// Codex only (T7): Codex has no Skill tool, the model loads a skill by reading its SKILL.md with the shell.
+// Exempt fixed forms only: one read verb (`cat`, `type`, `sed -n 'N,Mp'`, `Get-Content`/`gc` [-Raw]) and one
+// operand that is an absolute literal path (same character rules as Ruling M) resolving exactly to
+// `<selfRoot>/skills/<name>/SKILL.md`. Redirects, pipes, chains, more operands, other files: no match.
+const SELF_VIEW = /^(?:cat|type|(?:get-content|gc)(?: +-raw)?|sed +-n +(?:'\d+,\d+p'|"\d+,\d+p"|\d+,\d+p)) +(?:"([^"]*)"|'([^']*)'|([^ "']+)) *$/i;
+
+/** Exact read-only view of one of our own skills' SKILL.md (Codex only; callers opt in). */
+export function isReadOnlySelfView(cmd, selfRoot, toolName = 'Bash') {
+  if (!str(cmd) || !str(selfRoot)) return false;
+  const m = SELF_VIEW.exec(cmd);
+  if (!m) return false;
+  const file = m[1] ?? m[2] ?? m[3];
+  if (!SELF_PATH.test(file) || (m[3] !== undefined && file.includes(' '))) return false;
+  if (file.includes('\\') && toolName !== 'PowerShell') return false;
+  if (!/^(?:[A-Za-z]:[\\/]|\/(?![\\/]))/.test(file) || isUnusualPath(file)) return false;
+  const target = lowerOnWin(slashes(path.resolve(file)));
+  return rootForms(selfRoot).some(f => {
+    const rest = target.startsWith(`${f}/skills/`) ? target.slice(f.length + '/skills/'.length) : null;
+    return rest !== null && /^[a-z0-9_-]+\/skill\.md$/i.test(rest);
+  });
+}
+
 // ---- decision ----
 
 const resolveLazy = v => (typeof v === 'function' ? v() : v);
@@ -618,11 +640,12 @@ const synthetic = (ruleId, p) => ({ ruleId, category: 'path', severity: 'high', 
  * `origin` and `allowlist` may be values or zero-arg functions; functions are only called when the
  * decision depends on them (origin for `high`, allowlist for `critical`).
  * `extraWritePaths` (Codex apply_patch header paths) join the write targets; Claude callers never pass it.
+ * `selfViews` (Codex only) exempts a plain read of one of our own SKILL.md files from SELF_PROTECT.
  * A `high` decision also carries `highs` (every high match: ruleId, category, snippet) for the Codex tiers.
  * @returns {{ decision: 'deny'|'ask'|'log'|'none', ruleId?: string, severity?: string, reason?: string, snippet?: string,
  *   highs?: { ruleId: string, category: string, snippet: string }[] }}
  */
-export function decide({ toolName, toolInput, origin = null, allowlist = null, selfRoot, dataDir, cwd, extraWritePaths = null }) {
+export function decide({ toolName, toolInput, origin = null, allowlist = null, selfRoot, dataDir, cwd, extraWritePaths = null, selfViews = false }) {
   const { targets: t, mcp, truncated } = extractTargetsEx(toolName, toolInput, cwd);
   if (Array.isArray(extraWritePaths)) t.writePaths.push(...extraWritePaths.filter(str));
   const matches = [];
@@ -656,6 +679,7 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
       if (ps && changesPsDrive(c)) return ask('PowerShell command creates or removes a drive (Ruling R14)');
       if (relinksClaude(c, ps)) return ask('shell command moves or links the Claude config directory');
       if (isReadOnlySelfInvocation(c, selfRoot, toolName)) continue; // Rulings L2, L3
+      if (selfViews && isReadOnlySelfView(c, selfRoot, toolName)) continue; // Codex skill loading (T7)
       // Line continuations (bash `\`, PowerShell backtick) are joined in the de-obfuscated copy.
       const joined = String(c).replace(/\\\r?\n/g, '').replace(/`\r?\n/g, ' ');
       const texts = [normCommandText(c), normCommandText(deobfuscate(joined))];

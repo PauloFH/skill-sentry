@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { listFiles, realDir, remoteLinkTarget, isInsideRoot, isRemoteLinkText, bindRawConfig } from '../inventory.mjs';
+import { listFiles, realDir, isCopyOfSelf, remoteLinkTarget, isInsideRoot, isRemoteLinkText, bindRawConfig } from '../inventory.mjs';
 import { readJsonSafe } from '../jsonsafe.mjs';
 import { parseToml } from '../toml.mjs';
 import { parseRules } from '../codexrules.mjs';
@@ -381,7 +381,8 @@ function inventoryHome({ home, projectDir, homes, components, configFindings, la
     if (manifestRel) meta.manifest = manifestRel;
     if (hasOwn(plugCfg, key) && typeof plugCfg[key]?.enabled === 'boolean') meta.enabled = plugCfg[key].enabled;
     const comp = { id: `plugin:${key}`, kind: 'plugin', name: key, scope: 'user', root: proot, meta };
-    if (selfReal && realDir(proot) === selfReal) comp.self = true;
+    // The name only decides whether the byte comparison runs; being a copy of the running scanner decides self.
+    if (selfReal && (realDir(proot) === selfReal || (p === 'skill-sentry' && isCopyOfSelf(proot, selfReal)))) comp.self = true;
     add(comp);
 
     const readOnce = new Set();

@@ -21,6 +21,45 @@ export function realDir(p) {
   return normDir(r);
 }
 
+const COPY_LIMITS = { maxFiles: 3000, maxBytes: 64 * 1024 * 1024 };
+
+/**
+ * Another installed copy of the running scanner (e.g. the Codex and Claude installs of skill-sentry): every
+ * regular file under `root` exists under `selfRoot` with identical bytes, and the copy carries
+ * `scripts/guard.mjs` and `.claude-plugin/plugin.json`. A copy can hold fewer files (a release bundle next to a
+ * dev checkout) but never a file the running scanner lacks or a changed one, so no foreign code is ever
+ * skipped. Links, special files, limits or read errors -> false (scanned as usual). Never throws.
+ */
+export function isCopyOfSelf(root, selfRoot, limits = COPY_LIMITS) {
+  if (!root || !selfRoot) return false;
+  try {
+    if (realDir(root) === realDir(selfRoot)) return true;
+    for (const must of ['scripts/guard.mjs', '.claude-plugin/plugin.json']) {
+      if (!fs.lstatSync(path.join(root, ...must.split('/'))).isFile()) return false;
+    }
+    let files = 0, bytes = 0;
+    const stack = [''];
+    while (stack.length) {
+      const rel = stack.pop();
+      for (const e of fs.readdirSync(path.join(root, rel), { withFileTypes: true })) {
+        const r = rel ? `${rel}/${e.name}` : e.name;
+        if (e.isDirectory()) { stack.push(r); continue; }
+        if (!e.isFile()) return false;
+        if (++files > limits.maxFiles) return false;
+        const mine = path.join(root, ...r.split('/'));
+        const theirs = path.join(selfRoot, ...r.split('/'));
+        const a = fs.lstatSync(mine), b = fs.lstatSync(theirs);
+        if (!b.isFile() || a.size !== b.size) return false;
+        if ((bytes += a.size) > limits.maxBytes) return false;
+        if (!fs.readFileSync(mine).equals(fs.readFileSync(theirs))) return false;
+      }
+    }
+    return files > 0;
+  } catch {
+    return false;
+  }
+}
+
 const DEFAULT_LIMITS = { maxFiles: 2000, maxDirs: 2000, maxDepth: 6 };
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '.venv', '__pycache__']);
@@ -282,7 +321,7 @@ export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits, de
       id: `plugin:${key}`, kind: 'plugin', name: key, scope: 'user', root,
       meta: { version: e.version, installScope: e.scope },
     };
-    if (selfReal && rk === selfReal) comp.self = true;
+    if (selfReal && (rk === selfReal || (name === 'skill-sentry' && isCopyOfSelf(root, selfRoot)))) comp.self = true;
     add(comp);
 
     // Each JSON file is read once per plugin even if referenced several times.

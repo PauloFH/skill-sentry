@@ -815,6 +815,77 @@ test('codex: Ruling M read-only self invocation still passes', async () => {
   const r = await runGuard(codex('Bash', { command: cmd }));
   assert.equal(r.stdout, '');
 });
+// T7 calibration: Codex has no Skill tool, so the model loads a skill by reading its SKILL.md with the shell.
+// Real shape seen in a live WSL Codex session: `cat <install>/skills/audit/SKILL.md` was denied (SELF_PROTECT).
+const SELF_REAL = fs.realpathSync.native(SELF);
+const fwdSlash = s => s.replace(/\\/g, '/');
+const SKILL_AUDIT = fwdSlash(path.join(SELF_REAL, 'skills', 'audit', 'SKILL.md'));
+const SKILL_HARDEN = fwdSlash(path.join(SELF_REAL, 'skills', 'harden', 'SKILL.md'));
+test('codex: reading our own SKILL.md with a plain read verb passes (Codex loads skills through the shell)', async () => {
+  for (const command of [
+    `cat ${SKILL_AUDIT}`,
+    `cat "${SKILL_HARDEN}"`,
+    `cat '${SKILL_AUDIT}'`,
+    `sed -n '1,200p' ${SKILL_AUDIT}`,
+    `sed -n "1,80p" "${SKILL_HARDEN}"`,
+  ]) {
+    const r = await runGuard(codex('Bash', { command }));
+    assert.equal(r.stdout, '', command);
+  }
+});
+test('codex on Windows: PowerShell reads of our own SKILL.md (backslash paths) pass', { skip: process.platform !== 'win32' }, async () => {
+  const win = path.join(SELF_REAL, 'skills', 'audit', 'SKILL.md');
+  for (const command of [`Get-Content -Raw "${win}"`, `Get-Content ${win}`, `gc '${win}'`, `type "${win}"`, `cat ${win}`]) {
+    const r = await runGuard(codex('Bash', { command }));
+    assert.equal(r.stdout, '', command);
+  }
+});
+test('codex: anything beyond a single plain read of our own SKILL.md still denies', async () => {
+  const data = path.join(tmp('selfview'), 'skill-sentry');
+  fs.mkdirSync(data, { recursive: true });
+  const guardFile = fwdSlash(path.join(SELF_REAL, 'scripts', 'guard.mjs'));
+  const nested = fwdSlash(path.join(SELF_REAL, 'skills', 'audit', 'x', 'SKILL.md'));
+  for (const command of [
+    `cat ${SKILL_AUDIT} > out.txt`,
+    `cat ${SKILL_AUDIT} >> ${SKILL_AUDIT}`,
+    `cat ${SKILL_AUDIT} | tee ${SKILL_AUDIT}`,
+    `cat ${SKILL_AUDIT}; rm -r x`,
+    `cat ${SKILL_AUDIT} && rm -r x`,
+    `cat ${SKILL_AUDIT}\nrm -r x`,
+    `cat ${SKILL_AUDIT} ${guardFile}`,
+    `cat ${guardFile}`,
+    `cat ${SKILL_AUDIT}.bak`,
+    `cat ${nested}`,
+    `cat ${fwdSlash(path.join(SELF_REAL, 'skills', 'audit', '..', '..', 'scripts', 'scan.mjs'))}`,
+    `cat ${fwdSlash(path.join(data, 'allowlist.json'))}`,
+    `sed -i 's/a/b/' ${SKILL_AUDIT}`,
+    `sed -n '1w out.txt' ${SKILL_AUDIT}`,
+    `sed -n '1,2p;w out.txt' ${SKILL_AUDIT}`,
+    `sed -n -i '1,2p' ${SKILL_AUDIT}`,
+    `tee ${SKILL_AUDIT}`,
+    `cat $(echo ${SKILL_AUDIT})`,
+    `cat "${SKILL_AUDIT}" "${SKILL_HARDEN}"`,
+    `Get-Content ,'${SKILL_AUDIT}',x`,
+    `Get-Content '' '${SKILL_AUDIT}'`,
+    `Set-Content -Path '${SKILL_AUDIT}' -Value x`,
+  ]) {
+    const r = await runGuard(codex('Bash', { command }), { SKILL_SENTRY_DATA_DIR: data });
+    assert.match(assertDeny(JSON.parse(r.stdout), command), RUN_YOURSELF, command);
+  }
+  // A relative path from a working directory inside the install dir still denies (C3).
+  const rel = await runGuard(codex('Bash', { command: 'cat skills/audit/SKILL.md' }, { cwd: SELF_REAL }), { SKILL_SENTRY_DATA_DIR: data });
+  assert.match(assertDeny(JSON.parse(rel.stdout)), RUN_YOURSELF);
+});
+test('codex: the SKILL.md read exemption is Codex-only (Claude Code still asks; under Bash a backslash path asks)', async () => {
+  const r = await runGuard(claude('Bash', { command: `cat ${SKILL_AUDIT}` }));
+  assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'ask');
+  const { decide } = await import('../scripts/lib/guardcore.mjs');
+  const base = { selfRoot: SELF, dataDir: path.join(tmp('sv'), 'skill-sentry'), cwd: PROJECT };
+  assert.equal(decide({ ...base, toolName: 'Bash', toolInput: { command: `cat ${SKILL_AUDIT}` } }).ruleId, 'SELF_PROTECT');
+  assert.equal(decide({ ...base, toolName: 'Bash', toolInput: { command: `cat ${SKILL_AUDIT}` }, selfViews: true }).decision, 'none');
+  const back = path.join(SELF_REAL, 'skills', 'audit', 'SKILL.md');
+  assert.equal(decide({ ...base, toolName: 'Bash', toolInput: { command: `cat "${back.replace(/\//g, '\\')}"` }, selfViews: true }).ruleId, 'SELF_PROTECT');
+});
 test('codex: apply_patch to a normal file → none', async () => {
   const patch = '*** Begin Patch\n*** Add File: src/hello.txt\n+hi\n*** Update File: README.md\n@@\n-a\n+b\n*** End Patch';
   const r = await runGuard(codex('apply_patch', { command: patch }));

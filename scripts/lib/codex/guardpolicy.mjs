@@ -432,7 +432,7 @@ export async function handleCodex({ input, selfRoot, write, log, now = Date.now,
 
   let originMemo;
   const origin = () => (originMemo === undefined ? (originMemo = findCodexOrigin(input.transcript_path, undefined, toolName, deadline)) : originMemo);
-  const args = { toolName, toolInput, origin, allowlist: () => readAllowlist(dir), selfRoot, dataDir: dir, cwd: input.cwd, extraWritePaths };
+  const args = { toolName, toolInput, origin, allowlist: () => readAllowlist(dir), selfRoot, dataDir: dir, cwd: input.cwd, extraWritePaths, selfViews: true };
   const base = process.platform === 'win32' && toolName === 'Bash'
     ? mergeWin32Readings(decide(args), decide({ ...args, toolName: 'PowerShell' }))
     : decide(args);
