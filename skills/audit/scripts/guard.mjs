@@ -7,10 +7,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-// Ruling D: selfRoot is the directory containing scripts/.
-const selfRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // Ruling L1: the ask-path component check must finish within 1500 ms of process start (module loading
 // included); the 5 s hook timeout would otherwise discard the decision.
 const DEADLINE = performance.timeOrigin + 1500;
@@ -39,7 +36,10 @@ function readStdin() {
 }
 
 async function main() {
-  const [raw, { handle }] = await Promise.all([readStdin(), import('./lib/guardmain.mjs')]);
+  const [raw, { handle }, { roots }] = await Promise.all([readStdin(), import('./lib/guardmain.mjs'), import('./lib/roots.mjs')]);
+  // Ruling D: selfRoot is the plugin root (the directory containing skills/audit/scripts/), else the skill root.
+  const { skillRoot, pluginRoot } = roots(import.meta.url);
+  const selfRoot = pluginRoot ?? skillRoot;
   await handle({ raw, selfRoot, deadline: DEADLINE, write: s => process.stdout.write(s), log: appendLog });
 }
 

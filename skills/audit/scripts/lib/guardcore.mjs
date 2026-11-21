@@ -823,6 +823,7 @@ function rootForms(r) {
 // Only fixed token lists are exempt from SELF_PROTECT; no shell argument is parsed beyond them
 // (PowerShell's grammar - arrays from `,`, splatting, dropped empty strings - kept defeating that):
 //   node <scanPath> [--json | --diff-only]...      node <hardenPath> check
+// with both scripts at exactly `<selfRoot>/skills/audit/scripts/`.
 // `<path>` is bare or wrapped in one pair of matching quotes, absolute (`X:\`, `X:/` or `/`), and made
 // only of `[A-Za-z0-9 ._:/\~-]` (space only when quoted, `\` only under PowerShell). Anything else,
 // including every value-taking flag, keeps the prompt.
@@ -856,7 +857,7 @@ export function isReadOnlySelfInvocation(cmd, selfRoot, toolName = 'Bash', { age
   if (script.includes('\\') && toolName !== 'PowerShell') return false;
   if (!/^(?:[A-Za-z]:[\\/]|\/(?![\\/]))/.test(script) || isUnusualPath(script)) return false;
   const target = lowerOnWin(slashes(path.resolve(script)));
-  const is = name => rootForms(selfRoot).some(f => target === `${f}/scripts/${lowerOnWin(name)}`);
+  const is = name => rootForms(selfRoot).some(f => target === `${f}/skills/audit/scripts/${lowerOnWin(name)}`);
   const args = m[4].split(' ').filter(Boolean);
   if (is('harden.mjs')) return args[0] === 'check' && fixedTokens(args.slice(1), new Set(), agentFlag);
   return is('scan.mjs') && fixedTokens(args, SCAN_FLAGS, agentFlag);

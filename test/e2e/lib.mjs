@@ -1,5 +1,5 @@
 // Helpers for the e2e install checks (test/e2e/install.test.mjs). No side effects at import time: Node's test
-// runner may load this file as a test file. CI-only code: never imported by scripts/.
+// runner may load this file as a test file. CI-only code: never imported by skills/audit/scripts/.
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';

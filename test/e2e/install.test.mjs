@@ -58,7 +58,7 @@ function defineTests() {
   const CODEX_BLOCKED = /blocked by PreToolUse hook/;
 
   // The Codex home label in component ids. `win` is the label of the default home on every OS today (documented in
-  // scripts/lib/codex/homes.mjs; reported as a product bug for Linux and macOS): pinned so a change is noticed.
+  // skills/audit/scripts/lib/codex/homes.mjs; reported as a product bug for Linux and macOS): pinned so a change is noticed.
   const CODEX_LABEL = 'win';
 
   /** A fresh isolated home (env, home, work dir, CODEX_HOME). */
@@ -153,7 +153,7 @@ function defineTests() {
       assert.equal(hook.trustStatus, 'trusted');
       assert.ok(!hook.command.includes('${'), hook.command);
       assert.ok(hook.command.includes(codexRoot), hook.command);
-      assert.match(hook.command, /^node "[^"]+[\\/]scripts\/guard\.mjs"$/);
+      assert.match(hook.command, /^node "[^"]+[\\/]skills\/audit\/scripts\/guard\.mjs"$/);
       return hook.command;
     } finally { await s.close(); }
   }
@@ -168,7 +168,7 @@ function defineTests() {
   /** Each installed scan.mjs reports the planted skills malicious and every skill-sentry component ok. */
   async function assertScanners(h, roots) {
     for (const [agent, dir] of roots) {
-      const r = await run([process.execPath, path.join(dir, 'scripts', 'scan.mjs')], ['--json', '--no-wsl'], { env: h.env, cwd: h.work });
+      const r = await run([process.execPath, path.join(dir, 'skills', 'audit', 'scripts', 'scan.mjs')], ['--json', '--no-wsl'], { env: h.env, cwd: h.work });
       assert.equal(r.code, 0, `${agent} scan: ${r.stderr}`);
       const rep = JSON.parse(r.stdout);
       const brief = rep.components.map(c => `${c.id}=${c.scannerVerdict}`).join(', ');
@@ -227,7 +227,7 @@ function defineTests() {
     assertSameTree(readTree(dist), a.claudeRoot, 'claude copy');
     const hooks = JSON.parse(fs.readFileSync(path.join(a.claudeRoot, 'hooks', 'hooks.json'), 'utf8'));
     a.claudeCommand = hooks.hooks.PreToolUse[0].hooks[0].command;
-    assert.match(a.claudeCommand, /\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/guard\.mjs/);
+    assert.match(a.claudeCommand, /\$\{CLAUDE_PLUGIN_ROOT\}\/skills\/audit\/scripts\/guard\.mjs/);
   });
 
   test('A: codex installs from the directory marketplace', async () => {

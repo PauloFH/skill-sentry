@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Records a published release in scripts/lib/releases.mjs (KNOWN_RELEASES / KNOWN_RELEASE_SIZES).
+// Records a published release in skills/audit/scripts/lib/releases.mjs (KNOWN_RELEASES / KNOWN_RELEASE_SIZES).
 // Run by semantic-release's prepare step with the previous release's tag (tools/ci/release/release.config.cjs):
 //
 //   node tools/ci/record-release.mjs <tag>        e.g. v0.1.2; an empty argument (first release) does nothing
@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { releaseEntry, writeRelease } from '../release-hashes.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const RELEASES = path.join(ROOT, 'scripts', 'lib', 'releases.mjs');
+const RELEASES = path.join(ROOT, 'skills', 'audit', 'scripts', 'lib', 'releases.mjs');
 
 async function main(tag) {
   if (!tag) {

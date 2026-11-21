@@ -8,13 +8,13 @@ import { fileURLToPath } from 'node:url';
 import {
   isCodexInput, codexDecision, isNetworkCapable, readTaint, markTaint, taintFile, TAINT_LIMITS,
   retryHash, hasRetry, issueRetry, consumeRetry, mergeWin32Readings, handleCodex, taintMarker, cwdInside,
-} from '../scripts/lib/codex/guardpolicy.mjs';
-import { patchPaths, scanPatch, shellPatch, PATCH_MAX_BYTES, PATCH_MAX_PATHS } from '../scripts/lib/codex/patch.mjs';
-import { findCodexOrigin, lastSkillPath } from '../scripts/lib/codex/origin.mjs';
+} from '../skills/audit/scripts/lib/codex/guardpolicy.mjs';
+import { patchPaths, scanPatch, shellPatch, PATCH_MAX_BYTES, PATCH_MAX_PATHS } from '../skills/audit/scripts/lib/codex/patch.mjs';
+import { findCodexOrigin, lastSkillPath } from '../skills/audit/scripts/lib/codex/origin.mjs';
 import { tmpFactory } from './helpers/tmp.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const GUARD = path.resolve(HERE, '..', 'scripts', 'guard.mjs');
+const GUARD = path.resolve(HERE, '..', 'skills', 'audit', 'scripts', 'guard.mjs');
 const SELF = path.resolve(HERE, '..');
 const R = name => path.join(HERE, 'fixtures', 'codex-rollouts', name);
 const tmp = tmpFactory('ss-cxguard-');
@@ -64,7 +64,7 @@ const logLines = dir => {
 
 /** In-process run; records the order of stdout writes, log lines and taint-file existence at write time. */
 async function handleWith(input, { data = path.join(tmp('hdata'), 'skill-sentry') } = {}) {
-  const { handle } = await import('../scripts/lib/guardmain.mjs');
+  const { handle } = await import('../skills/audit/scripts/lib/guardmain.mjs');
   const events = [];
   let written = '';
   const keys = ['SKILL_SENTRY_DATA_DIR', 'SKILL_SENTRY_CLAUDE_HOME', 'SKILL_SENTRY_HOME_DIR'];
@@ -855,7 +855,7 @@ test('codex P3: relative skill-sentry segments: a literal cd base passes; the ho
   }
 });
 test('codex: Ruling M read-only self invocation still passes', async () => {
-  const cmd = `node ${path.join(SELF, 'scripts', 'scan.mjs').replace(/\\/g, '/')} --json`;
+  const cmd = `node ${path.join(SELF, 'skills', 'audit', 'scripts', 'scan.mjs').replace(/\\/g, '/')} --json`;
   const r = await runGuard(codex('Bash', { command: cmd }));
   assert.equal(r.stdout, '');
 });
@@ -894,7 +894,7 @@ test('codex on Windows: PowerShell reads of our own SKILL.md (backslash paths) p
 test('codex: anything beyond a single plain read of our own SKILL.md still denies', async () => {
   const data = path.join(tmp('selfview'), 'skill-sentry');
   fs.mkdirSync(data, { recursive: true });
-  const guardFile = fwdSlash(path.join(SELF_REAL, 'scripts', 'guard.mjs'));
+  const guardFile = fwdSlash(path.join(SELF_REAL, 'skills', 'audit', 'scripts', 'guard.mjs'));
   const nested = fwdSlash(path.join(SELF_REAL, 'skills', 'audit', 'x', 'SKILL.md'));
   for (const command of [
     `cat ${SKILL_AUDIT} > out.txt`,
@@ -907,7 +907,7 @@ test('codex: anything beyond a single plain read of our own SKILL.md still denie
     `cat ${guardFile}`,
     `cat ${SKILL_AUDIT}.bak`,
     `cat ${nested}`,
-    `cat ${fwdSlash(path.join(SELF_REAL, 'skills', 'audit', '..', '..', 'scripts', 'scan.mjs'))}`,
+    `cat ${fwdSlash(path.join(SELF_REAL, 'skills', 'audit', 'scripts', 'scan.mjs'))}`,
     `cat ${fwdSlash(path.join(data, 'allowlist.json'))}`,
     `sed -i 's/a/b/' ${SKILL_AUDIT}`,
     `sed -n '1w out.txt' ${SKILL_AUDIT}`,
@@ -934,7 +934,7 @@ test('codex: anything beyond a single plain read of our own SKILL.md still denie
 test('codex: the SKILL.md read exemption is Codex-only (Claude Code still asks; under Bash a backslash path asks)', async () => {
   const r = await runGuard(claude('Bash', { command: `cat ${SKILL_AUDIT}` }));
   assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'ask');
-  const { decide } = await import('../scripts/lib/guardcore.mjs');
+  const { decide } = await import('../skills/audit/scripts/lib/guardcore.mjs');
   const base = { selfRoot: SELF, dataDir: path.join(tmp('sv'), 'skill-sentry'), cwd: PROJECT };
   assert.equal(decide({ ...base, toolName: 'Bash', toolInput: { command: `cat ${SKILL_AUDIT}` } }).ruleId, 'SELF_PROTECT');
   assert.equal(decide({ ...base, toolName: 'Bash', toolInput: { command: `cat ${SKILL_AUDIT}` }, selfViews: true }).decision, 'none');
@@ -942,7 +942,7 @@ test('codex: the SKILL.md read exemption is Codex-only (Claude Code still asks; 
   assert.equal(decide({ ...base, toolName: 'Bash', toolInput: { command: `cat "${back.replace(/\//g, '\\')}"` }, selfViews: true }).ruleId, 'SELF_PROTECT');
 });
 test('codex: Get-Content / gc / type reads of our own SKILL.md are exempt only as PowerShell (not cmdlets under bash/zsh)', async () => {
-  const { decide } = await import('../scripts/lib/guardcore.mjs');
+  const { decide } = await import('../skills/audit/scripts/lib/guardcore.mjs');
   const base = { selfRoot: SELF, dataDir: path.join(tmp('svps'), 'skill-sentry'), cwd: PROJECT, selfViews: true };
   for (const command of [`Get-Content -Raw "${SKILL_AUDIT}"`, `Get-Content -LiteralPath '${SKILL_AUDIT}' -Raw`, `gc ${SKILL_AUDIT}`, `type "${SKILL_AUDIT}"`]) {
     assert.equal(decide({ ...base, toolName: 'Bash', toolInput: { command } }).ruleId, 'SELF_PROTECT', `Bash: ${command}`);
@@ -955,8 +955,8 @@ test('codex: Get-Content / gc / type reads of our own SKILL.md are exempt only a
 test('codex C3: --agent self invocations pass with the working directory inside the install or data dir', async () => {
   const data = path.join(tmp('cwdagent'), 'skill-sentry');
   fs.mkdirSync(data, { recursive: true });
-  const scan = fwdSlash(path.join(SELF_REAL, 'scripts', 'scan.mjs'));
-  const harden = fwdSlash(path.join(SELF_REAL, 'scripts', 'harden.mjs'));
+  const scan = fwdSlash(path.join(SELF_REAL, 'skills', 'audit', 'scripts', 'scan.mjs'));
+  const harden = fwdSlash(path.join(SELF_REAL, 'skills', 'audit', 'scripts', 'harden.mjs'));
   for (const cwd of [SELF_REAL, data]) {
     for (const command of [`node "${scan}" --json --agent codex`, `node "${harden}" check --agent codex`]) {
       const r = await runGuard(codex('Bash', { command }, { cwd }), { SKILL_SENTRY_DATA_DIR: data });
@@ -967,8 +967,8 @@ test('codex C3: --agent self invocations pass with the working directory inside 
   assert.match(assertDeny(JSON.parse(bad.stdout)), RUN_YOURSELF);
 });
 test('codex: harden check --agent <claude|codex|all> and scan --agent <...> pass (the Codex harden flow needs --agent codex)', async () => {
-  const harden = fwdSlash(path.join(SELF_REAL, 'scripts', 'harden.mjs'));
-  const scan = fwdSlash(path.join(SELF_REAL, 'skills', 'audit', '..', '..', 'scripts', 'scan.mjs'));
+  const harden = fwdSlash(path.join(SELF_REAL, 'skills', 'harden', '..', 'audit', 'scripts', 'harden.mjs'));
+  const scan = fwdSlash(path.join(SELF_REAL, 'skills', 'audit', 'scripts', 'scan.mjs'));
   for (const command of [
     `node "${harden}" check --agent codex`, `node "${harden}" check --agent all`, `node "${harden}" check --agent claude`,
     `node "${scan}" --json --agent codex`, `node "${scan}" --agent all --json`, `node "${scan}" --json --diff-only --agent claude`,
@@ -987,7 +987,7 @@ test('codex: harden check --agent <claude|codex|all> and scan --agent <...> pass
   }
 });
 test('codex: the --agent self-invocation tokens are Codex-only (Claude Code still asks)', async () => {
-  const harden = fwdSlash(path.join(SELF_REAL, 'scripts', 'harden.mjs'));
+  const harden = fwdSlash(path.join(SELF_REAL, 'skills', 'audit', 'scripts', 'harden.mjs'));
   const r = await runGuard(claude('Bash', { command: `node "${harden}" check --agent codex` }));
   assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'ask');
 });
@@ -1060,7 +1060,7 @@ test('codex C3: a working directory inside the data or install dir denies shell 
     assert.match(reason, /SELF_PROTECT_CWD/);
     assert.match(reason, RUN_YOURSELF);
   }
-  const scan = path.join(SELF, 'scripts', 'scan.mjs').replace(/\\/g, '/');
+  const scan = path.join(SELF, 'skills', 'audit', 'scripts', 'scan.mjs').replace(/\\/g, '/');
   assert.equal((await runGuard(codex('Bash', { command: `node ${scan} --json` }, { cwd: data }), env)).stdout, '', 'Ruling M');
   assert.equal((await runGuard(codex('Bash', { command: 'rm notes.txt' }, { cwd: PROJECT }), env)).stdout, '', 'ordinary cwd');
   assert.equal(cwdInside(path.join(path.dirname(data), 'skill-sentry-other'), [data]), false, 'a sibling with a common prefix is not inside');
@@ -1341,8 +1341,8 @@ test('codex on Windows (R15): a critical match still denies with the merged read
   assert.match(assertDeny(JSON.parse(r.stdout)), /\(critical\)/);
 });
 test('codex on Windows: Ruling M self invocations with backslash paths (pwsh form) still pass', { skip: process.platform !== 'win32' }, async () => {
-  const scan = path.join(SELF, 'scripts', 'scan.mjs');
-  const harden = path.join(SELF, 'scripts', 'harden.mjs');
+  const scan = path.join(SELF, 'skills', 'audit', 'scripts', 'scan.mjs');
+  const harden = path.join(SELF, 'skills', 'audit', 'scripts', 'harden.mjs');
   for (const command of [`node ${scan} --json`, `node "${scan}" --json`, `node '${scan}' --diff-only`, `node "${harden}" check`]) {
     const r = await runGuard(codex('Bash', { command }));
     assert.equal(r.stdout, '', command);

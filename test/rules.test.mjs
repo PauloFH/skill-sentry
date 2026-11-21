@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { matchText, matchCommand, matchPath, findInvisible, RULES } from '../scripts/lib/rules.mjs';
-import { classifyFile, normalizePath, escapeInvisible, truncate } from '../scripts/lib/text.mjs';
+import { matchText, matchCommand, matchPath, findInvisible, RULES } from '../skills/audit/scripts/lib/rules.mjs';
+import { classifyFile, normalizePath, escapeInvisible, truncate } from '../skills/audit/scripts/lib/text.mjs';
 
 // Signature strings are assembled at runtime so they never sit contiguously on disk.
 const MINER = 'xm' + 'rig';
@@ -163,7 +163,7 @@ test('a rule prefilter (`needs`) never rejects a line its pattern matches', () =
 test('source files contain no raw invisible characters', async () => {
   const { readFileSync } = await import('node:fs');
   const re = /[​-‏⁠﻿‪-‮⁦-⁩]|[\u{E0000}-\u{E007F}]/u;
-  for (const f of ['../scripts/lib/rules.mjs', '../scripts/lib/text.mjs']) {
+  for (const f of ['../skills/audit/scripts/lib/rules.mjs', '../skills/audit/scripts/lib/text.mjs']) {
     assert.ok(!re.test(readFileSync(new URL(f, import.meta.url), 'utf8')), f);
   }
 });

@@ -170,7 +170,7 @@ const sameUpToEol = (a, b) => Math.max(a, b) <= 2 * Math.min(a, b);
 /**
  * Another installed copy of the running scanner: its set of regular files equals the running scanner's
  * shipped set (no extra, no missing; dev-only dirs of a checkout and install markers aside), every file with
- * identical bytes (CRLF and LF line ends count as equal), and it carries `scripts/guard.mjs` and
+ * identical bytes (CRLF and LF line ends count as equal), and it carries `skills/audit/scripts/guard.mjs` and
  * `.claude-plugin/plugin.json`. Links, special files, limits, `deadline` or read errors -> false (scanned as
  * usual). Never throws.
  */
@@ -178,7 +178,7 @@ export function isCopyOfSelf(root, selfRoot, { limits = COPY_LIMITS, deadline } 
   if (!root || !selfRoot) return false;
   try {
     if (realDir(root) === realDir(selfRoot)) return true;
-    for (const must of ['scripts/guard.mjs', '.claude-plugin/plugin.json']) {
+    for (const must of ['skills/audit/scripts/guard.mjs', '.claude-plugin/plugin.json']) {
       if (!fs.lstatSync(abs(root, must)).isFile()) return false;
     }
     const mine = shippedFiles(selfRoot, { skipDirs: DEV_DIRS, limits, deadline });

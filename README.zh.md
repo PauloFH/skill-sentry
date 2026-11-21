@@ -59,16 +59,16 @@ Claude 运行扫描器，然后给出摘要（各结论的组件数量、自基�
 
 任何 critical 发现都会把结论至少提升到 `suspicious`。同一文件内的组合会升级：外泄行为与访问机密同时出现时升为 critical，混淆与 rce、exfil 或 secret 发现同时出现时升为 high。
 
-`/skill-sentry:audit` 是常规入口。如果要自己运行脚本，请注意：对于已安装的插件，脚本位于插件安装目录 `~/.claude/plugins/cache/skill-sentry/skill-sentry/<版本>/scripts/` 下；下面的路径都相对于该目录（或本仓库的克隆）。
+`/skill-sentry:audit` 是常规入口。如果要自己运行脚本，请注意：对于已安装的插件，脚本位于插件安装目录 `~/.claude/plugins/cache/skill-sentry/skill-sentry/<版本>/` 下；下面的路径都相对于该目录（或本仓库的克隆）。
 
 常用选项（可以让 Claude 使用，也可以自己运行脚本）：
 
 ```
-node scripts/scan.mjs --json
-node scripts/scan.mjs --path <dir>
-node scripts/scan.mjs --component <id>
-node scripts/scan.mjs --diff-only
-node scripts/scan.mjs --update-baseline
+node skills/audit/scripts/scan.mjs --json
+node skills/audit/scripts/scan.mjs --path <dir>
+node skills/audit/scripts/scan.mjs --component <id>
+node skills/audit/scripts/scan.mjs --diff-only
+node skills/audit/scripts/scan.mjs --update-baseline
 ```
 
 - `--path <dir>` 检查单个文件夹，便于你在**安装之前**审查某个 skill 或插件。它不会读取或写入基线。
@@ -114,7 +114,7 @@ Claude 列出每条建议，解释其重要性，只有在你对该项明确回�
 如果某个发现是已知的误报，可以逐条放行：
 
 ```
-node scripts/scan.mjs --allow <componentId> <ruleId> <file> --reason "why"
+node skills/audit/scripts/scan.mjs --allow <componentId> <ruleId> <file> --reason "why"
 ```
 
 条目与该文件的 sha256 绑定，因此**文件一旦改变，条目立即失效**。放行被拦截命令的条目采用完整字符串精确匹配。Claude 只会在你同意之后才运行此命令。
@@ -138,8 +138,8 @@ skill-sentry 0.1.1 把同样的审计和守卫带到了 OpenAI Codex，并提供
 Windows 和 WSL 中的 Codex 目录会被自动检测。用 `--agent claude|codex|all`（默认 `all`）选择审计对象，用 `--codex-home <dir>`（可重复）添加目录，用 `--no-wsl` 跳过 WSL：
 
 ```
-node scripts/scan.mjs --agent codex
-node scripts/scan.mjs --agent all --codex-home <dir> --no-wsl
+node skills/audit/scripts/scan.mjs --agent codex
+node skills/audit/scripts/scan.mjs --agent all --codex-home <dir> --no-wsl
 ```
 
 ### 在 Codex 中安装
@@ -188,7 +188,7 @@ codex plugin add skill-sentry@skill-sentry
 ### Codex 下的加固
 
 ```
-node scripts/harden.mjs check --agent codex
+node skills/audit/scripts/harden.mjs check --agent codex
 ```
 
 不带选项的 `check` 仍然只针对 Claude。Codex 的加固**只给建议**：skill-sentry 绝不会修改 Codex 的文件。每条建议都附带一段代码片段，由你自己应用：

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseRules } from '../scripts/lib/codexrules.mjs';
+import { parseRules } from '../skills/audit/scripts/lib/codexrules.mjs';
 
 test('pwsh allow rule', () => {
   const r = parseRules('prefix_rule(pattern=["pwsh", "-NoProfile", "-Command"], decision="allow")\n');

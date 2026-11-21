@@ -59,16 +59,16 @@ Verdicts come from a score: critical findings weigh 40, high 15, medium 5. Each 
 
 Any critical finding raises the verdict to at least `suspicious`. Combinations escalate within a file: exfiltration next to secret access becomes critical, and obfuscation next to rce, exfil or secret findings becomes high.
 
-`/skill-sentry:audit` is the normal entry point. To run the script yourself, note that for an installed plugin the scripts live under the plugin install directory, `~/.claude/plugins/cache/skill-sentry/skill-sentry/<version>/scripts/`; the paths below are relative to that directory (or to a clone of this repository).
+`/skill-sentry:audit` is the normal entry point. To run the script yourself, note that for an installed plugin the scripts live under the plugin install directory, `~/.claude/plugins/cache/skill-sentry/skill-sentry/<version>/`; the paths below are relative to that directory (or to a clone of this repository).
 
 Useful options (you can ask Claude for them, or run the script yourself):
 
 ```
-node scripts/scan.mjs --json
-node scripts/scan.mjs --path <dir>
-node scripts/scan.mjs --component <id>
-node scripts/scan.mjs --diff-only
-node scripts/scan.mjs --update-baseline
+node skills/audit/scripts/scan.mjs --json
+node skills/audit/scripts/scan.mjs --path <dir>
+node skills/audit/scripts/scan.mjs --component <id>
+node skills/audit/scripts/scan.mjs --diff-only
+node skills/audit/scripts/scan.mjs --update-baseline
 ```
 
 - `--path <dir>` vets a single folder, so you can check a skill or plugin **before installing it**. It does not read or write the baseline.
@@ -114,7 +114,7 @@ The default audit (`scan.mjs` with only `--json` and/or `--diff-only`) and `hard
 If a finding is a known false positive, allow it one finding at a time:
 
 ```
-node scripts/scan.mjs --allow <componentId> <ruleId> <file> --reason "why"
+node skills/audit/scripts/scan.mjs --allow <componentId> <ruleId> <file> --reason "why"
 ```
 
 An entry is tied to the sha256 of that file, so it **stops applying as soon as the file changes**. Entries that let a blocked command through are exact-string matches. Claude only runs this after you say yes.
@@ -138,8 +138,8 @@ skill-sentry 0.1.1 brings the same audit and guard to OpenAI Codex, plus a recom
 Windows and WSL Codex homes are detected automatically. Pick what to audit with `--agent claude|codex|all` (default `all`), add a home with `--codex-home <dir>` (repeatable) and skip WSL with `--no-wsl`:
 
 ```
-node scripts/scan.mjs --agent codex
-node scripts/scan.mjs --agent all --codex-home <dir> --no-wsl
+node skills/audit/scripts/scan.mjs --agent codex
+node skills/audit/scripts/scan.mjs --agent all --codex-home <dir> --no-wsl
 ```
 
 ### Install in Codex
@@ -188,7 +188,7 @@ The guard is a PreToolUse hook here too. Codex has no "ask", so it can only allo
 ### Harden under Codex
 
 ```
-node scripts/harden.mjs check --agent codex
+node skills/audit/scripts/harden.mjs check --agent codex
 ```
 
 Plain `check` stays Claude-only. Codex hardening is **recommend-only**: skill-sentry never edits Codex files. Each recommendation comes with a snippet for you to apply yourself:

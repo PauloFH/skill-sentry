@@ -26,7 +26,7 @@ module.exports = {
     }],
     ['@semantic-release/changelog', { changelogFile: 'CHANGELOG.md', changelogTitle: '# Changelog' }],
     ['@semantic-release/git', {
-      assets: ['.claude-plugin/plugin.json', '.claude-plugin/marketplace.json', 'package.json', 'CHANGELOG.md', 'scripts/lib/releases.mjs'],
+      assets: ['.claude-plugin/plugin.json', '.claude-plugin/marketplace.json', 'package.json', 'CHANGELOG.md', 'skills/audit/scripts/lib/releases.mjs'],
       // One line, no body, no trailer (the project's commit format).
       message: 'chore: release ${nextRelease.version}',
     }],

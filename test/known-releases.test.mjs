@@ -5,14 +5,14 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { tmpFactory } from './helpers/tmp.mjs';
-import * as releases from '../scripts/lib/releases.mjs';
-import { knownRelease } from '../scripts/lib/selfcopy.mjs';
+import * as releases from '../skills/audit/scripts/lib/releases.mjs';
+import { knownRelease } from '../skills/audit/scripts/lib/selfcopy.mjs';
 import { releaseEntry, addRelease } from '../tools/release-hashes.mjs';
 
 const { KNOWN_RELEASES, KNOWN_RELEASE_SIZES } = releases;
 const tmp = tmpFactory('ss-knownrel-');
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const RELEASES_FILE = path.join(ROOT, 'scripts', 'lib', 'releases.mjs');
+const RELEASES_FILE = path.join(ROOT, 'skills', 'audit', 'scripts', 'lib', 'releases.mjs');
 const UNAVAILABLE = 'git archive of the release tags unavailable (git missing or no v* tags; run git fetch --tags)';
 
 /** v* release tags reachable from HEAD, newest first; null when git or the tags are unavailable. */

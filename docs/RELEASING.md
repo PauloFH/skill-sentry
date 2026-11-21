@@ -15,7 +15,7 @@ Releases are automatic. Nobody bumps a version or pushes a tag by hand.
      no release;
    - `tools/ci/set-version.mjs` writes the version into `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`
      and `package.json`;
-   - `tools/ci/record-release.mjs` adds the previous release to `scripts/lib/releases.mjs` (see below);
+   - `tools/ci/record-release.mjs` adds the previous release to `skills/audit/scripts/lib/releases.mjs` (see below);
    - `test/package.test.mjs` and `test/known-releases.test.mjs` check the result;
    - `CHANGELOG.md` gets the release notes;
    - the commit `chore: release <version>` (those files) goes to `main`, tagged `v<version>`, and a GitHub Release
@@ -30,7 +30,7 @@ No step is manual.
 
 ## KNOWN_RELEASES, one release behind
 
-`scripts/lib/releases.mjs` holds the file hashes of every published release. A newer scanner uses it to recognise
+`skills/audit/scripts/lib/releases.mjs` holds the file hashes of every published release. A newer scanner uses it to recognise
 an older skill-sentry copy (for example the one still installed for the other agent) instead of reporting it as
 malicious.
 
@@ -73,7 +73,7 @@ semantic-release creates lightweight tags, which carry no message.
   `tools/ci/release/unrecordable.json` (`{ "X.Y.Z": "contains a symlink" }`), which `record-release` and
   `test/known-releases.test.mjs` skip;
 - a size limit (more than 3000 files, 500 directories or 64 MB): the runtime has the same limits
-  (`scripts/lib/selfcopy.mjs` COPY_LIMITS), so raise both together in a `fix:` commit, or list the version as above;
+  (`skills/audit/scripts/lib/selfcopy.mjs` COPY_LIMITS), so raise both together in a `fix:` commit, or list the version as above;
 - `export-ignore` in a `.gitattributes`: `git archive` then leaves files out that a git install still contains, so
   the recorded entry would never match an install. Do not use `export-ignore`; if one was added, remove it in a
   `fix:` commit and list the affected version as above.

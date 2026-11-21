@@ -7,7 +7,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { discover } from './lib/inventory.mjs';
 import { codexHomes } from './lib/codex/homes.mjs';
 import { discoverCodex } from './lib/codex/inventory.mjs';
@@ -17,9 +16,11 @@ import { loadAllowlist, allowlistLoadError, addAllowEntry } from './lib/allowlis
 import { dataDir } from './lib/datadir.mjs';
 import { buildReport, renderMarkdown } from './lib/report.mjs';
 import { untrusted } from './lib/text.mjs';
+import { roots } from './lib/roots.mjs';
 
-// Ruling D: selfRoot is the directory containing scripts/.
-const selfRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// Ruling D: selfRoot is the plugin root (the directory containing skills/audit/scripts/), else the skill root.
+const { skillRoot, pluginRoot } = roots(import.meta.url);
+const selfRoot = pluginRoot ?? skillRoot;
 const SCAN_BUDGET_MS = 120_000;
 
 const USAGE = `usage: node scan.mjs [--json] [--path <dir>] [--component <id>] [--diff-only] [--update-baseline] [--claude-home <dir>] [--project <dir>]

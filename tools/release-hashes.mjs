@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Dev tool: the KNOWN_RELEASES / KNOWN_RELEASE_SIZES entries (scripts/lib/releases.mjs) for one release.
-// Not part of the plugin runtime: nothing under scripts/ imports it.
+// Dev tool: the KNOWN_RELEASES / KNOWN_RELEASE_SIZES entries (skills/audit/scripts/lib/releases.mjs) for one release.
+// Not part of the plugin runtime: nothing under skills/audit/scripts/ imports it.
 //
 //   node tools/release-hashes.mjs <clean-export-dir> [version]                  print the entry as JSON
 //   node tools/release-hashes.mjs <clean-export-dir> [version] --write <file>   add it to releases.mjs
@@ -18,7 +18,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { shippedFiles, lfBytes, lfSha256 } from '../scripts/lib/selfcopy.mjs';
+import { shippedFiles, lfBytes, lfSha256 } from '../skills/audit/scripts/lib/selfcopy.mjs';
 
 const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 

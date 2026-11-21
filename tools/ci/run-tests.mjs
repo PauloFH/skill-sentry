@@ -2,7 +2,7 @@
 // CI entry for the unit suite: runs `npm test` (the same command as locally) with the TAP reporter, echoes the
 // output, lists every skipped test in the job summary and fails when a skip looks like a missing git tag or
 // history (the known-release tests need `git archive v0.1.1`, so a checkout without tags must fail the job instead
-// of silently skipping). CI-only tooling: never imported by scripts/.
+// of silently skipping). CI-only tooling: never imported by skills/audit/scripts/.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 

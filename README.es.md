@@ -59,16 +59,16 @@ Los veredictos salen de una puntuación: los hallazgos críticos valen 40, los a
 
 Cualquier hallazgo crítico sube el veredicto al menos a `suspicious`. Las combinaciones escalan dentro de un archivo: la exfiltración junto al acceso a secretos pasa a crítica, y la ofuscación junto a hallazgos de rce, exfil o secret pasa a alta.
 
-`/skill-sentry:audit` es el punto de entrada normal. Para ejecutar el script tú mismo, ten en cuenta que, en un plugin instalado, los scripts están en el directorio de instalación del plugin, `~/.claude/plugins/cache/skill-sentry/skill-sentry/<versión>/scripts/`; las rutas de abajo son relativas a ese directorio (o a un clon de este repositorio).
+`/skill-sentry:audit` es el punto de entrada normal. Para ejecutar el script tú mismo, ten en cuenta que, en un plugin instalado, los scripts están en el directorio de instalación del plugin, `~/.claude/plugins/cache/skill-sentry/skill-sentry/<versión>/`; las rutas de abajo son relativas a ese directorio (o a un clon de este repositorio).
 
 Opciones útiles (puedes pedírselas a Claude o ejecutar el script tú mismo):
 
 ```
-node scripts/scan.mjs --json
-node scripts/scan.mjs --path <dir>
-node scripts/scan.mjs --component <id>
-node scripts/scan.mjs --diff-only
-node scripts/scan.mjs --update-baseline
+node skills/audit/scripts/scan.mjs --json
+node skills/audit/scripts/scan.mjs --path <dir>
+node skills/audit/scripts/scan.mjs --component <id>
+node skills/audit/scripts/scan.mjs --diff-only
+node skills/audit/scripts/scan.mjs --update-baseline
 ```
 
 - `--path <dir>` examina una sola carpeta, para que revises una skill o plugin **antes de instalarlo**. No lee ni escribe la línea base.
@@ -114,7 +114,7 @@ La auditoría predeterminada (`scan.mjs` solo con `--json` y/o `--diff-only`) y 
 Si un hallazgo es un falso positivo conocido, permítelo de uno en uno:
 
 ```
-node scripts/scan.mjs --allow <componentId> <ruleId> <file> --reason "why"
+node skills/audit/scripts/scan.mjs --allow <componentId> <ruleId> <file> --reason "why"
 ```
 
 Una entrada queda ligada al sha256 de ese archivo, así que **deja de aplicarse en cuanto el archivo cambia**. Las entradas que dejan pasar un comando bloqueado son coincidencias de cadena exacta. Claude solo ejecuta esto después de que digas que sí.
@@ -138,8 +138,8 @@ La versión 0.1.1 de skill-sentry lleva la misma auditoría y la misma guardia a
 Los directorios de Codex en Windows y en WSL se detectan automáticamente. Elige qué auditar con `--agent claude|codex|all` (por defecto `all`), añade un directorio con `--codex-home <dir>` (repetible) y omite WSL con `--no-wsl`:
 
 ```
-node scripts/scan.mjs --agent codex
-node scripts/scan.mjs --agent all --codex-home <dir> --no-wsl
+node skills/audit/scripts/scan.mjs --agent codex
+node skills/audit/scripts/scan.mjs --agent all --codex-home <dir> --no-wsl
 ```
 
 ### Instalación en Codex
@@ -188,7 +188,7 @@ Los parches de `apply_patch` también se inspeccionan. La mayoría de los parche
 ### Harden en Codex
 
 ```
-node scripts/harden.mjs check --agent codex
+node skills/audit/scripts/harden.mjs check --agent codex
 ```
 
 El `check` sin opciones sigue siendo solo para Claude. El harden de Codex **solo recomienda**: skill-sentry nunca edita archivos de Codex. Cada recomendación incluye un fragmento para que lo apliques tú:
