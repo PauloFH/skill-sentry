@@ -489,6 +489,23 @@ test('a Codex config secret never reaches the JSON on stdout, the report files o
   if (fs.existsSync(bl)) assert.ok(!fs.readFileSync(bl, 'utf8').includes(SENTINEL));
 });
 
+test('I1: quoted header secrets in MCP args never reach the JSON, the Markdown, the report files or stderr', () => {
+  const e = setup();
+  // Shapeless values (no token shape): only the header-form redaction can hide them.
+  const V1 = ['Qa7Wv3Kp9', 'Lm2Xr8Ty4'].join('');
+  const V2 = ['Hd5Je0Fq', 'Zx1Cv2Bn'].join('');
+  const V3 = ['Mn4Bv5Cx', 'Lk6Jh7Gf'].join('');
+  codexConfig(e, `[mcp_servers.alpha]\ncommand = "npx"\nargs = ["-y", "srv", "--hdr", '{"x-api-key":"${V1}"}', "--h2", "'x-api-key: ${V2} ${V3}'"]\n`);
+  const runs = [run(e, [...base(e), '--json']), run(e, base(e))];
+  const rep = JSON.parse(runs[0].stdout);
+  const carrier = rep.components.flatMap(c => c.findings).find(f => f.ruleId === 'SUPPLY_UNPINNED_RUNTIME' && f.snippet.includes('x-api-key'));
+  assert.ok(carrier, 'control: the args reach a snippet');
+  const outputs = runs.flatMap(r => [r.stdout, r.stderr]);
+  for (const name of fs.readdirSync(path.join(e.data, 'reports'))) outputs.push(fs.readFileSync(path.join(e.data, 'reports', name), 'utf8'));
+  assert.ok(outputs.length >= 6, 'both runs wrote JSON and Markdown reports');
+  for (const out of outputs) for (const v of [V1, V2, V3]) assert.ok(!out.includes(v), `${v} leaked`);
+});
+
 test('a medium finding on a component whose verdict is ok is still listed in the Markdown (and present in the JSON)', () => {
   const e = setup();
   codexConfig(e, '[features]\nhooks = false\n');

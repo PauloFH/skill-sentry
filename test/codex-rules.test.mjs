@@ -561,6 +561,28 @@ test('redaction: header-form, token-shape and bot-token masking in redactSecrets
   assert.equal(redactSecrets('see https://oauth.example.com/x and oauth://cb'), 'see https://oauth.example.com/x and oauth://cb');
 });
 
+test('redaction I1: quoted header values (JSON key, quoted value, whole quoted header with spaces) are masked', () => {
+  // Shapeless values (no token shape, no Bearer): only the header form can hide them.
+  const V1 = ['Qa7Wv3Kp9', 'Lm2Xr8Ty4'].join('');
+  const V2 = ['Hd5Je0Fq', 'Zx1Cv2Bn'].join('');
+  const V3 = ['Mn4Bv5Cx', 'Lk6Jh7Gf'].join('');
+  for (const [input, want] of [
+    [`{"x-api-key":"${V1}"}`, '{"x-api-key":"<redacted>"}'],
+    [`{"X-Api-Key": "${V1}", "accept": "json"}`, '{"X-Api-Key": "<redacted>", "accept": "json"}'],
+    [`--h2 'x-api-key: ${V2} ${V3}'`, "--h2 'x-api-key: <redacted>'"],
+    [`-H "Authorization: Token ${V2} ${V3}"`, '-H "Authorization: Token <redacted>"'],
+    [`x-api-key: '${V2} ${V3}' tail`, "x-api-key: '<redacted>' tail"],
+    [`{'session': '${V1}'}`, "{'session': '<redacted>'}"],
+  ]) {
+    const out = redactSecrets(input);
+    assert.equal(out, want, input);
+    for (const v of [V1, V2, V3]) assert.ok(!out.includes(v), `${v} in ${out}`);
+  }
+  // Unquoted forms keep their old shape; an unclosed quote masks to the end of the line.
+  assert.equal(redactSecrets(`x-api-key:${V1},next`), 'x-api-key:<redacted>,next');
+  assert.equal(redactSecrets(`"x-api-key": "${V1} ${V2}\nnext line`), '"x-api-key": "<redacted>\nnext line');
+});
+
 test('CODEX_SECRET_IN_CONFIG: harmless env values with secret-ish names are silent', () => {
   const env = ['GIT_AUTHOR_NAME = "Jane"', 'TOKENIZERS_PARALLELISM = "false"', 'MAX_TOKENS = "4096"',
     'OAUTHLIB_INSECURE_TRANSPORT = "1"', 'AUTH_MODE = "oauth"', 'SSH_AUTH_SOCK = "/tmp/ssh-x/agent.1"'];
