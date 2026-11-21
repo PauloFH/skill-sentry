@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Writes a release version into the manifests: .claude-plugin/plugin.json, every "version" field of
 // .claude-plugin/marketplace.json, and package.json. Run by semantic-release (@semantic-release/exec prepareCmd,
-// see tools/ci/release.config.cjs). Zero dependencies; CI-only tooling, never imported by scripts/.
+// see tools/ci/release.config.cjs). Zero dependencies; CI-only tooling, never imported by skills/audit/scripts/.
 //
 //   node tools/ci/set-version.mjs <version> [--root <dir>]
 //

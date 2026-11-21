@@ -1,6 +1,8 @@
 ---
 name: harden
 description: Review and tighten the user's Claude Code and OpenAI Codex settings against supply-chain risks from third-party plugins and skills. For Claude Code it can apply settings such as asking before curl or wget, denying reads of SSH and cloud credentials, and disabling shell execution inside skills. For Codex it only recommends changes. Use when the user asks to harden or lock down their Claude Code or Codex setup.
+metadata:
+  internal: true
 ---
 
 # skill-sentry harden
@@ -9,9 +11,9 @@ Check the user's Claude Code settings and apply only the hardening items the use
 
 ## Steps
 
-1. Locate the helper. The helper is at `<skill dir>/../../scripts/harden.mjs`, where `<skill dir>` is the directory containing this SKILL.md. Run:
+1. Locate the helper. The helper is at `<skill dir>/../audit/scripts/harden.mjs`, where `<skill dir>` is the directory containing this SKILL.md. Run:
 
-   `node "<skill dir>/../../scripts/harden.mjs" check`
+   `node "<skill dir>/../audit/scripts/harden.mjs" check`
 
    With the Bash tool, write the path with forward slashes (`C:/Users/...`), since a backslash makes the runtime guard ask for confirmation. With the PowerShell tool, backslashes in the script path are fine.
 
@@ -25,7 +27,7 @@ Check the user's Claude Code settings and apply only the hardening items the use
 
 4. Ask the user about each missing Claude Code item one by one. Apply an item only after an explicit yes for that item:
 
-   `node "<skill dir>/../../scripts/harden.mjs" apply <id>`
+   `node "<skill dir>/../audit/scripts/harden.mjs" apply <id>`
 
    Several approved ids can be passed in one call. The helper merges only the requested ids, keeps every other setting, and never duplicates a rule.
 

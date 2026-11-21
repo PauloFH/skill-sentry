@@ -4,10 +4,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { discover, listFiles, isRemoteLinkText } from '../scripts/lib/inventory.mjs';
-import { scanComponent } from '../scripts/lib/scanner.mjs';
-import { readJsonSafe } from '../scripts/lib/jsonsafe.mjs';
-import { buildReport } from '../scripts/lib/report.mjs';
+import { discover, listFiles, isRemoteLinkText } from '../skills/audit/scripts/lib/inventory.mjs';
+import { scanComponent } from '../skills/audit/scripts/lib/scanner.mjs';
+import { readJsonSafe } from '../skills/audit/scripts/lib/jsonsafe.mjs';
+import { buildReport } from '../skills/audit/scripts/lib/report.mjs';
 import { tmpFactory } from './helpers/tmp.mjs';
 
 const FIX = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');

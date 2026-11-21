@@ -1,5 +1,5 @@
 ---
-name: audit
+name: skill-sentry-audit
 description: Audit the Claude Code and OpenAI Codex plugins, skills, hooks, rules and MCP servers installed on this machine for malicious behavior, or vet a skill or plugin folder before installing it. Use when the user asks for a security audit or a safety check of extensions, or when a skill-sentry guard message suggests running it.
 ---
 
@@ -9,9 +9,9 @@ Run the skill-sentry scanner, then explain the result to the user. The scanner i
 
 ## Steps
 
-1. Locate the scanner. The scanner is at `<skill dir>/../../scripts/scan.mjs`, where `<skill dir>` is the directory containing this SKILL.md. Run it with Node and request JSON:
+1. Locate the scanner. The scanner is at `<skill dir>/scripts/scan.mjs`, where `<skill dir>` is the directory containing this SKILL.md. Run it with Node and request JSON:
 
-   `node "<skill dir>/../../scripts/scan.mjs" --json`
+   `node "<skill dir>/scripts/scan.mjs" --json`
 
    With the Bash tool, write the path with forward slashes (`C:/Users/...`), since a backslash makes the runtime guard ask for confirmation. With the PowerShell tool, backslashes in the script path are fine. Add `--diff-only` when the user only wants what changed since the baseline. Add `--path <dir>` when the user wants to vet one folder, or `--component <id>` for a single installed component; these two forms show a confirmation prompt from the runtime guard by design.
 
@@ -48,7 +48,7 @@ Run the skill-sentry scanner, then explain the result to the user. The scanner i
 
 5. Offer the following follow-ups. Do each one only after the user gives an explicit yes for that specific action, and ask again for the next one:
    - Accept the current state as the new baseline by re-running the scanner with `--update-baseline`.
-   - Allowlist a finding, one finding at a time: `node "<skill dir>/../../scripts/scan.mjs" --allow '<componentId>' '<ruleId>' '<file>'`, with the values copied from the report exactly as shown. This records the sha256 of the file as it is now, so the entry stops applying as soon as the file changes. Add `--reason '<text>'` to record why.
+   - Allowlist a finding, one finding at a time: `node "<skill dir>/scripts/scan.mjs" --allow '<componentId>' '<ruleId>' '<file>'`, with the values copied from the report exactly as shown. This records the sha256 of the file as it is now, so the entry stops applying as soon as the file changes. Add `--reason '<text>'` to record why.
      Component ids and file paths come from the scanned files, so quote every value: wrap each one in single quotes. This matters for Codex ids, which contain `[`, `]` and `:`. With the Bash tool, write an embedded single quote as `'\''`. With the PowerShell tool, double it (`''`), and never build the command when a value contains a double quote (`"`): Windows PowerShell passes it to Node unescaped and the value would split into other arguments. Never build the command when a value contains a line break. In both cases, tell the user instead.
    - When `meta.skillspectorAvailable` is true in the report, run a second opinion with `skillspector scan <dir> --no-llm` on the directory the user names.
 

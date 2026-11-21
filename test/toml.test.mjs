@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseToml } from '../scripts/lib/toml.mjs';
+import { parseToml } from '../skills/audit/scripts/lib/toml.mjs';
 
 const ok = (text) => {
   const r = parseToml(text);

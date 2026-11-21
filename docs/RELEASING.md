@@ -15,9 +15,12 @@ Releases are automatic. Nobody bumps a version or pushes a tag by hand.
      no release;
    - `tools/ci/set-version.mjs` writes the version into `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`
      and `package.json`;
-   - `tools/ci/record-release.mjs` adds the previous release to `scripts/lib/releases.mjs` (see below);
-   - `test/package.test.mjs` and `test/known-releases.test.mjs` check the result;
+   - `tools/ci/record-release.mjs` adds the previous release to `skills/audit/scripts/lib/releases.mjs` (see below);
    - `CHANGELOG.md` gets the release notes;
+   - last, `tools/ci/write-manifest.mjs .` writes the self-manifest `skills/audit/scripts/lib/selfmanifest.json`
+     over the release tree as it will be committed (see below);
+   - `test/package.test.mjs`, `test/known-releases.test.mjs` and `test/selfcopy.test.mjs` check the result, and
+     `write-manifest.mjs . --verify` checks the manifest against the tree;
    - the commit `chore: release <version>` (those files) goes to `main`, tagged `v<version>`, and a GitHub Release
      is created.
 3. The release push is made with a GitHub App token (repository variable `RELEASE_APP_CLIENT_ID` or
@@ -30,7 +33,7 @@ No step is manual.
 
 ## KNOWN_RELEASES, one release behind
 
-`scripts/lib/releases.mjs` holds the file hashes of every published release. A newer scanner uses it to recognise
+`skills/audit/scripts/lib/releases.mjs` holds the file hashes of every published release. A newer scanner uses it to recognise
 an older skill-sentry copy (for example the one still installed for the other agent) instead of reporting it as
 malicious.
 
@@ -45,6 +48,32 @@ practice: a scanner recognises copies of itself byte for byte (`isCopyOfSelf`, i
 later release lists all earlier ones; no table can list a release newer than itself. `test/known-releases.test.mjs` checks
 the rule on every pull request: every release tag reachable from `HEAD` except the newest must be in the table, and
 every entry must match a clean `git archive` of its tag.
+
+## The self-manifest, written last
+
+`skills/audit/scripts/lib/selfmanifest.json` is `{ "version": "x.y.z", "files": { "<relpath>": "<sha256>" } }`: the
+LF-normalised SHA-256 of every file of the release tree except the manifest itself (`.git` and install markers are
+never part of a tree). The running scanner uses its own copy of that file to recognise other installs of the same
+release, both whole plugin trees (the Claude Code and Codex installs) and standalone skills (`npx skills add`, which
+copies only `skills/audit`; it is compared with the manifest's `skills/audit/` entries). A copy's own
+`selfmanifest.json` is just one of its files: it must hash like the running one, and is never read as a manifest.
+
+The manifest has to describe the release commit exactly, so it is written after every other file of that commit has
+changed. semantic-release runs the prepare steps in plugin order, so `tools/ci/release/release.config.cjs` lists
+`@semantic-release/exec` (set-version, record-release), then `@semantic-release/changelog`, then a second
+`@semantic-release/exec` (write-manifest, the tests, `write-manifest --verify`), then `@semantic-release/git`, whose
+assets include the manifest. In the release job's work tree `write-manifest` hashes the files git tracks, read from
+the work tree; ignored ones such as `tools/ci/release/node_modules` are never part of a release. On a `git archive`
+export it hashes every file. `test/known-releases.test.mjs` re-checks every released tag that carries a manifest:
+`write-manifest <export> --verify` must pass.
+
+Between releases the committed manifest is the last release's, so a dev checkout never matches its own manifest. A dev
+checkout recognises itself by real path and copies of its own tree byte for byte. Through the manifest it recognises
+installs of the manifest's release, and through `KNOWN_RELEASES` older recorded releases. Until 0.2.0 is released, the
+committed manifest is an empty placeholder and `KNOWN_RELEASES` holds 0.1.0 and 0.1.1 only, so a dev checkout does not
+recognise an installed 0.1.2. A standalone copy (`npx skills add`) has no plugin tree of its own, so between releases it
+recognises a plugin copy only through the manifest; a dev or PR build's standalone scanner flags same-tree plugin copies
+until a release writes the matching manifest.
 
 ## Recovery
 
@@ -73,7 +102,7 @@ semantic-release creates lightweight tags, which carry no message.
   `tools/ci/release/unrecordable.json` (`{ "X.Y.Z": "contains a symlink" }`), which `record-release` and
   `test/known-releases.test.mjs` skip;
 - a size limit (more than 3000 files, 500 directories or 64 MB): the runtime has the same limits
-  (`scripts/lib/selfcopy.mjs` COPY_LIMITS), so raise both together in a `fix:` commit, or list the version as above;
+  (`skills/audit/scripts/lib/selfcopy.mjs` COPY_LIMITS), so raise both together in a `fix:` commit, or list the version as above;
 - `export-ignore` in a `.gitattributes`: `git archive` then leaves files out that a git install still contains, so
   the recorded entry would never match an install. Do not use `export-ignore`; if one was added, remove it in a
   `fix:` commit and list the affected version as above.

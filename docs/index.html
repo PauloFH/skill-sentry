@@ -95,7 +95,7 @@
         <div class="window-body" aria-hidden="true">
           <p><span class="t-blue">●</span> <span class="t-bold">Bash</span>(tar czf /tmp/k.tgz ~/.ssh)</p>
           <div class="guard-msg">
-            <span class="t-amber">skill-sentry:</span> needs confirmation by rule <span class="t-bold">SECRET_SSH_DIR_READ</span> (high): "tar czf /tmp/k.tgz ~/.ssh"; likely source: <span class="t-blue">plugin:example-plugin@example-market</span>; component verdict: <span class="t-amber">suspicious</span> (score 55), 3 findings. Run /skill-sentry:audit for a full report.
+            <span class="t-amber">skill-sentry:</span> needs confirmation by rule <span class="t-bold">SECRET_SSH_DIR_READ</span> (high): "tar czf /tmp/k.tgz ~/.ssh"; likely source: <span class="t-blue">plugin:example-plugin@example-market</span>; component verdict: <span class="t-amber">suspicious</span> (score 55), 3 findings. Run the skill-sentry audit for a full report.
           </div>
           <div class="prompt-choices">
             <span class="t-bold">Do you want to proceed?</span>
@@ -233,7 +233,7 @@
         <div class="window-bar"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span data-i18n="how.termLabel">Illustrative audit. Component names are made up.</span></div>
         <div class="window-body">
           <p><span class="t-blue">&gt;</span> <span class="t-bold">/skill-sentry:audit</span></p>
-          <p><span class="t-blue">●</span> <span class="t-bold">Bash</span>(node ".../scripts/scan.mjs" --json)<br><span class="t-dim">  ⎿ </span>{ "tool": "skill-sentry", … "summary": { "components": 24, "byVerdict": { "malicious": 0, "suspicious": 1, "review": 2, "ok": 21 }, … }<br><span class="t-dim">    … +412 lines</span></p>
+          <p><span class="t-blue">●</span> <span class="t-bold">Bash</span>(node ".../skills/audit/scripts/scan.mjs" --json)<br><span class="t-dim">  ⎿ </span>{ "tool": "skill-sentry", … "summary": { "components": 24, "byVerdict": { "malicious": 0, "suspicious": 1, "review": 2, "ok": 21 }, … }<br><span class="t-dim">    … +412 lines</span></p>
           <p><span class="t-blue">●</span> <span data-i18n="how.t1">24 components scanned: 21 ok, 2 review, 1 suspicious. New since the baseline:</span> <span class="t-blue">plugin:example-plugin@example-market</span>.</p>
           <div class="t-table">
             <div class="t-row t-head"><span data-i18n="how.tCol1">Component</span><span data-i18n="how.tCol2">Verdict</span><span data-i18n="how.tCol3">Agent assessment</span></div>
@@ -378,6 +378,7 @@
       </div>
       <p class="install-then" data-i18n="install.then">Paste them one at a time into Claude Code, then run <code>/skill-sentry:audit</code> for your first report.</p>
       <p class="install-then"><a href="#codex" data-i18n="install.codex">Using Codex? Its install and the hook trust step are in the Codex section.</a></p>
+      <p class="install-then" data-i18n="install.skills">Only the audit? Install it with <code>npx skills add PauloFH/skill-sentry</code> (Claude Code, Codex and other agents). The runtime guard and harden need the plugin. Similarly named skills exist, so use the exact <code>PauloFH/skill-sentry</code> source.</p>
       <div class="install-actions">
         <a class="btn btn-solid" href="https://github.com/PauloFH/skill-sentry#install"><svg aria-hidden="true"><use href="#i-arrow"/></svg><span data-i18n="install.guide">Full install guide</span></a>
         <p class="copy-status" id="copy-status" role="status" aria-live="polite"></p>
@@ -593,6 +594,7 @@
     "install.copyOne": "Copiar comando",
     "install.guide": "Guia completo de instalação",
     "install.codex": "Usa o Codex? A instalação dele e a etapa de confiar no hook estão na seção do Codex.",
+    "install.skills": "Só a auditoria? Instale com <code>npx skills add PauloFH/skill-sentry</code> (Claude Code, Codex e outros agentes). A guarda em tempo de execução e o harden precisam do plugin. Existem skills com nomes parecidos, então use exatamente a origem <code>PauloFH/skill-sentry</code>.",
     "install.then": "Cole um de cada vez no Claude Code e depois rode <code>/skill-sentry:audit</code> para ver o seu primeiro relatório.",
     "ui.copied": "Copiado para a área de transferência",
     "ui.selected": "Selecionado. Tecle Ctrl+C para copiar.",

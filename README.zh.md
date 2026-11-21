@@ -38,6 +38,8 @@ skill-sentry 是一双额外的眼睛，而不是一面盾牌。在信任它之�
 
 本仓库既是插件，也是它自己的 marketplace。marketplace 从 `main` 安装，而 `main` 只接收通过 CI 的改动（Linux、Windows 和 macOS 上的测试套件，以及用真实的 Claude Code 和 Codex CLI 做的安装检查）。
 
+用 `npx skills add PauloFH/skill-sentry` 安装审计功能（Claude Code、Codex 及其他智能体）。运行时守卫和 harden 需要插件。存在名称相近的 skill，请使用确切的来源 `PauloFH/skill-sentry`。参见 [skills.sh](#skillssh)。
+
 ## 使用
 
 ### 审计已安装的组件
@@ -59,16 +61,16 @@ Claude 运行扫描器，然后给出摘要（各结论的组件数量、自基�
 
 任何 critical 发现都会把结论至少提升到 `suspicious`。同一文件内的组合会升级：外泄行为与访问机密同时出现时升为 critical，混淆与 rce、exfil 或 secret 发现同时出现时升为 high。
 
-`/skill-sentry:audit` 是常规入口。如果要自己运行脚本，请注意：对于已安装的插件，脚本位于插件安装目录 `~/.claude/plugins/cache/skill-sentry/skill-sentry/<版本>/scripts/` 下；下面的路径都相对于该目录（或本仓库的克隆）。
+`/skill-sentry:audit` 是常规入口。如果要自己运行脚本，请注意：对于已安装的插件，脚本位于插件安装目录 `~/.claude/plugins/cache/skill-sentry/skill-sentry/<版本>/` 下；下面的路径都相对于该目录（或本仓库的克隆）。
 
 常用选项（可以让 Claude 使用，也可以自己运行脚本）：
 
 ```
-node scripts/scan.mjs --json
-node scripts/scan.mjs --path <dir>
-node scripts/scan.mjs --component <id>
-node scripts/scan.mjs --diff-only
-node scripts/scan.mjs --update-baseline
+node skills/audit/scripts/scan.mjs --json
+node skills/audit/scripts/scan.mjs --path <dir>
+node skills/audit/scripts/scan.mjs --component <id>
+node skills/audit/scripts/scan.mjs --diff-only
+node skills/audit/scripts/scan.mjs --update-baseline
 ```
 
 - `--path <dir>` 检查单个文件夹，便于你在**安装之前**审查某个 skill 或插件。它不会读取或写入基线。
@@ -114,7 +116,7 @@ Claude 列出每条建议，解释其重要性，只有在你对该项明确回�
 如果某个发现是已知的误报，可以逐条放行：
 
 ```
-node scripts/scan.mjs --allow <componentId> <ruleId> <file> --reason "why"
+node skills/audit/scripts/scan.mjs --allow <componentId> <ruleId> <file> --reason "why"
 ```
 
 条目与该文件的 sha256 绑定，因此**文件一旦改变，条目立即失效**。放行被拦截命令的条目采用完整字符串精确匹配。Claude 只会在你同意之后才运行此命令。
@@ -138,8 +140,8 @@ skill-sentry 0.1.1 把同样的审计和守卫带到了 OpenAI Codex，并提供
 Windows 和 WSL 中的 Codex 目录会被自动检测。用 `--agent claude|codex|all`（默认 `all`）选择审计对象，用 `--codex-home <dir>`（可重复）添加目录，用 `--no-wsl` 跳过 WSL：
 
 ```
-node scripts/scan.mjs --agent codex
-node scripts/scan.mjs --agent all --codex-home <dir> --no-wsl
+node skills/audit/scripts/scan.mjs --agent codex
+node skills/audit/scripts/scan.mjs --agent all --codex-home <dir> --no-wsl
 ```
 
 ### 在 Codex 中安装
@@ -188,7 +190,7 @@ codex plugin add skill-sentry@skill-sentry
 ### Codex 下的加固
 
 ```
-node scripts/harden.mjs check --agent codex
+node skills/audit/scripts/harden.mjs check --agent codex
 ```
 
 不带选项的 `check` 仍然只针对 Claude。Codex 的加固**只给建议**：skill-sentry 绝不会修改 Codex 的文件。每条建议都附带一段代码片段，由你自己应用：
@@ -211,7 +213,11 @@ node scripts/harden.mjs check --agent codex
 
 ### skills.sh
 
-暂不支持（已列入计划）：skills.sh 只复制 skill 文件夹，因此无法安装守卫 hook。
+`npx skills add PauloFH/skill-sentry` 只安装审计功能，作为 skill `skill-sentry-audit`（在 Claude Code 中为 `/skill-sentry-audit`）。它无法安装运行时守卫（一个 hook）或 harden：这些请安装插件。使用 `-g` 时，skills CLI 把该 skill 复制到 `~/.agents/skills/skill-sentry-audit`（Codex 从这里读取），并为 Claude Code 把 `~/.claude/skills/skill-sentry-audit` 链接到它。CI 在 Linux 和 Windows 上用真实的 skills CLI 检查这种安装。不带 ref 时安装默认分支（`main`）；用 `npx skills add PauloFH/skill-sentry#v<版本>` 固定某个发布版本（例如 `#v0.2.0`）。安装在 `$CLAUDE_CONFIG_DIR/skills`（设置了该变量时）下的副本不在覆盖范围内：扫描器和守卫只查看 `~/.claude/skills`。
+
+skills.sh 上存在名称相近的 skill（例如 `skillsentry`）。它们是其他项目：请使用确切的来源 `PauloFH/skill-sentry`。
+
+与同一版本的插件并存时，每个扫描器（插件的或独立安装的）都会把其他副本识别为 skill-sentry。只有当该文件夹是插件自身审计的已验证副本时，守卫才允许独立安装的审计运行它的扫描，并允许 Codex 读取它的 `SKILL.md`。对该文件夹的任何其他命令都会请求确认（Claude Code）或被拒绝（Codex）；对守卫无法验证的副本（比插件更新的版本、开发或 PR 构建、`--rename` 安装），这两种操作也是如此，直到两处安装一致。每次发布后请更新两处安装。用 `--rename` 以其他名称安装的副本，其 `SKILL.md` 已被改动，扫描器将不再识别它。
 
 ## 数据与隐私
 

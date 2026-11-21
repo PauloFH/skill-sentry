@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { readJsonSafe } from './jsonsafe.mjs';
 import { normalizePath, truncate, redactSecrets, redactArgs } from './text.mjs';
-import { realDir, isCopyOfSelf, markSkillSentryCopy } from './selfcopy.mjs';
+import { realDir, isCopyOfSelf, markSkillSentryCopy, isSkillSentryName } from './selfcopy.mjs';
 
 const isObj = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const normDir = p => normalizePath(path.resolve(p)).replace(/\/+$/, '');
@@ -174,11 +174,13 @@ function redactRaw(raw, extra = {}) {
  * - A relative `installPath` in installed_plugins.json is resolved against `<claudeHome>/plugins`.
  * - Hook index `n` counts within one event across all matcher groups of one source; the user
  *   (or project) `settings.json` and `settings.local.json` form a single source, read in that order.
- * - `releases` replaces the embedded known-release table (tests only; see selfcopy.mjs).
+ * - `releases` and `selfManifest` replace the embedded known-release table and the running self-manifest (tests
+ *   only; see selfcopy.mjs).
  * - `copyChecks: false` skips the skill-sentry copy / known-release check (only a real-path match is self):
- *   the guard passes it when the origin cannot name a plugin called skill-sentry (Ruling R23).
+ *   the guard passes it when the origin cannot name a plugin or skill called skill-sentry (Ruling R23).
+ * - A standalone skill whose dir name contains `skill-sentry` is checked as a skill copy (matchSelf 'skill').
  */
-export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits, deadline, skillFiles = true, releases, copyChecks = true }) {
+export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits, deadline, skillFiles = true, releases, selfManifest, copyChecks = true }) {
   const components = [];
   const configFindings = [];
   const seen = new Set();
@@ -283,7 +285,7 @@ export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits, de
     };
     // The name only decides whether the copy check runs; the running scanner vouching for the bytes decides self.
     if (selfReal && rk === selfReal) comp.self = true;
-    else if (selfReal && copyChecks && name === 'skill-sentry') markSkillSentryCopy(comp, root, selfRoot, { releases, deadline });
+    else if (selfReal && copyChecks && name === 'skill-sentry') markSkillSentryCopy(comp, root, selfRoot, { releases, selfManifest, deadline });
     add(comp);
 
     // Each JSON file is read once per plugin even if referenced several times.
@@ -410,6 +412,10 @@ export function discover({ claudeHome, homeDir, projectDir, selfRoot, limits, de
       const remote = e.isSymbolicLink() ? remoteLinkTarget(root) : null;
       if (remote === null && !fs.existsSync(path.join(root, 'SKILL.md'))) continue;
       const comp = { id: `skill:${scope}:${e.name}`, kind: 'skill', name: e.name, scope, root, meta: {} };
+      // A standalone skill-sentry install (npx skills add): the name only decides whether the copy check runs.
+      if (remote === null && selfReal && copyChecks && isSkillSentryName(e.name)) {
+        markSkillSentryCopy(comp, root, selfRoot, { kind: 'skill', releases, selfManifest, deadline });
+      }
       if (remote !== null) {
         // Linked to a network path: listed, never read (no SMB connection).
         comp.files = [];

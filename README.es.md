@@ -38,6 +38,8 @@ Medidas que conviene tomar de todos modos: fijar las versiones de los plugins, e
 
 Este repositorio es a la vez el plugin y su propio marketplace. El marketplace instala desde `main`, y `main` solo recibe cambios que pasaron la CI (la suite de pruebas en Linux, Windows y macOS, más comprobaciones de instalación con las CLI reales de Claude Code y Codex).
 
+Instala la auditoría con `npx skills add PauloFH/skill-sentry` (Claude Code, Codex y otros agentes). La guardia en tiempo de ejecución y harden necesitan el plugin. Existen skills con nombres parecidos, así que usa exactamente el origen `PauloFH/skill-sentry`. Consulta [skills.sh](#skillssh).
+
 ## Uso
 
 ### Auditar los componentes instalados
@@ -59,16 +61,16 @@ Los veredictos salen de una puntuación: los hallazgos críticos valen 40, los a
 
 Cualquier hallazgo crítico sube el veredicto al menos a `suspicious`. Las combinaciones escalan dentro de un archivo: la exfiltración junto al acceso a secretos pasa a crítica, y la ofuscación junto a hallazgos de rce, exfil o secret pasa a alta.
 
-`/skill-sentry:audit` es el punto de entrada normal. Para ejecutar el script tú mismo, ten en cuenta que, en un plugin instalado, los scripts están en el directorio de instalación del plugin, `~/.claude/plugins/cache/skill-sentry/skill-sentry/<versión>/scripts/`; las rutas de abajo son relativas a ese directorio (o a un clon de este repositorio).
+`/skill-sentry:audit` es el punto de entrada normal. Para ejecutar el script tú mismo, ten en cuenta que, en un plugin instalado, los scripts están en el directorio de instalación del plugin, `~/.claude/plugins/cache/skill-sentry/skill-sentry/<versión>/`; las rutas de abajo son relativas a ese directorio (o a un clon de este repositorio).
 
 Opciones útiles (puedes pedírselas a Claude o ejecutar el script tú mismo):
 
 ```
-node scripts/scan.mjs --json
-node scripts/scan.mjs --path <dir>
-node scripts/scan.mjs --component <id>
-node scripts/scan.mjs --diff-only
-node scripts/scan.mjs --update-baseline
+node skills/audit/scripts/scan.mjs --json
+node skills/audit/scripts/scan.mjs --path <dir>
+node skills/audit/scripts/scan.mjs --component <id>
+node skills/audit/scripts/scan.mjs --diff-only
+node skills/audit/scripts/scan.mjs --update-baseline
 ```
 
 - `--path <dir>` examina una sola carpeta, para que revises una skill o plugin **antes de instalarlo**. No lee ni escribe la línea base.
@@ -114,7 +116,7 @@ La auditoría predeterminada (`scan.mjs` solo con `--json` y/o `--diff-only`) y 
 Si un hallazgo es un falso positivo conocido, permítelo de uno en uno:
 
 ```
-node scripts/scan.mjs --allow <componentId> <ruleId> <file> --reason "why"
+node skills/audit/scripts/scan.mjs --allow <componentId> <ruleId> <file> --reason "why"
 ```
 
 Una entrada queda ligada al sha256 de ese archivo, así que **deja de aplicarse en cuanto el archivo cambia**. Las entradas que dejan pasar un comando bloqueado son coincidencias de cadena exacta. Claude solo ejecuta esto después de que digas que sí.
@@ -138,8 +140,8 @@ La versión 0.1.1 de skill-sentry lleva la misma auditoría y la misma guardia a
 Los directorios de Codex en Windows y en WSL se detectan automáticamente. Elige qué auditar con `--agent claude|codex|all` (por defecto `all`), añade un directorio con `--codex-home <dir>` (repetible) y omite WSL con `--no-wsl`:
 
 ```
-node scripts/scan.mjs --agent codex
-node scripts/scan.mjs --agent all --codex-home <dir> --no-wsl
+node skills/audit/scripts/scan.mjs --agent codex
+node skills/audit/scripts/scan.mjs --agent all --codex-home <dir> --no-wsl
 ```
 
 ### Instalación en Codex
@@ -188,7 +190,7 @@ Los parches de `apply_patch` también se inspeccionan. La mayoría de los parche
 ### Harden en Codex
 
 ```
-node scripts/harden.mjs check --agent codex
+node skills/audit/scripts/harden.mjs check --agent codex
 ```
 
 El `check` sin opciones sigue siendo solo para Claude. El harden de Codex **solo recomienda**: skill-sentry nunca edita archivos de Codex. Cada recomendación incluye un fragmento para que lo apliques tú:
@@ -211,7 +213,11 @@ Si Claude Code y Codex ejecutan versiones distintas de skill-sentry, un escáner
 
 ### skills.sh
 
-Todavía no es compatible (previsto): skills.sh copia solo la carpeta de la skill, así que no puede instalar el hook de la guardia.
+`npx skills add PauloFH/skill-sentry` instala solo la auditoría, como la skill `skill-sentry-audit` (en Claude Code, `/skill-sentry-audit`). No puede instalar la guardia en tiempo de ejecución (un hook) ni harden: para eso, instala el plugin. Con `-g`, la CLI de skills copia la skill a `~/.agents/skills/skill-sentry-audit`, donde la lee Codex, y enlaza `~/.claude/skills/skill-sentry-audit` a ella para Claude Code. La CI comprueba esta instalación con la CLI real de skills en Linux y Windows. Sin una ref instala la rama por defecto (`main`); fija una versión con `npx skills add PauloFH/skill-sentry#v<versión>` (por ejemplo `#v0.2.0`). Las instalaciones en `$CLAUDE_CONFIG_DIR/skills` (cuando esa variable está definida) no están cubiertas: el escáner y la guardia solo miran `~/.claude/skills`.
+
+Existen skills con nombres parecidos en skills.sh (por ejemplo `skillsentry`). Son otros proyectos: usa exactamente el origen `PauloFH/skill-sentry`.
+
+Junto al plugin de la misma versión, cada escáner (del plugin o independiente) reconoce las otras copias como skill-sentry. La guardia deja que la auditoría independiente ejecute su escaneo y que Codex lea su `SKILL.md` solo cuando esa carpeta es una copia verificada de la auditoría del propio plugin. Cualquier otro comando sobre esa carpeta pide confirmación (Claude Code) o se deniega (Codex), y lo mismo esos dos sobre una copia que la guardia no puede verificar (una versión más nueva que la del plugin, una compilación de desarrollo o de PR, una instalación con `--rename`) hasta que ambas instalaciones coincidan. Actualiza ambas instalaciones en cada versión. Una copia instalada con otro nombre mediante `--rename` tiene el `SKILL.md` modificado, así que los escáneres dejan de reconocerla.
 
 ## Datos y privacidad
 

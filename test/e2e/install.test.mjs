@@ -1,10 +1,13 @@
 // End-to-end install checks against the real Claude Code and Codex CLIs, without a real model and without secrets.
 //
 // Opt-in only: nothing runs unless SKILL_SENTRY_E2E=1, so `npm test` never touches a real CLI. Every CLI process
-// gets a tmp HOME / USERPROFILE / CODEX_HOME (test/e2e/lib.mjs isolatedEnv); the developer's homes are never read
-// or written. CI installs the CLIs globally (.github/workflows/ci.yml); locally point SKILL_SENTRY_E2E_NPM_ROOT at
-// the node_modules of a scratch npm prefix that holds both. CI runs it through tools/ci/run-e2e.mjs, which also
-// fails on a test count below the expected minimum.
+// gets a tmp HOME / USERPROFILE / CODEX_HOME (test/e2e/lib.mjs isolatedEnv), and nothing is ever written to the
+// developer's homes. One read escapes it: on Windows, Codex finds `~/.agents` through the OS profile folder, not
+// USERPROFILE, so its skill loading reads the real `%USERPROFILE%\.agents\skills` (read only). On Windows the file
+// therefore runs only in CI (CI=true) or with SKILL_SENTRY_E2E_WIN_REAL_AGENTS=1. CI installs the CLIs globally
+// (.github/workflows/ci.yml); locally point SKILL_SENTRY_E2E_NPM_ROOT at the node_modules of a scratch npm prefix that
+// holds them. CI runs it through tools/ci/run-e2e.mjs, which also fails on a test count below the expected minimum
+// (so a run gated off here fails there instead of passing empty).
 //
 // A. Local directory marketplace (an export of HEAD):
 //    1. install through each CLI's own non-interactive commands;
@@ -18,6 +21,16 @@
 //    real GitHub install. Codex writes its `.codex-marketplace-install.json` marker on the first start, which
 //    changes the hook fingerprint, so the hook is trusted only after that start; then the real CLIs run the hook
 //    from the plugin caches, and the scanners still recognise both copies (marker included) as skill-sentry.
+// C. The audit alone through the vercel-labs `skills` CLI (`npx skills add`; pinned in ci.yml) for the claude-code
+//    and codex agents:
+//    1. from a release-shaped export (HEAD + the self-manifest a release writes), into a fresh home that already
+//       holds a user skill named `audit` (in ~/.claude/skills and ~/.agents/skills): only the audit is installed,
+//       under a name containing skill-sentry, and the user's skill is untouched; Claude Code (and, off Windows,
+//       Codex) list it; its scan.mjs runs from the installed location, reports the planted malicious skills
+//       malicious and the standalone copy ok; with both plugins then installed from the same tree, every scanner
+//       reports every skill-sentry copy ok;
+//    2. into home A (plugins from HEAD as is): both plugin scanners report the standalone copy ok, and the plugin
+//       guards let the standalone audit be loaded and run, nothing more.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -28,10 +41,14 @@ import { buildFixture } from '../helpers/fixtures.mjs';
 import { startStubModel } from './stub-model.mjs';
 import {
   WIN, clis, run, lastJson, isolatedEnv, exportHead, readTree, appServer, runClaudeHook, runCodexHook, guardLog, tmpBase,
-  gitMarketplace, codexStubArgs, claudeTurn, codexTurn,
+  gitMarketplace, codexStubArgs, claudeTurn, codexTurn, skillsEnv,
 } from './lib.mjs';
 
-if (process.env.SKILL_SENTRY_E2E === '1') defineTests();
+const WIN_OK = !WIN || process.env.CI === 'true' || process.env.SKILL_SENTRY_E2E_WIN_REAL_AGENTS === '1';
+if (process.env.SKILL_SENTRY_E2E === '1') {
+  if (WIN_OK) defineTests();
+  else console.log('skill-sentry e2e: on Windows set CI=true or SKILL_SENTRY_E2E_WIN_REAL_AGENTS=1 (Codex reads the real %USERPROFILE%\\.agents)');
+}
 
 function defineTests() {
   const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -58,7 +75,7 @@ function defineTests() {
   const CODEX_BLOCKED = /blocked by PreToolUse hook/;
 
   // The Codex home label in component ids. `win` is the label of the default home on every OS today (documented in
-  // scripts/lib/codex/homes.mjs; reported as a product bug for Linux and macOS): pinned so a change is noticed.
+  // skills/audit/scripts/lib/codex/homes.mjs; reported as a product bug for Linux and macOS): pinned so a change is noticed.
   const CODEX_LABEL = 'win';
 
   /** A fresh isolated home (env, home, work dir, CODEX_HOME). */
@@ -153,7 +170,7 @@ function defineTests() {
       assert.equal(hook.trustStatus, 'trusted');
       assert.ok(!hook.command.includes('${'), hook.command);
       assert.ok(hook.command.includes(codexRoot), hook.command);
-      assert.match(hook.command, /^node "[^"]+[\\/]scripts\/guard\.mjs"$/);
+      assert.match(hook.command, /^node "[^"]+[\\/]skills\/audit\/scripts\/guard\.mjs"$/);
       return hook.command;
     } finally { await s.close(); }
   }
@@ -165,26 +182,35 @@ function defineTests() {
     return { s, threadId: thread.id };
   }
 
-  /** Each installed scan.mjs reports the planted skills malicious and every skill-sentry component ok. */
+  /**
+   * One installed scan.mjs (`--json --no-wsl`): the planted skills are malicious and every skill-sentry component is
+   * ok. Returns the skill-sentry components and a lookup of exactly one component by id.
+   */
+  async function scanWith(h, scanPath, who) {
+    const r = await run([process.execPath, scanPath], ['--json', '--no-wsl'], { env: h.env, cwd: h.work });
+    assert.equal(r.code, 0, `${who} scan: ${r.stderr}`);
+    const rep = JSON.parse(r.stdout);
+    const brief = rep.components.map(c => `${c.id}=${c.scannerVerdict}`).join(', ');
+    const one = id => {
+      const hits = rep.components.filter(c => c.id === id);
+      assert.equal(hits.length, 1, `${who} scan, ${id}: ${brief}`);
+      return hits[0];
+    };
+    assert.equal(one('skill:user:helper').scannerVerdict, 'malicious', `${who} scan: ${brief}`);
+    assert.equal(one(`codex[${CODEX_LABEL}]:skill:home:helper`).scannerVerdict, 'malicious', `${who} scan: ${brief}`);
+    const own = rep.components.filter(c => c.id.includes('skill-sentry'));
+    for (const c of own) assert.equal(c.scannerVerdict, 'ok', `${who} scan: ${c.id}: ${brief}`);
+    console.log(`${who} scan.mjs: ${brief}`);
+    return { own, one, brief };
+  }
+
+  /** Each installed plugin's scan.mjs: as scanWith, and both plugin copies are listed. */
   async function assertScanners(h, roots) {
     for (const [agent, dir] of roots) {
-      const r = await run([process.execPath, path.join(dir, 'scripts', 'scan.mjs')], ['--json', '--no-wsl'], { env: h.env, cwd: h.work });
-      assert.equal(r.code, 0, `${agent} scan: ${r.stderr}`);
-      const rep = JSON.parse(r.stdout);
-      const brief = rep.components.map(c => `${c.id}=${c.scannerVerdict}`).join(', ');
-      const one = id => {
-        const hits = rep.components.filter(c => c.id === id);
-        assert.equal(hits.length, 1, `${agent} scan, ${id}: ${brief}`);
-        return hits[0];
-      };
-      assert.equal(one('skill:user:helper').scannerVerdict, 'malicious', `${agent} scan: ${brief}`);
-      assert.equal(one(`codex[${CODEX_LABEL}]:skill:home:helper`).scannerVerdict, 'malicious', `${agent} scan: ${brief}`);
+      const { own, one, brief } = await scanWith(h, path.join(dir, 'skills', 'audit', 'scripts', 'scan.mjs'), agent);
       one(`plugin:${ID}`);
       one(`codex[${CODEX_LABEL}]:plugin:${ID}`);
-      const own = rep.components.filter(c => c.id.includes('skill-sentry'));
       assert.ok(own.length >= 4, brief);
-      for (const c of own) assert.equal(c.scannerVerdict, 'ok', `${agent} scan: ${c.id}: ${brief}`);
-      console.log(`${agent} scan.mjs: ${brief}`);
     }
   }
 
@@ -227,7 +253,7 @@ function defineTests() {
     assertSameTree(readTree(dist), a.claudeRoot, 'claude copy');
     const hooks = JSON.parse(fs.readFileSync(path.join(a.claudeRoot, 'hooks', 'hooks.json'), 'utf8'));
     a.claudeCommand = hooks.hooks.PreToolUse[0].hooks[0].command;
-    assert.match(a.claudeCommand, /\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/guard\.mjs/);
+    assert.match(a.claudeCommand, /\$\{CLAUDE_PLUGIN_ROOT\}\/skills\/audit\/scripts\/guard\.mjs/);
   });
 
   test('A: codex installs from the directory marketplace', async () => {
@@ -321,6 +347,10 @@ function defineTests() {
     assert.equal(r.code, 0, r.stderr);
     const plugin = r.init?.plugins?.find(p => p.source === ID);
     assert.ok(plugin, JSON.stringify(r.init?.plugins));
+    // The plugin commands come from the skill folder names, not from the frontmatter `name` (which the skills CLI
+    // uses for the standalone install, group C): the audit stays /skill-sentry:audit.
+    assert.ok(r.init.slash_commands?.includes('skill-sentry:audit'), JSON.stringify(r.init.slash_commands));
+    assert.ok(r.init.slash_commands?.includes('skill-sentry:harden'), JSON.stringify(r.init.slash_commands));
     // A directory marketplace runs the plugin in place (the source folder), a git one from the cache.
     a.claudeRunRoot = plugin.path;
     assert.equal(r.hooks.length, 1, JSON.stringify(r.events.filter(e => e.type === 'system').map(e => e.subtype)));
@@ -520,5 +550,139 @@ function defineTests() {
   bTest('B: installed scanners still recognise both git-installed copies (marker included) as skill-sentry', async () => {
     plantEvilSkills(B);
     await assertScanners(B, [['claude', b.claudeRoot], ['codex', b.codexRoot]]);
+  });
+
+  // ======================================================================= C. skills CLI (the audit alone)
+
+  const C = makeHome('skills');
+  // The frontmatter `name` of skills/audit/SKILL.md: the skills CLI names the installed folder after it.
+  const SKILL = 'skill-sentry-audit';
+  const c = { src: path.join(C.base, 'src'), installed: null, claudeRoot: null, codexRoot: null, inA: null };
+  const USER_SKILL = "---\nname: audit\ndescription: The user's own audit skill, which npx skills add must leave alone.\n---\nUser notes.\n";
+  const userAudits = h => [path.join(h.home, '.claude', 'skills', 'audit'), path.join(h.home, '.agents', 'skills', 'audit')];
+  const skillDirs = h => [path.join(h.home, '.claude', 'skills'), path.join(h.home, '.agents', 'skills')];
+
+  /**
+   * `skills add <src> -g -a claude-code -a codex -y --json` (no prompt; --json prints the result array on stdout).
+   * Returns the canonical install dir. The CLI copies the skill to ~/.agents/skills/<name> (where Codex reads it)
+   * and links ~/.claude/skills/<name> to it (a junction on Windows; a copy if linking fails).
+   */
+  async function skillsAdd(h, src) {
+    const r = await run(cli.skills, ['add', src, '-g', '-a', 'claude-code', '-a', 'codex', '-y', '--json'], { env: skillsEnv(h.env), cwd: h.work });
+    assert.equal(r.code, 0, r.stdout + r.stderr);
+    const out = lastJson(r.stdout);
+    assert.equal(out.length, 1, `only the audit is offered (harden is internal): ${r.stdout}`);
+    assert.equal(out[0].status, 'installed', r.stdout);
+    assert.equal(out[0].name, SKILL, r.stdout);
+    assert.match(out[0].name, /skill-sentry/);
+    const dir = path.join(h.home, '.agents', 'skills', SKILL);
+    assert.equal(path.resolve(out[0].path), path.resolve(dir), r.stdout);
+    // Both agent dirs hold exactly the same tree as skills/audit of the source (nothing added, nothing missing).
+    const want = readTree(path.join(src, 'skills', 'audit'));
+    for (const d of [dir, path.join(h.home, '.claude', 'skills', SKILL)]) {
+      const got = readTree(d);
+      assert.deepEqual([...got.keys()].sort(), [...want.keys()].sort(), d);
+      assertSameTree(want, d, `skills CLI copy at ${d}`);
+    }
+    return dir;
+  }
+
+  test('C: the skills CLI runs', async () => {
+    const r = await run(cli.skills, ['--version'], { env: skillsEnv(C.env), cwd: C.work });
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout.trim(), /^\d+\.\d+\.\d+/);
+    console.log(`skills ${r.stdout.trim()}`);
+  });
+
+  test('C: skills add installs only the audit, under a name containing skill-sentry; the user\'s own audit skill is untouched', async () => {
+    // A release-shaped tree: HEAD plus the self-manifest every release writes last (tools/ci/write-manifest.mjs).
+    // Between releases HEAD carries the previous release's manifest, and a standalone copy can vouch for a plugin
+    // copy only through it (it has no plugin tree of its own to compare with); see the plugin-side check below.
+    exportHead(REPO, c.src);
+    const wm = await run([process.execPath, path.join(REPO, 'tools', 'ci', 'write-manifest.mjs')], [c.src], { env: C.env, cwd: C.work });
+    assert.equal(wm.code, 0, wm.stdout + wm.stderr);
+    for (const d of userAudits(C)) {
+      fs.mkdirSync(d, { recursive: true });
+      fs.writeFileSync(path.join(d, 'SKILL.md'), USER_SKILL);
+    }
+    c.installed = await skillsAdd(C, c.src);
+    for (const d of skillDirs(C)) assert.deepEqual(fs.readdirSync(d).sort(), ['audit', SKILL], d);
+    for (const d of userAudits(C)) {
+      assert.ok(!fs.lstatSync(d).isSymbolicLink(), d);
+      assert.deepEqual(fs.readdirSync(d), ['SKILL.md'], d);
+      assert.equal(fs.readFileSync(path.join(d, 'SKILL.md'), 'utf8'), USER_SKILL, d);
+    }
+  });
+
+  test('C: claude code lists the standalone audit next to the user\'s audit skill', async () => {
+    stub.state.command = NONE;
+    const r = await claudeTurn(cli, { env: C.env, cwd: C.work, stubUrl: stub.url });
+    assert.equal(r.code, 0, r.stderr);
+    for (const name of [SKILL, 'audit']) assert.ok(r.init?.skills?.includes(name), `${name}: ${JSON.stringify(r.init?.skills)}`);
+  });
+
+  // Not on Windows: there Codex finds ~/.agents through the OS profile folder, not USERPROFILE, so it would read the
+  // runner's real home instead of the tmp one (the skills CLI, a Node program, honours USERPROFILE).
+  if (!WIN) {
+    test('C: codex lists the standalone audit', async () => {
+      const s = await appServer(cli.codex, { env: C.env, cwd: C.work });
+      try {
+        const { data } = await s.request('skills/list', { cwds: [C.work] });
+        const ours = data.flatMap(d => d.skills ?? []).filter(x => x.name === SKILL);
+        assert.equal(ours.length, 1, JSON.stringify(data.flatMap(d => (d.skills ?? []).map(x => `${x.name} ${x.path}`))));
+        assert.equal(path.resolve(path.dirname(ours[0].path)), path.resolve(c.installed), ours[0].path);
+      } finally { await s.close(); }
+    });
+  }
+
+  test('C: the standalone scan.mjs runs from both installed paths: planted skills malicious, the standalone copy ok', async () => {
+    plantEvilSkills(C);
+    for (const dir of [c.installed, path.join(C.home, '.claude', 'skills', SKILL)]) {
+      const { own, brief } = await scanWith(C, path.join(dir, 'scripts', 'scan.mjs'), `standalone (${path.basename(path.dirname(path.dirname(dir)))})`);
+      // Claude Code's ~/.claude/skills entry and Codex's ~/.agents/skills one, both the running copy.
+      assert.ok(own.filter(x => x.id.includes(SKILL)).length >= 2, brief);
+      assert.ok(!own.some(x => x.id.includes('plugin')), brief);
+    }
+  });
+
+  test('C: both plugins install into the same home from the same release-shaped tree', async () => {
+    c.claudeRoot = await installClaude(C, c.src);
+    c.codexRoot = await installCodex(C, c.src);
+  });
+
+  test('C: next to both plugins, every scanner (both plugins, and the standalone from both paths) reports every skill-sentry copy ok', async () => {
+    await assertScanners(C, [['claude', c.claudeRoot], ['codex', c.codexRoot]]);
+    for (const dir of [c.installed, path.join(C.home, '.claude', 'skills', SKILL)]) {
+      const { own, one, brief } = await scanWith(C, path.join(dir, 'scripts', 'scan.mjs'), 'standalone next to the plugins');
+      one(`plugin:${ID}`);
+      one(`codex[${CODEX_LABEL}]:plugin:${ID}`);
+      assert.ok(own.filter(x => x.id.includes(SKILL)).length >= 2, brief);
+    }
+  });
+
+  test('C: home A (plugins from HEAD as is): skills add installs the audit, and both plugin scanners report it ok', async () => {
+    c.inA = await skillsAdd(A, dist);
+    await assertScanners(A, [['claude', a.claudeRoot], ['codex', a.codexRoot]]);
+    for (const [agent, dir] of [['claude', a.claudeRoot], ['codex', a.codexRoot]]) {
+      const { own, brief } = await scanWith(A, path.join(dir, 'skills', 'audit', 'scripts', 'scan.mjs'), `${agent} plugin next to the standalone`);
+      assert.ok(own.filter(x => x.id.includes(SKILL)).length >= 2, brief);
+    }
+  });
+
+  test('C: next to both plugins, the guards let the standalone audit be loaded and run, and still protect it', async () => {
+    const skillMd = slash(path.join(c.inA, 'SKILL.md'));
+    const scan = `node "${slash(path.join(c.inA, 'scripts', 'scan.mjs'))}" --json`;
+    const remove = `rm -rf "${slash(c.inA)}"`;
+    for (const command of [`cat "${skillMd}"`, scan]) {
+      const out = await runCodexHook(a.codexCommand, { root: a.codexRoot, projectDir: A.work, env: A.env, input: codexPayload(A.work, command) });
+      assert.equal(`${out.code}|${out.stdout.trim()}`, '0|', `codex: ${command}: ${out.stderr}`);
+    }
+    const cx = await runCodexHook(a.codexCommand, { root: a.codexRoot, projectDir: A.work, env: A.env, input: codexPayload(A.work, remove) });
+    assert.equal(decision(cx)?.permissionDecision, 'deny', cx.stdout + cx.stderr);
+    const cl = await runClaudeHook(a.claudeCommand, { root: a.claudeRoot, projectDir: A.work, env: A.env, input: claudePayload(A.work, scan) });
+    assert.equal(`${cl.code}|${cl.stdout.trim()}`, '0|', `claude: ${scan}: ${cl.stderr}`);
+    const ca = await runClaudeHook(a.claudeCommand, { root: a.claudeRoot, projectDir: A.work, env: A.env, input: claudePayload(A.work, remove) });
+    assert.equal(decision(ca)?.permissionDecision, 'ask', ca.stdout + ca.stderr);
+    assert.ok(fs.existsSync(path.join(c.inA, 'SKILL.md')), 'nothing was removed');
   });
 }

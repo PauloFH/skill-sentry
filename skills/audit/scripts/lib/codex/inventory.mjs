@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { markSkillSentryCopy } from '../selfcopy.mjs';
+import { markSkillSentryCopy, isSkillSentryName } from '../selfcopy.mjs';
 import { listFiles, realDir, remoteLinkTarget, isInsideRoot, isRemoteLinkText, bindRawConfig } from '../inventory.mjs';
 import { readJsonSafe } from '../jsonsafe.mjs';
 import { parseToml } from '../toml.mjs';
@@ -78,9 +78,11 @@ const subdirs = dir => dirents(dir).filter(e => e.isDirectory() || (e.isSymbolic
  * Project surfaces (`<projectDir>` chain up to its git root: `.codex/` layer, `.agents/skills`,
  * AGENTS.override.md / AGENTS.md) are listed once, under the first home's label. The scanned dir's own
  * AGENTS.md is left to the Claude inventory (`instructions:project:AGENTS.md`), which always runs too.
+ * A plugin named skill-sentry, or a skill whose dir name contains `skill-sentry`, is self when the running scanner
+ * vouches for it (selfcopy.mjs matchSelf; `releases` and `selfManifest` are test seams).
  * @returns {{ components: object[], configFindings: object[] }}
  */
-export function discoverCodex({ homes = [], projectDir, selfRoot, deadline, limits, releases } = {}) {
+export function discoverCodex({ homes = [], projectDir, selfRoot, deadline, limits, releases, selfManifest } = {}) {
   const components = [];
   const configFindings = [];
   const late = () => deadline !== undefined && Date.now() >= deadline;
@@ -92,7 +94,7 @@ export function discoverCodex({ homes = [], projectDir, selfRoot, deadline, limi
       return;
     }
     try {
-      inventoryHome({ home, projectDir: i === 0 ? projectDir : null, homes, components, configFindings, late, selfRoot, selfReal, maxDirs, limits, deadline, releases });
+      inventoryHome({ home, projectDir: i === 0 ? projectDir : null, homes, components, configFindings, late, selfRoot, selfReal, maxDirs, limits, deadline, releases, selfManifest });
     } catch (e) {
       configFindings.push({ ruleId: 'CONFIG_UNREADABLE', category: 'config', severity: 'info', line: 0, file: home.root, snippet: truncate(`Codex home inventory failed: ${e?.code ?? e?.message ?? 'error'}`) });
     }
@@ -100,7 +102,7 @@ export function discoverCodex({ homes = [], projectDir, selfRoot, deadline, limi
   return { components, configFindings };
 }
 
-function inventoryHome({ home, projectDir, homes, components, configFindings, late, selfRoot, selfReal, maxDirs, limits, deadline, releases }) {
+function inventoryHome({ home, projectDir, homes, components, configFindings, late, selfRoot, selfReal, maxDirs, limits, deadline, releases, selfManifest }) {
   const { label, root } = home;
   if (!isDir(root)) return;
   const seen = new Set(components.map(c => c.id));
@@ -282,6 +284,10 @@ function inventoryHome({ home, projectDir, homes, components, configFindings, la
       const remote = e.isSymbolicLink() ? remoteLinkTarget(sroot) : null;
       if (remote === null && !isFile(path.join(sroot, 'SKILL.md'))) continue;
       const comp = { id: `skill:${idScope}:${e.name}`, kind: 'skill', name: e.name, scope, root: sroot, meta: {} };
+      // A standalone skill-sentry install (npx skills add): the name only decides whether the copy check runs.
+      if (remote === null && selfReal && isSkillSentryName(e.name)) {
+        markSkillSentryCopy(comp, sroot, selfRoot, { kind: 'skill', releases, selfManifest, deadline });
+      }
       if (remote !== null) {
         comp.files = [];
         comp.meta.symlinksOutside = [{ path: sroot, target: remote }];
@@ -384,7 +390,7 @@ function inventoryHome({ home, projectDir, homes, components, configFindings, la
     const comp = { id: `plugin:${key}`, kind: 'plugin', name: key, scope: 'user', root: proot, meta };
     // The name only decides whether the copy check runs; the running scanner vouching for the bytes decides self.
     if (selfReal && realDir(proot) === selfReal) comp.self = true;
-    else if (selfReal && p === 'skill-sentry') markSkillSentryCopy(comp, proot, selfRoot, { releases, deadline });
+    else if (selfReal && p === 'skill-sentry') markSkillSentryCopy(comp, proot, selfRoot, { releases, selfManifest, deadline });
     add(comp);
 
     const readOnce = new Set();

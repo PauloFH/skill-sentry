@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { scanComponent } from '../scripts/lib/scanner.mjs';
-import { redactSecrets, redactArgs } from '../scripts/lib/text.mjs';
-import { analyzeSkillMarkdown } from '../scripts/lib/skillmd.mjs';
-import { scoreComponent } from '../scripts/lib/scoring.mjs';
+import { scanComponent } from '../skills/audit/scripts/lib/scanner.mjs';
+import { redactSecrets, redactArgs } from '../skills/audit/scripts/lib/text.mjs';
+import { analyzeSkillMarkdown } from '../skills/audit/scripts/lib/skillmd.mjs';
+import { scoreComponent } from '../skills/audit/scripts/lib/scoring.mjs';
 import { buildFixture } from './helpers/fixtures.mjs';
 
 const cleanups = [];

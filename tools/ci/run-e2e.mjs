@@ -2,7 +2,7 @@
 // CI entry for an e2e file: `node tools/ci/run-e2e.mjs <test file> <minimum test count>`. Runs it with the TAP
 // reporter and fails unless it ran at least that many tests, none failed and none was skipped, so a missing opt-in
 // variable (the e2e files define no tests without it) can never pass as "0 tests, 0 failures".
-// CI-only tooling: never imported by scripts/.
+// CI-only tooling: never imported by skills/audit/scripts/.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 

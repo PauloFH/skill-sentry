@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadAllowlist, addAllowEntry, isFindingAllowed, isCommandAllowed, allowlistLoadError } from '../scripts/lib/allowlist.mjs';
+import { loadAllowlist, addAllowEntry, isFindingAllowed, isCommandAllowed, allowlistLoadError } from '../skills/audit/scripts/lib/allowlist.mjs';
 import { tmpFactory } from './helpers/tmp.mjs';
 
 const tmp = tmpFactory('ss-al-');

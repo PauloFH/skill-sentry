@@ -7,6 +7,7 @@ import { dataDirPath } from './datadir.mjs';
 import { loadAllowlist, isFindingAllowed } from './allowlist.mjs';
 import { escapeInvisible, truncate } from './text.mjs';
 import { isCodexInput, handleCodex } from './codex/guardpolicy.mjs';
+import { standaloneVerifier } from './selfverify.mjs';
 
 const safe = s => (s == null ? null : truncate(escapeInvisible(String(s)), 200));
 const originName = o => (o ? o.skill ?? o.mcpPlugin ?? null : null);
@@ -47,9 +48,10 @@ async function checkComponent(origin, cwd, selfRoot, deadline) {
 /**
  * Handle one PreToolUse payload (Ruling L1): the decision is written before the log line, `deny` never
  * waits for a component check, and `ask` runs the check only until `deadline` (epoch ms).
- * @param {{ raw: string, selfRoot: string, deadline: number, write: (s: string) => void, log: (entry: object) => void }} io
+ * `selfSkill` is the guard's own skill dir (Ruling M; default `<selfRoot>/skills/audit`).
+ * @param {{ raw: string, selfRoot: string, selfSkill?: string, deadline: number, write: (s: string) => void, log: (entry: object) => void }} io
  */
-export async function handle({ raw, selfRoot, deadline, write, log }) {
+export async function handle({ raw, selfRoot, selfSkill = null, deadline, write, log }) {
   let input;
   try {
     input = JSON.parse(raw);
@@ -61,7 +63,7 @@ export async function handle({ raw, selfRoot, deadline, write, log }) {
   if (!input || typeof input !== 'object' || Array.isArray(input) || typeof input.tool_name !== 'string') return;
   // OpenAI Codex (Ruling R6): its own tiered policy, since Codex has no "ask".
   if (isCodexInput(input)) {
-    await handleCodex({ input, selfRoot, write, log, deadline });
+    await handleCodex({ input, selfRoot, selfSkill, write, log, deadline });
     return;
   }
 
@@ -73,7 +75,10 @@ export async function handle({ raw, selfRoot, deadline, write, log }) {
   // Lazy: the allowlist file is read only when a critical match is about to be denied.
   const allowlist = () => readAllowlist(dir);
 
-  const d = decide({ toolName, toolInput: input.tool_input, origin, allowlist, selfRoot, dataDir: dir, cwd: input.cwd });
+  // Final review I1: only a verified standalone copy's read-only forms are exempt (null unless the command names one).
+  const command = input.tool_input && typeof input.tool_input === 'object' ? input.tool_input.command : null;
+  const verifySkill = await standaloneVerifier(command, selfRoot, { deadline });
+  const d = decide({ toolName, toolInput: input.tool_input, origin, allowlist, selfRoot, selfSkill, dataDir: dir, cwd: input.cwd, verifySkill });
   if (d.decision === 'none') return;
 
   const o = origin();

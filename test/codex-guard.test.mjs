@@ -8,13 +8,13 @@ import { fileURLToPath } from 'node:url';
 import {
   isCodexInput, codexDecision, isNetworkCapable, readTaint, markTaint, taintFile, TAINT_LIMITS,
   retryHash, hasRetry, issueRetry, consumeRetry, mergeWin32Readings, handleCodex, taintMarker, cwdInside,
-} from '../scripts/lib/codex/guardpolicy.mjs';
-import { patchPaths, scanPatch, shellPatch, PATCH_MAX_BYTES, PATCH_MAX_PATHS } from '../scripts/lib/codex/patch.mjs';
-import { findCodexOrigin, lastSkillPath } from '../scripts/lib/codex/origin.mjs';
-import { tmpFactory } from './helpers/tmp.mjs';
+} from '../skills/audit/scripts/lib/codex/guardpolicy.mjs';
+import { patchPaths, scanPatch, shellPatch, PATCH_MAX_BYTES, PATCH_MAX_PATHS } from '../skills/audit/scripts/lib/codex/patch.mjs';
+import { findCodexOrigin, lastSkillPath } from '../skills/audit/scripts/lib/codex/origin.mjs';
+import { tmpFactory, copyTree } from './helpers/tmp.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const GUARD = path.resolve(HERE, '..', 'scripts', 'guard.mjs');
+const GUARD = path.resolve(HERE, '..', 'skills', 'audit', 'scripts', 'guard.mjs');
 const SELF = path.resolve(HERE, '..');
 const R = name => path.join(HERE, 'fixtures', 'codex-rollouts', name);
 const tmp = tmpFactory('ss-cxguard-');
@@ -57,6 +57,28 @@ function runGuard(stdin, extraEnv = {}) {
     child.stdin.end(typeof stdin === 'string' ? stdin : JSON.stringify(stdin));
   });
 }
+/**
+ * The guard's handle() in this process, with a generous deadline and the copy check's module already loaded: the
+ * standalone exemption is capped at ~200 ms (selfverify.mjs), which a spawned guard under a loaded test run can miss
+ * (it then fails closed). Used where a test needs that check to pass; denials are tested through runGuard.
+ */
+async function runHandle(stdin, extraEnv = {}) {
+  const env = {
+    SKILL_SENTRY_DATA_DIR: path.join(tmp('hdata'), 'skill-sentry'), SKILL_SENTRY_CLAUDE_HOME: tmp('nohome'), SKILL_SENTRY_HOME_DIR: tmp('nohome'),
+    SKILL_SENTRY_CODEX_HOME: tmp('nocodex'), SKILL_SENTRY_NO_WSL: '1', ...extraEnv,
+  };
+  const saved = Object.fromEntries(Object.keys(env).map(k => [k, process.env[k]]));
+  Object.assign(process.env, env);
+  try {
+    await import('../skills/audit/scripts/lib/selfcopy.mjs');
+    const { handle } = await import('../skills/audit/scripts/lib/guardmain.mjs');
+    let stdout = '';
+    await handle({ raw: JSON.stringify(stdin), selfRoot: SELF, selfSkill: path.join(SELF, 'skills', 'audit'), deadline: Date.now() + 10_000, write: s => { stdout += s; }, log: () => {} });
+    return { stdout };
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+}
 const logLines = dir => {
   const f = path.join(dir, 'guard.log');
   return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim().split('\n').map(l => JSON.parse(l)) : [];
@@ -64,7 +86,7 @@ const logLines = dir => {
 
 /** In-process run; records the order of stdout writes, log lines and taint-file existence at write time. */
 async function handleWith(input, { data = path.join(tmp('hdata'), 'skill-sentry') } = {}) {
-  const { handle } = await import('../scripts/lib/guardmain.mjs');
+  const { handle } = await import('../skills/audit/scripts/lib/guardmain.mjs');
   const events = [];
   let written = '';
   const keys = ['SKILL_SENTRY_DATA_DIR', 'SKILL_SENTRY_CLAUDE_HOME', 'SKILL_SENTRY_HOME_DIR'];
@@ -138,6 +160,27 @@ test('R6 both directions: Claude-shaped input keeps ask even with turn_id inject
   assert.equal(JSON.parse(cl.stdout).hookSpecificOutput.permissionDecision, 'ask');
   const cx = await runGuard(codex('apply_patch', { command: `*** Begin Patch\n*** Add File: ${file}\n+{}\n*** End Patch` }), { SKILL_SENTRY_DATA_DIR: data });
   assert.match(assertDeny(JSON.parse(cx.stdout)), RUN_YOURSELF);
+});
+
+test('SELF_PROTECT denies writes and rm -rf under standalone skill-sentry installs (~/.claude/skills, ~/.agents/skills); other skills pass', async () => {
+  const H = os.homedir();
+  const fwd = s => s.replace(/\\/g, '/');
+  for (const dir of [path.join(H, '.claude', 'skills', 'skill-sentry-audit'), path.join(H, '.agents', 'skills', 'skill-sentry'), path.join(PROJECT, '.agents', 'skills', 'skill-sentry')]) {
+    const file = path.join(dir, 'scripts', 'scan.mjs');
+    for (const input of [
+      codex('Bash', { command: `rm -rf "${fwd(dir)}"` }),
+      codex('Bash', { command: `echo x > "${fwd(file)}"` }),
+      codex('apply_patch', { command: `*** Begin Patch\n*** Add File: ${file}\n+x\n*** End Patch` }),
+    ]) {
+      const { json } = await handleWith(input);
+      assert.match(assertDeny(json, input.tool_input.command), RUN_YOURSELF, input.tool_input.command);
+    }
+  }
+  for (const dir of [path.join(H, '.agents', 'skills', 'other'), path.join(H, '.claude', 'skills', 'audit')]) {
+    for (const input of [codex('Bash', { command: `rm -rf "${fwd(dir)}"` }), codex('apply_patch', { command: `*** Begin Patch\n*** Add File: ${path.join(dir, 'x.md')}\n+x\n*** End Patch` })]) {
+      assert.equal((await handleWith(input)).raw, '', input.tool_input.command);
+    }
+  }
 });
 
 // ---------------------------------------------------------------- apply_patch headers
@@ -855,7 +898,7 @@ test('codex P3: relative skill-sentry segments: a literal cd base passes; the ho
   }
 });
 test('codex: Ruling M read-only self invocation still passes', async () => {
-  const cmd = `node ${path.join(SELF, 'scripts', 'scan.mjs').replace(/\\/g, '/')} --json`;
+  const cmd = `node ${path.join(SELF, 'skills', 'audit', 'scripts', 'scan.mjs').replace(/\\/g, '/')} --json`;
   const r = await runGuard(codex('Bash', { command: cmd }));
   assert.equal(r.stdout, '');
 });
@@ -894,7 +937,7 @@ test('codex on Windows: PowerShell reads of our own SKILL.md (backslash paths) p
 test('codex: anything beyond a single plain read of our own SKILL.md still denies', async () => {
   const data = path.join(tmp('selfview'), 'skill-sentry');
   fs.mkdirSync(data, { recursive: true });
-  const guardFile = fwdSlash(path.join(SELF_REAL, 'scripts', 'guard.mjs'));
+  const guardFile = fwdSlash(path.join(SELF_REAL, 'skills', 'audit', 'scripts', 'guard.mjs'));
   const nested = fwdSlash(path.join(SELF_REAL, 'skills', 'audit', 'x', 'SKILL.md'));
   for (const command of [
     `cat ${SKILL_AUDIT} > out.txt`,
@@ -907,7 +950,8 @@ test('codex: anything beyond a single plain read of our own SKILL.md still denie
     `cat ${guardFile}`,
     `cat ${SKILL_AUDIT}.bak`,
     `cat ${nested}`,
-    `cat ${fwdSlash(path.join(SELF_REAL, 'skills', 'audit', '..', '..', 'scripts', 'scan.mjs'))}`,
+    `cat ${fwdSlash(path.join(SELF_REAL, 'skills', 'audit', 'scripts', 'scan.mjs'))}`,
+    `cat ${fwdSlash(SELF_REAL)}/skills/harden/../audit/scripts/scan.mjs`,
     `cat ${fwdSlash(path.join(data, 'allowlist.json'))}`,
     `sed -i 's/a/b/' ${SKILL_AUDIT}`,
     `sed -n '1w out.txt' ${SKILL_AUDIT}`,
@@ -934,7 +978,7 @@ test('codex: anything beyond a single plain read of our own SKILL.md still denie
 test('codex: the SKILL.md read exemption is Codex-only (Claude Code still asks; under Bash a backslash path asks)', async () => {
   const r = await runGuard(claude('Bash', { command: `cat ${SKILL_AUDIT}` }));
   assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'ask');
-  const { decide } = await import('../scripts/lib/guardcore.mjs');
+  const { decide } = await import('../skills/audit/scripts/lib/guardcore.mjs');
   const base = { selfRoot: SELF, dataDir: path.join(tmp('sv'), 'skill-sentry'), cwd: PROJECT };
   assert.equal(decide({ ...base, toolName: 'Bash', toolInput: { command: `cat ${SKILL_AUDIT}` } }).ruleId, 'SELF_PROTECT');
   assert.equal(decide({ ...base, toolName: 'Bash', toolInput: { command: `cat ${SKILL_AUDIT}` }, selfViews: true }).decision, 'none');
@@ -942,7 +986,7 @@ test('codex: the SKILL.md read exemption is Codex-only (Claude Code still asks; 
   assert.equal(decide({ ...base, toolName: 'Bash', toolInput: { command: `cat "${back.replace(/\//g, '\\')}"` }, selfViews: true }).ruleId, 'SELF_PROTECT');
 });
 test('codex: Get-Content / gc / type reads of our own SKILL.md are exempt only as PowerShell (not cmdlets under bash/zsh)', async () => {
-  const { decide } = await import('../scripts/lib/guardcore.mjs');
+  const { decide } = await import('../skills/audit/scripts/lib/guardcore.mjs');
   const base = { selfRoot: SELF, dataDir: path.join(tmp('svps'), 'skill-sentry'), cwd: PROJECT, selfViews: true };
   for (const command of [`Get-Content -Raw "${SKILL_AUDIT}"`, `Get-Content -LiteralPath '${SKILL_AUDIT}' -Raw`, `gc ${SKILL_AUDIT}`, `type "${SKILL_AUDIT}"`]) {
     assert.equal(decide({ ...base, toolName: 'Bash', toolInput: { command } }).ruleId, 'SELF_PROTECT', `Bash: ${command}`);
@@ -952,11 +996,80 @@ test('codex: Get-Content / gc / type reads of our own SKILL.md are exempt only a
     assert.equal(decide({ ...base, toolName: 'Bash', toolInput: { command } }).decision, 'none', `Bash: ${command}`);
   }
 });
+// A standalone install (npx skills add) of the running guard's own audit skill: a byte copy of skills/audit.
+function standaloneCopies() {
+  const home = tmp('sahome');
+  const skills = path.join(home, '.agents', 'skills');
+  const mk = (name, edit) => {
+    const d = path.join(skills, name);
+    copyTree(path.join(SELF, 'skills', 'audit'), d);
+    edit?.(d);
+    return fwdSlash(d);
+  };
+  return {
+    home,
+    good: mk('skill-sentry-audit'),
+    exact: mk('skill-sentry'),
+    // Final review I1: a folder named after skill-sentry is not enough; its content must be a verified copy.
+    evil: mk('evil-skill-sentry', d => fs.appendFileSync(path.join(d, 'scripts', 'scan.mjs'), '\n// changed\n')),
+    extra: mk('skill-sentry-x', d => fs.writeFileSync(path.join(d, 'scripts', 'extra.mjs'), 'export {};\n')),
+    plain: (() => { const d = path.join(skills, 'skill-sentry-notes'); fs.mkdirSync(path.join(d, 'scripts'), { recursive: true }); fs.writeFileSync(path.join(d, 'SKILL.md'), '---\nname: x\ndescription: x\n---\n'); fs.writeFileSync(path.join(d, 'scripts', 'scan.mjs'), 'export {};\n'); return fwdSlash(d); })(),
+  };
+}
+test('codex: a verified standalone skill-sentry copy can be loaded and run next to the plugin guard; unverified copies and other forms deny', async () => {
+  const c = standaloneCopies();
+  for (const dir of [c.good, c.exact]) {
+    for (const command of [`cat ${dir}/SKILL.md`, `sed -n '1,200p' "${dir}/SKILL.md"`, `node "${dir}/scripts/scan.mjs" --json`,
+      `node ${dir}/scripts/scan.mjs --json --agent codex`]) {
+      const r = await runHandle(codex('Bash', { command }));
+      assert.equal(r.stdout, '', command);
+    }
+  }
+  for (const dir of [c.evil, c.extra, c.plain]) {
+    for (const command of [`cat ${dir}/SKILL.md`, `node "${dir}/scripts/scan.mjs" --json`]) {
+      const r = await runGuard(codex('Bash', { command }));
+      assert.match(assertDeny(JSON.parse(r.stdout), command), RUN_YOURSELF, command);
+    }
+  }
+  // C3: a working directory inside the data dir or the plugin root exempts only the guard's own invocation, never a
+  // standalone copy's (verified or not).
+  const data = path.join(tmp('sac3'), 'skill-sentry');
+  fs.mkdirSync(data, { recursive: true });
+  for (const cwd of [data, SELF]) {
+    const command = `node "${c.good}/scripts/scan.mjs" --json`;
+    const r = await runGuard(codex('Bash', { command }, { cwd }), { SKILL_SENTRY_DATA_DIR: data });
+    assert.match(assertDeny(JSON.parse(r.stdout), command), RUN_YOURSELF, `${cwd}: ${command}`);
+  }
+  // Claude Code: the verified scan passes, an unverified one asks, and the SKILL.md read asks (Claude loads skills itself).
+  assert.equal((await runHandle(claude('Bash', { command: `node "${c.good}/scripts/scan.mjs" --json` }))).stdout, '');
+  for (const command of [`node "${c.evil}/scripts/scan.mjs" --json`, `cat ${c.good}/SKILL.md`]) {
+    const r = await runGuard(claude('Bash', { command }));
+    assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'ask', command);
+  }
+});
+test('codex: a standalone skill-sentry install (npx skills add) can be loaded and run next to the plugin guard; other forms deny', async () => {
+  const dir = standaloneCopies().good;
+  for (const command of [`cat ${dir}/SKILL.md`, `sed -n '1,200p' "${dir}/SKILL.md"`, `node "${dir}/scripts/scan.mjs" --json`,
+    `node ${dir}/scripts/scan.mjs --json --agent codex`]) {
+    const r = await runHandle(codex('Bash', { command }));
+    assert.equal(r.stdout, '', command);
+  }
+  for (const command of [`cat ${dir}/SKILL.md > out.txt`, `cat ${dir}/SKILL.md && rm -r x`, `cat ${dir}/SKILL.md ${dir}/scripts/scan.mjs`,
+    `cat ${dir}/scripts/scan.mjs`, `node "${dir}/scripts/scan.mjs" --update-baseline`, `node "${dir}/scripts/scan.mjs" --json; rm -r x`,
+    `node "${dir}/scripts/harden.mjs" check`, `rm -rf ${dir}`]) {
+    const r = await runGuard(codex('Bash', { command }));
+    assert.match(assertDeny(JSON.parse(r.stdout), command), RUN_YOURSELF, command);
+  }
+  // Claude Code: the scan invocation passes, the SKILL.md read still asks (Claude loads skills itself).
+  assert.equal((await runHandle(claude('Bash', { command: `node "${dir}/scripts/scan.mjs" --json` }))).stdout, '');
+  const r = await runGuard(claude('Bash', { command: `cat ${dir}/SKILL.md` }));
+  assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'ask');
+});
 test('codex C3: --agent self invocations pass with the working directory inside the install or data dir', async () => {
   const data = path.join(tmp('cwdagent'), 'skill-sentry');
   fs.mkdirSync(data, { recursive: true });
-  const scan = fwdSlash(path.join(SELF_REAL, 'scripts', 'scan.mjs'));
-  const harden = fwdSlash(path.join(SELF_REAL, 'scripts', 'harden.mjs'));
+  const scan = fwdSlash(path.join(SELF_REAL, 'skills', 'audit', 'scripts', 'scan.mjs'));
+  const harden = fwdSlash(path.join(SELF_REAL, 'skills', 'audit', 'scripts', 'harden.mjs'));
   for (const cwd of [SELF_REAL, data]) {
     for (const command of [`node "${scan}" --json --agent codex`, `node "${harden}" check --agent codex`]) {
       const r = await runGuard(codex('Bash', { command }, { cwd }), { SKILL_SENTRY_DATA_DIR: data });
@@ -967,8 +1080,8 @@ test('codex C3: --agent self invocations pass with the working directory inside 
   assert.match(assertDeny(JSON.parse(bad.stdout)), RUN_YOURSELF);
 });
 test('codex: harden check --agent <claude|codex|all> and scan --agent <...> pass (the Codex harden flow needs --agent codex)', async () => {
-  const harden = fwdSlash(path.join(SELF_REAL, 'scripts', 'harden.mjs'));
-  const scan = fwdSlash(path.join(SELF_REAL, 'skills', 'audit', '..', '..', 'scripts', 'scan.mjs'));
+  const harden = fwdSlash(path.join(SELF_REAL, 'skills', 'harden', '..', 'audit', 'scripts', 'harden.mjs'));
+  const scan = fwdSlash(path.join(SELF_REAL, 'skills', 'audit', 'scripts', 'scan.mjs'));
   for (const command of [
     `node "${harden}" check --agent codex`, `node "${harden}" check --agent all`, `node "${harden}" check --agent claude`,
     `node "${scan}" --json --agent codex`, `node "${scan}" --agent all --json`, `node "${scan}" --json --diff-only --agent claude`,
@@ -987,7 +1100,7 @@ test('codex: harden check --agent <claude|codex|all> and scan --agent <...> pass
   }
 });
 test('codex: the --agent self-invocation tokens are Codex-only (Claude Code still asks)', async () => {
-  const harden = fwdSlash(path.join(SELF_REAL, 'scripts', 'harden.mjs'));
+  const harden = fwdSlash(path.join(SELF_REAL, 'skills', 'audit', 'scripts', 'harden.mjs'));
   const r = await runGuard(claude('Bash', { command: `node "${harden}" check --agent codex` }));
   assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'ask');
 });
@@ -1060,7 +1173,7 @@ test('codex C3: a working directory inside the data or install dir denies shell 
     assert.match(reason, /SELF_PROTECT_CWD/);
     assert.match(reason, RUN_YOURSELF);
   }
-  const scan = path.join(SELF, 'scripts', 'scan.mjs').replace(/\\/g, '/');
+  const scan = path.join(SELF, 'skills', 'audit', 'scripts', 'scan.mjs').replace(/\\/g, '/');
   assert.equal((await runGuard(codex('Bash', { command: `node ${scan} --json` }, { cwd: data }), env)).stdout, '', 'Ruling M');
   assert.equal((await runGuard(codex('Bash', { command: 'rm notes.txt' }, { cwd: PROJECT }), env)).stdout, '', 'ordinary cwd');
   assert.equal(cwdInside(path.join(path.dirname(data), 'skill-sentry-other'), [data]), false, 'a sibling with a common prefix is not inside');
@@ -1341,8 +1454,8 @@ test('codex on Windows (R15): a critical match still denies with the merged read
   assert.match(assertDeny(JSON.parse(r.stdout)), /\(critical\)/);
 });
 test('codex on Windows: Ruling M self invocations with backslash paths (pwsh form) still pass', { skip: process.platform !== 'win32' }, async () => {
-  const scan = path.join(SELF, 'scripts', 'scan.mjs');
-  const harden = path.join(SELF, 'scripts', 'harden.mjs');
+  const scan = path.join(SELF, 'skills', 'audit', 'scripts', 'scan.mjs');
+  const harden = path.join(SELF, 'skills', 'audit', 'scripts', 'harden.mjs');
   for (const command of [`node ${scan} --json`, `node "${scan}" --json`, `node '${scan}' --diff-only`, `node "${harden}" check`]) {
     const r = await runGuard(codex('Bash', { command }));
     assert.equal(r.stdout, '', command);

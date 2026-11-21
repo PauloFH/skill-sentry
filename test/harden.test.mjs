@@ -5,12 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { checkHardening, checkCodexHardening } from '../scripts/harden.mjs';
-import { codexHomes } from '../scripts/lib/codex/homes.mjs';
-import { discoverCodex } from '../scripts/lib/codex/inventory.mjs';
+import { checkHardening, checkCodexHardening } from '../skills/audit/scripts/harden.mjs';
+import { codexHomes } from '../skills/audit/scripts/lib/codex/homes.mjs';
+import { discoverCodex } from '../skills/audit/scripts/lib/codex/inventory.mjs';
 import { tmpFactory } from './helpers/tmp.mjs';
 
-const HARDEN = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'harden.mjs');
+const HARDEN = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'audit', 'scripts', 'harden.mjs');
 const IDS = ['ask-curl', 'ask-wget', 'deny-ssh-read', 'deny-aws-read', 'ask-env-read', 'disable-skill-shell', 'third-party-autoupdate', 'managed-settings'];
 const APPLICABLE = IDS.slice(0, 6);
 

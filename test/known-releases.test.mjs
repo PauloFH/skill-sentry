@@ -5,14 +5,14 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { tmpFactory } from './helpers/tmp.mjs';
-import * as releases from '../scripts/lib/releases.mjs';
-import { knownRelease } from '../scripts/lib/selfcopy.mjs';
+import * as releases from '../skills/audit/scripts/lib/releases.mjs';
+import { knownRelease, matchSelf, MANIFEST_REL } from '../skills/audit/scripts/lib/selfcopy.mjs';
 import { releaseEntry, addRelease } from '../tools/release-hashes.mjs';
 
 const { KNOWN_RELEASES, KNOWN_RELEASE_SIZES } = releases;
 const tmp = tmpFactory('ss-knownrel-');
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const RELEASES_FILE = path.join(ROOT, 'scripts', 'lib', 'releases.mjs');
+const RELEASES_FILE = path.join(ROOT, 'skills', 'audit', 'scripts', 'lib', 'releases.mjs');
 const UNAVAILABLE = 'git archive of the release tags unavailable (git missing or no v* tags; run git fetch --tags)';
 
 /** v* release tags reachable from HEAD, newest first; null when git or the tags are unavailable. */
@@ -51,6 +51,29 @@ test('releases: every release tag but the newest is in KNOWN_RELEASES, and every
   }
   for (const tag of [newest, ...older].filter(x => KNOWN_RELEASES[x.slice(1)])) {
     assert.equal(knownRelease(exportTag(tag)), tag.slice(1), `a clean export of ${tag} must match KNOWN_RELEASES["${tag.slice(1)}"]`);
+  }
+});
+
+// From 0.2.0 on, a release tree carries its own selfmanifest.json (written last in the release's prepare step): a clean
+// export of the tag must match it file for file, and a recorded release's skills/audit subset is a standalone copy.
+test('releases: every tag that carries a selfmanifest.json matches it, and its skill subset matches its table entry', t => {
+  const tags = reachableTags();
+  if (!tags) {
+    t.skip(UNAVAILABLE);
+    return;
+  }
+  const writer = path.join(ROOT, 'tools', 'ci', 'write-manifest.mjs');
+  for (const tag of tags) {
+    const dir = exportTag(tag);
+    const file = path.join(dir, ...MANIFEST_REL.split('/'));
+    if (!fs.existsSync(file)) continue; // 0.1.x: no manifest yet
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).version, tag.slice(1), `${tag}: manifest version`);
+    const r = spawnSync(process.execPath, [writer, dir, '--verify'], { encoding: 'utf8' });
+    assert.equal(r.status, 0, `${tag}: ${r.stdout}${r.stderr}`);
+    if (KNOWN_RELEASES[tag.slice(1)]) {
+      const m = matchSelf(path.join(dir, 'skills', 'audit'), 'skill', { selfRoot: null, selfManifest: null });
+      assert.deepEqual(m, { self: true, version: tag.slice(1), via: 'release' }, `${tag}: skill subset`);
+    }
   }
 });
 

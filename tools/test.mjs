@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Dev tool: runs the test suite (`npm test`). Not part of the plugin runtime: nothing under scripts/ imports it.
+// Dev tool: runs the test suite (`npm test`). Not part of the plugin runtime: nothing under skills/audit/scripts/ imports it.
 // `node --test test/` worked on Node 18, but Node 22 reads its arguments as file or glob patterns and no longer
 // accepts a directory; a quoted glob is not expanded by Node 18 or by cmd.exe. So the test files are listed here
 // and passed by name, which works on every Node version and OS. Extra arguments go to `node --test` first

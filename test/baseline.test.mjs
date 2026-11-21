@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadBaseline, saveBaseline, diffBaseline, baselineLoadError } from '../scripts/lib/baseline.mjs';
-import { dataDir } from '../scripts/lib/datadir.mjs';
-import { scanComponent } from '../scripts/lib/scanner.mjs';
-import { discover } from '../scripts/lib/inventory.mjs';
-import { fileMap } from '../scripts/lib/baseline.mjs';
+import { loadBaseline, saveBaseline, diffBaseline, baselineLoadError } from '../skills/audit/scripts/lib/baseline.mjs';
+import { dataDir } from '../skills/audit/scripts/lib/datadir.mjs';
+import { scanComponent } from '../skills/audit/scripts/lib/scanner.mjs';
+import { discover } from '../skills/audit/scripts/lib/inventory.mjs';
+import { fileMap } from '../skills/audit/scripts/lib/baseline.mjs';
 import { tmpFactory } from './helpers/tmp.mjs';
 
 const tmp = tmpFactory('ss-bl-');
