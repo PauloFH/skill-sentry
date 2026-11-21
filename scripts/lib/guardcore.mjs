@@ -178,6 +178,7 @@ export function isUnusualPath(p) {
 
 // Distinct ordinary paths that get realpath + stat in one decision (covers MAX_MCP_STRINGS read+write).
 const MAX_IO_PATHS = MAX_MCP_STRINGS * 2;
+const DOT_DOT_SEGMENT = /(?:^|[\\/])\.\.(?:[\\/]|$)/;
 // Path lookup time per decision (a slow or automounted file system); the guard must answer well inside Codex's ~5 s.
 const IO_BUDGET_MS = 1000;
 
@@ -227,6 +228,7 @@ function makeResolver(cwd, mcp) {
     const raw = String(p);
     let written = raw;
     let abs = raw;
+    let lexical = null;
     try {
       const plain = plainPath(raw);
       const fwd = lowerOnWin(slashes(plain));
@@ -235,8 +237,10 @@ function makeResolver(cwd, mcp) {
         && (fwd === cwdSpelling || fwd.startsWith(`${cwdSpelling}/`))) {
         written = plain.slice(cwdSpelling.length).replace(/^[\\/]+/, '');
         abs = path.join(baseDir(), written);
+        lexical = path.resolve(plain);
       } else {
         abs = path.resolve(baseDir(), plain);
+        if (!path.isAbsolute(plain)) lexical = path.resolve(cwdGiven ?? process.cwd(), plain);
       }
     } catch { /* keep raw */ }
     const checkForm = !mcp || PATH_SHAPED.test(raw);
@@ -244,10 +248,21 @@ function makeResolver(cwd, mcp) {
     const relative = written !== raw || !path.isAbsolute(plainPath(raw));
     const unusual = checkForm && (isUnusualPath(written) || (!relative && isUnusualPath(abs)));
     if (unusual || (mcp && URL_LIKE.test(raw))) return { abs, long: null, unusual, io: null };
+    const r = lookup(abs, checkForm);
+    // Fix round 2 (N3): Windows collapses `..` lexically against the cwd as given (a junction is not followed
+    // first), while the canonical base follows it. With a `..` in what was written, both readings are checked.
+    if (lexical !== null && DOT_DOT_SEGMENT.test(written) && normForCompare(lexical) !== normForCompare(abs)) {
+      r.alts = [lookup(lexical, checkForm)];
+      if (r.alts[0].unresolved) r.unresolved = true;
+      if (r.alts[0].unusual) r.unusual = true;
+    }
+    return r;
+  };
+  const lookup = (abs, checkForm) => {
     const key = normForCompare(abs);
     let e = io.get(key);
     if (!e) {
-      if (state.left <= 0 || state.ioMs > IO_BUDGET_MS) { state.unresolved = true; return { abs, long: null, unusual, io: null, unresolved: true }; }
+      if (state.left <= 0 || state.ioMs > IO_BUDGET_MS) { state.unresolved = true; return { abs, long: null, unusual: false, io: null, unresolved: true }; }
       state.left--;
       let long = null;
       const t0 = Date.now();
@@ -930,14 +945,17 @@ function underCustomCodexHome(forms) {
 /** Path rule matches on the path as given plus its resolved long form (symlinks, junctions, subst). */
 function pathMatches(p, keep, R) {
   const out = matchPath(p).filter(keep).map(m => ({ ...m, target: p }));
-  const { abs, long } = R.get(p);
-  if (long && long !== p) {
+  const r = R.get(p);
+  const readings = [r, ...(r.alts ?? [])]; // N3: both readings of a `..` path
+  for (const { long } of readings) {
+    if (!long || long === p) continue;
     for (const m of matchPath(long)) {
       if (keep(m) && !out.some(x => x.ruleId === m.ruleId)) out.push({ ...m, snippet: snip(p), target: p });
     }
   }
   const codex = { ruleId: 'PERSIST_PATH_CODEX_CONFIG', category: 'persistence', severity: 'high', line: 1, snippet: snip(p), target: p };
-  if (keep(codex) && !out.some(x => x.ruleId === codex.ruleId) && underCustomCodexHome([abs, long].filter(str).map(f => lowerOnWin(slashes(f))))) {
+  const forms = readings.flatMap(x => [x.abs, x.long]).filter(str).map(f => lowerOnWin(slashes(f)));
+  if (keep(codex) && !out.some(x => x.ruleId === codex.ruleId) && underCustomCodexHome(forms)) {
     out.push(codex);
   }
   return out;
@@ -1022,11 +1040,13 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
       if (r.unresolved) {
         return { decision: 'ask', ruleId: 'SELF_PROTECT_WRITE', severity: 'high', reason: 'write target could not be resolved in time; it may alias skill-sentry data', snippet: snip(p) };
       }
-      const c = normForCompare(r.long ?? r.abs);
-      // C1: a sibling skill-sentry install (the other agent's, or another marketplace's) counts as protected too.
-      if (roots.some(root => isUnder(c, root)) || siblingInstall(c) || siblingInstall(normForCompare(r.abs))
-        || (r.long && rootIds.size && rootIds.has(R.parentId(r)))) {
-        return { decision: 'ask', ruleId: 'SELF_PROTECT_WRITE', severity: 'high', reason: 'write to skill-sentry data or install directory', snippet: snip(p) };
+      for (const x of [r, ...(r.alts ?? [])]) { // N3: every reading of a `..` path
+        const c = normForCompare(x.long ?? x.abs);
+        // C1: a sibling skill-sentry install (the other agent's, or another marketplace's) counts as protected too.
+        if (roots.some(root => isUnder(c, root)) || siblingInstall(c) || siblingInstall(normForCompare(x.abs))
+          || (x.long && rootIds.size && rootIds.has(R.parentId(x)))) {
+          return { decision: 'ask', ruleId: 'SELF_PROTECT_WRITE', severity: 'high', reason: 'write to skill-sentry data or install directory', snippet: snip(p) };
+        }
       }
     }
     // Ruling K: unusual write forms always ask (they may alias a protected file).

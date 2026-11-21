@@ -1021,6 +1021,26 @@ test('fix round 2 (N2): an unresolved write path fails closed (slow lookup budge
   // reads keep the fast fail-safe path (PATH_UNRESOLVED), see the macOS tests above
 });
 
+// Fix round 2 (N3): Windows collapses `..` lexically before following a junction, so a relative path from a junction
+// cwd is checked in both readings: lexical (as Windows opens it) and canonical (through the realpath of the cwd).
+test('fix round 2 (N3): `..` from a junction cwd is checked lexically and canonically', () => {
+  const root = tmp('n3');
+  const P = (...a) => path.join(root, ...a);
+  for (const d of ['stuff/skill-sentry', 'far/deep', 'far2/deep2', 'far2/skill-sentry', 'home/.claude/skill-sentry']) fs.mkdirSync(P(d), { recursive: true });
+  fs.symlinkSync(P('far', 'deep'), P('stuff', 'jout'), 'junction');
+  fs.symlinkSync(P('far2', 'deep2'), P('stuff', 'jin'), 'junction');
+  fs.symlinkSync(P('far', 'deep'), P('home', '.claude', 'j'), 'junction');
+  const w = (file_path, dataDir, cwd) => decide({ toolName: 'Write', toolInput: { file_path, content: 'x' }, origin: null, allowlist: EMPTY,
+    selfRoot: SELF, dataDir, cwd });
+  const lexical = [P('stuff', 'skill-sentry'), P('stuff', 'jout')];
+  for (const p of ['../skill-sentry/allowlist.json', path.join(P('stuff', 'jout'), '..', 'skill-sentry', 'allowlist.json')]) {
+    assert.equal(w(p, ...lexical).ruleId, 'SELF_PROTECT_WRITE', `lexical: ${p}`);
+  }
+  assert.equal(w('../skill-sentry/allowlist.json', P('home', '.claude', 'skill-sentry'), P('home', '.claude', 'j')).ruleId, 'SELF_PROTECT_WRITE', 'junction cwd inside a Claude home');
+  assert.equal(w('../skill-sentry/allowlist.json', P('far2', 'skill-sentry'), P('stuff', 'jin')).ruleId, 'SELF_PROTECT_WRITE', 'canonical');
+  assert.equal(w('../other/notes.md', ...lexical).decision, 'none', 'control');
+});
+
 test('round 4: secret paths hidden behind many URLs are still matched', () => {
   const urls = Object.fromEntries(Array.from({ length: 130 }, (_, i) => [`u${i}`, `https://example.com/item/${i}`]));
   // Repeated cells count once; a MIME-shaped string that a path rule matches is still matched.
