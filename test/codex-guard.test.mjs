@@ -1286,3 +1286,29 @@ test('codex guard p50 under 150ms for a none decision', async () => {
   const median = (times[9] + times[10]) / 2;
   assert.ok(median < 150, `median ${median.toFixed(1)} ms`);
 });
+
+// ---------------------------------------------------------------- final review C1: sibling installs
+test('codex C1: the sibling skill-sentry installs (Claude and other Codex homes) are denied for shell and patch writes', async () => {
+  const home = os.homedir().replace(/\\/g, '/');
+  const alt = `${tmp('c1alt').replace(/\\/g, '/')}/codexhome/plugins/cache/PauloFH/skill-sentry/0.1.1`;
+  for (const command of [
+    'rm -rf ~/.claude/plugins/cache/skill-sentry',
+    `rm -rf ${home}/.codex/plugins/cache/skill-sentry/skill-sentry/0.1.1`,
+    `rm -rf ${alt}`,
+  ]) {
+    const r = await runGuard(codex('Bash', { command }, { transcript_path: R('cmdexec-read.jsonl') }));
+    assert.match(assertDeny(JSON.parse(r.stdout), command), /SELF_PROTECT/, command);
+  }
+  for (const file of [
+    `${home}/.codex/plugins/cache/skill-sentry/skill-sentry/0.1.1/scripts/guard.mjs`,
+    `${home}/.claude/plugins/cache/skill-sentry/skill-sentry/0.1.1/scripts/guard.mjs`,
+    `${alt}/scripts/guard.mjs`,
+  ]) {
+    const r = await runGuard(codex('apply_patch', { command: `*** Begin Patch\n*** Update File: ${file}\n@@\n+x\n*** End Patch` }));
+    const reason = assertDeny(JSON.parse(r.stdout), file);
+    assert.match(reason, /SELF_PROTECT_WRITE/, file);
+    assert.match(reason, RUN_YOURSELF, file);
+  }
+  const ok = await runGuard(codex('apply_patch', { command: `*** Begin Patch\n*** Update File: ${PROJECT.replace(/\\/g, '/')}/skill-sentry/notes.md\n@@\n+x\n*** End Patch` }));
+  assert.equal(ok.stdout, '');
+});

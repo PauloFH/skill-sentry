@@ -264,6 +264,15 @@ function collapseDotDot(s) {
 // Win32 strips them, so `skill-sentry.\x` is the same dir.
 const SELF_SEGMENT = /(?:^|[^\w.-])skill-sentry[. ]*(?=$|[^\w.-])/i;
 
+// Final review C1: a skill-sentry copy installed for the other agent (or from another marketplace) is not the
+// guard's own install dir, yet tampering with it disables that agent's guard. Any `skill-sentry` segment below a
+// `plugins/cache/` directory (`<home>/plugins/cache/<mkt>/skill-sentry/<version>`, or the marketplace dir itself
+// named skill-sentry), of any Claude or Codex home, custom ones included, is protected; so is one directly below
+// a `.claude` or `.codex` directory. Tested on normalized (`/`-separated) absolute paths.
+const SIBLING_INSTALL = /(?:^|\/)plugins\/cache\/(?:[^/]+\/)?skill-sentry[. ]*(?:\/|$)/i;
+const AGENT_HOME_CHILD = /(?:^|\/)\.(?:claude|codex)[. ]*\/skill-sentry[. ]*(?:\/|$)/i;
+const siblingInstall = f => SIBLING_INSTALL.test(f) || AGENT_HOME_CHILD.test(f);
+
 // ---- Ruling R9 (revised): one narrow exemption from the segment rule ----
 // Every `skill-sentry` segment asks (Ruling J) unless its shell word is a literal absolute path that
 // resolves (as written and through realpath) outside `~/.claude` and away from every protected root.
@@ -386,8 +395,10 @@ function exemptPiece(v, tildeOk, ps) {
  */
 function makeSegmentCheck(roots) {
   let claude;
-  const claudeForms = () => (claude ??= rootForms(path.join(os.homedir(), '.claude')));
-  const hits = f => claudeForms().some(c => isUnder(f, c)) || roots.some(r => isUnder(f, r) || isUnder(r, f));
+  // Claude's home and the Codex homes (`~/.codex`, `$CODEX_HOME`) each hold a skill-sentry install (C1).
+  const claudeForms = () => (claude ??= [path.join(os.homedir(), '.claude'), path.join(os.homedir(), '.codex'), process.env.CODEX_HOME]
+    .filter(str).flatMap(rootForms));
+  const hits = f => siblingInstall(f) || claudeForms().some(c => isUnder(f, c)) || roots.some(r => isUnder(f, r) || isUnder(r, f));
   const canon = new Map();
   const pieceAsks = (v, tildeOk, ps) => {
     const abs = exemptPiece(v, tildeOk, ps);
@@ -730,7 +741,9 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
     for (const p of t.writePaths) {
       const r = R.get(p);
       const c = normForCompare(r.long ?? r.abs);
-      if (roots.some(root => isUnder(c, root)) || (r.long && rootIds.size && rootIds.has(R.parentId(r)))) {
+      // C1: a sibling skill-sentry install (the other agent's, or another marketplace's) counts as protected too.
+      if (roots.some(root => isUnder(c, root)) || siblingInstall(c) || siblingInstall(normForCompare(r.abs))
+        || (r.long && rootIds.size && rootIds.has(R.parentId(r)))) {
         return { decision: 'ask', ruleId: 'SELF_PROTECT_WRITE', severity: 'high', reason: 'write to skill-sentry data or install directory', snippet: snip(p) };
       }
     }

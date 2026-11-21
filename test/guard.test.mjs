@@ -1461,3 +1461,57 @@ test('guard p50 under 150ms for a none decision', async () => {
   const median = (times[9] + times[10]) / 2;
   assert.ok(median < 150, `median ${median.toFixed(1)} ms`);
 });
+
+// ---------------------------------------------------------------- final review C1: sibling installs
+// The Claude guard must also protect a skill-sentry copy installed for Codex (and any plugin-cache copy),
+// although it is neither its own install dir nor under ~/.claude. Paths are only resolved, never written.
+test('C1: the sibling Codex install of skill-sentry is protected (shell, tilde, absolute, custom Codex home)', () => {
+  const home = fwdSlash(os.homedir());
+  const base = fwdSlash(fs.realpathSync.native(tmp('c1')));
+  const o = { selfRoot: `${home}/.claude/plugins/cache/skill-sentry/skill-sentry/0.1.1`, dataDir: DATA, cwd: home };
+  const codexCopy = `${home}/.codex/plugins/cache/skill-sentry/skill-sentry/0.1.1`;
+  const altCopy = `${base}/alt/codexhome/plugins/cache/PauloFH/skill-sentry/0.1.1`;
+  fs.mkdirSync(altCopy, { recursive: true });
+  const attributed = (tool, command) => decide({ toolName: tool, toolInput: { command }, origin: { skill: 'evil' }, allowlist: EMPTY, ...o });
+  for (const [tool, c] of [
+    ['Bash', `rm -rf ${codexCopy}`],
+    ['Bash', 'rm -rf ~/.codex/plugins/cache/skill-sentry'],
+    ['Bash', `echo x > ${codexCopy}/scripts/guard.mjs`],
+    ['Bash', `rm -rf ${altCopy}`],
+    ['Bash', `rm -rf ${base}/alt/codexhome/plugins/cache/skill-sentry`],
+    ['Bash', `rm -rf ${base}/other/.claude/plugins/cache/mkt/skill-sentry`],
+    ['Bash', `rm -rf ${base}/other/.claude/skill-sentry`],
+    ['Bash', `rm -rf ${base}/other/.codex/skill-sentry`],
+    ['PowerShell', `Remove-Item -Recurse -Force ${codexCopy.replace(/\//g, '\\')}`],
+    ['PowerShell', 'Remove-Item -Recurse -Force ~\\.codex\\plugins\\cache\\skill-sentry'],
+  ].filter(([, c]) => onThisOs(c))) {
+    const r = attributed(tool, c);
+    assert.equal(r.decision, 'ask', `${tool}: ${c}`);
+    assert.equal(r.ruleId, 'SELF_PROTECT', `${tool}: ${c}`);
+  }
+  // Ruling R9 is kept for unrelated checkouts.
+  for (const c of ['ls ~/src/skill-sentry', 'cat C:/Users/x/skill-sentry/README.md', `ls ${base}/src/skill-sentry`].filter(onThisOs)) {
+    assert.equal(attributed('Bash', c).decision, 'none', c);
+  }
+});
+
+test('C1: Write/Edit to a sibling skill-sentry install asks (SELF_PROTECT_WRITE); an unrelated checkout does not', () => {
+  const home = fwdSlash(os.homedir());
+  const base = fwdSlash(fs.realpathSync.native(tmp('c1w')));
+  const o = { selfRoot: `${home}/.claude/plugins/cache/skill-sentry/skill-sentry/0.1.1`, dataDir: DATA, cwd: home };
+  for (const tool of ['Write', 'Edit']) {
+    for (const f of [
+      `${home}/.codex/plugins/cache/skill-sentry/skill-sentry/0.1.1/scripts/guard.mjs`,
+      '~/.codex/plugins/cache/skill-sentry/skill-sentry/0.1.1/hooks/hooks.json',
+      `${base}/alt/codexhome/plugins/cache/PauloFH/skill-sentry/0.1.1/scripts/guard.mjs`,
+      `${home}/.claude/plugins/cache/other-mkt/skill-sentry/0.1.0/scripts/guard.mjs`,
+    ]) {
+      const r = decide({ toolName: tool, toolInput: { file_path: f, content: 'x' }, origin: null, allowlist: EMPTY, ...o });
+      assert.equal(r.decision, 'ask', `${tool}: ${f}`);
+      assert.equal(r.ruleId, 'SELF_PROTECT_WRITE', `${tool}: ${f}`);
+    }
+    for (const f of ['C:/Users/x/src/skill-sentry/README.md', `${base}/src/skill-sentry/scripts/guard.mjs`]) {
+      assert.equal(decide({ toolName: tool, toolInput: { file_path: f, content: 'x' }, origin: null, allowlist: EMPTY, ...o }).decision, 'none', f);
+    }
+  }
+});
