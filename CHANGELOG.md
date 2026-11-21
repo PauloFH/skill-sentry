@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.2](https://github.com/PauloFH/skill-sentry/compare/v0.1.1...v0.1.2) (2026-11-21)
+
+### Bug Fixes
+
+* accept the codex install marker in self copies ([dda63c8](https://github.com/PauloFH/skill-sentry/commit/dda63c8b969b1f65227c84f9a04a5bcd4089eb75))
+* bound path lookups per guard decision ([3544daa](https://github.com/PauloFH/skill-sentry/commit/3544daac5a59314942196fe0fb4b78e1c0c04453))
+* check both readings of a dot-dot path from a junction cwd ([57c65c4](https://github.com/PauloFH/skill-sentry/commit/57c65c4b9a02c71528e415667fe716b6303ceb00))
+* count the codex taint ttl in whole milliseconds ([0c3ce02](https://github.com/PauloFH/skill-sentry/commit/0c3ce02a369440f2e5467ea69170a07c407f9d64))
+* drop the relative exemption for any carriage return ([fb71ad7](https://github.com/PauloFH/skill-sentry/commit/fb71ad7cb348957a2d3c4d00785bb3c26154bf1a))
+* fail closed on write paths left unresolved ([2fd6056](https://github.com/PauloFH/skill-sentry/commit/2fd60562c65fca4977d85e9a62e58cdcd5ab9ec1))
+* keep relative cd targets and name searches asking ([57cb939](https://github.com/PauloFH/skill-sentry/commit/57cb939c04206f1b7f6bb5a9ef4ec6bf13539437))
+* recognise skill-sentry 0.1.1 ([0e6264b](https://github.com/PauloFH/skill-sentry/commit/0e6264b3bc81aad30f154d386a35f82c5dea18b4))
+* resolve codex patch paths from the canonical cwd ([d4d606b](https://github.com/PauloFH/skill-sentry/commit/d4d606bddc38813d99f102e6140334ba90aa38ce))
+* skip costly rule patterns on lines that cannot match ([f44935f](https://github.com/PauloFH/skill-sentry/commit/f44935ff0126efc365a8681706faf3898c3b7e76))
+* stop prompting for relative skill-sentry folders ([0282e4f](https://github.com/PauloFH/skill-sentry/commit/0282e4ff434f5abd5c583a79d9b3c723b8f23a61))
+* tighten the codex marker source check ([b601d29](https://github.com/PauloFH/skill-sentry/commit/b601d29639ebac086a1e9c0971ae12ed7ac15b42))
+* treat carriage returns as powershell statement breaks ([afc4553](https://github.com/PauloFH/skill-sentry/commit/afc45530a2a49641667bc8004f61a602067120a9))
+
 ## 0.1.1
 
 ### Added
