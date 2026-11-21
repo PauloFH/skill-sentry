@@ -1,0 +1,109 @@
+name: CI
+
+# The checks themselves. Pull requests and pushes to main run them once, through release.yml (workflow_call);
+# this workflow also runs on its own weekly (latest CLIs) and on demand.
+on:
+  schedule:
+    # Weekly: the e2e job tries the latest Claude Code and Codex CLIs instead of the pinned ones.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      cli:
+        description: CLI versions for the e2e job
+        type: choice
+        options: [pinned, latest]
+        default: pinned
+  workflow_call:
+    inputs:
+      cli:
+        description: CLI versions for the e2e job (pinned or latest)
+        type: string
+        default: pinned
+
+permissions:
+  contents: read
+
+env:
+  # CLI builds verified to install skill-sentry non-interactively (see test/e2e/install.test.mjs).
+  CLAUDE_CODE_PIN: 2.1.330
+  CODEX_PIN: 0.171.0
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: ['18', '22']
+    steps:
+      # Full history and tags: the known-release tests run `git archive` on release tags.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Check that release tags are present
+        shell: bash
+        run: |
+          git tag -l 'v*'
+          git rev-parse --verify --quiet refs/tags/v0.1.1 >/dev/null || { echo "::error::tag v0.1.1 is missing from the checkout"; exit 1; }
+      - name: Unit tests (npm test, no tag-related skips)
+        run: node tools/ci/run-tests.mjs
+
+  e2e:
+    # Real CLIs, no model and no secrets: install from the checkout through each CLI (local directory and git
+    # marketplaces), trust the Codex hook as /hooks does, let the real CLIs run tool calls scripted by a local
+    # stub model so they spawn the installed hook themselves, and run the installed scanners.
+    # Claude Code needs Node >= 22.
+    name: e2e (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - name: Choose CLI versions
+        id: cli
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          CLI_INPUT: ${{ inputs.cli }}
+        run: |
+          if [ "$EVENT" = "schedule" ] || [ "$CLI_INPUT" = "latest" ]; then
+            echo "claude=latest" >> "$GITHUB_OUTPUT"; echo "codex=latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "claude=$CLAUDE_CODE_PIN" >> "$GITHUB_OUTPUT"; echo "codex=$CODEX_PIN" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install Claude Code and Codex
+        shell: bash
+        env:
+          CLAUDE_VERSION: ${{ steps.cli.outputs.claude }}
+          CODEX_VERSION: ${{ steps.cli.outputs.codex }}
+        run: |
+          npm install -g "@anthropic-ai/claude-code@$CLAUDE_VERSION" "@openai/codex@$CODEX_VERSION"
+          root="$(npm root -g)"
+          # The native claude binary is put in place by the package's postinstall; run it if npm skipped it.
+          claude --version || node "$root/@anthropic-ai/claude-code/install.cjs"
+          claude --version
+          codex --version
+          echo "SKILL_SENTRY_E2E_NPM_ROOT=$root" >> "$GITHUB_ENV"
+      - name: e2e install checks
+        env:
+          SKILL_SENTRY_E2E: '1'
+          # The download-to-shell deny case runs only here: if the guard ever failed open, the real CLI would put
+          # that command line on the process list, which antivirus on a developer machine may flag.
+          SKILL_SENTRY_E2E_CRITICAL: '1'
+        run: node tools/ci/run-e2e.mjs test/e2e/install.test.mjs 31

@@ -29,14 +29,33 @@ export function removeTree(dir) {
 }
 
 /**
+ * Copy a tree of regular files and dirs (or one file) with readdir/copyFileSync. Used instead of `fs.cpSync`:
+ * on Windows, Node 22's native cpSync aborts the process (exit 0xC0000409) on some paths, such as a non-ASCII
+ * `selfİ` dir (CI run 44916619254, codex-inventory). A link or special file throws.
+ */
+export function copyTree(src, dst) {
+  const st = fs.lstatSync(src);
+  if (st.isFile()) {
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    fs.copyFileSync(src, dst);
+    return;
+  }
+  if (!st.isDirectory()) throw new Error(`copyTree: not a regular file or dir: ${src}`);
+  fs.mkdirSync(dst, { recursive: true });
+  for (const e of fs.readdirSync(src)) copyTree(path.join(src, e), path.join(dst, e));
+}
+
+/**
  * `tmp(name?)` creates `%TEMP%/<prefix><name>-XXXXXX`; every dir created is removed in an `after()` hook
- * of the calling test file. Call at module top level.
+ * of the calling test file. Call at module top level. The path is canonical (realpath): on a Windows runner whose
+ * %TEMP% is an 8.3 alias (`C:\Users\RUNNER~1\…`), an absolute path built from it would otherwise be an unusual
+ * form (Ruling K) in every test that writes one out. Tests of the 8.3 forms build them on purpose.
  */
 export function tmpFactory(prefix) {
   const dirs = [];
   after(() => { for (const d of dirs) removeTree(d); });
   return (name = '') => {
-    const d = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}${name ? `${name}-` : ''}`));
+    const d = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}${name ? `${name}-` : ''}`)));
     dirs.push(d);
     return d;
   };

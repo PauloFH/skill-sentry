@@ -138,7 +138,8 @@ export function readTaint(dataDir, sessionId, now = Date.now()) {
   try {
     const m = taintMarker(dataDir, sessionId);
     const st = m && fs.lstatSync(m, { throwIfNoEntry: false });
-    return !!st && st.isFile() && fresh(st.mtimeMs, now, TAINT_LIMITS.ttlMs);
+    // Whole ms: markTaint sets ms times, and ext4/APFS read them back a hair below (utimes takes double seconds).
+    return !!st && st.isFile() && fresh(Math.round(st.mtimeMs), now, TAINT_LIMITS.ttlMs);
   } catch {
     return false;
   }
@@ -432,7 +433,8 @@ export async function handleCodex({ input, selfRoot, write, log, now = Date.now,
 
   let originMemo;
   const origin = () => (originMemo === undefined ? (originMemo = findCodexOrigin(input.transcript_path, undefined, toolName, deadline)) : originMemo);
-  const args = { toolName, toolInput, origin, allowlist: () => readAllowlist(dir), selfRoot, dataDir: dir, cwd: input.cwd, extraWritePaths, selfViews: true };
+  // P3: the hook cwd is not a base for relative names (a Codex shell call may run in its own `workdir`).
+  const args = { toolName, toolInput, origin, allowlist: () => readAllowlist(dir), selfRoot, dataDir: dir, cwd: input.cwd, extraWritePaths, selfViews: true, shellCwd: false };
   const base = process.platform === 'win32' && toolName === 'Bash'
     ? mergeWin32Readings(decide(args), decide({ ...args, toolName: 'PowerShell' }))
     : decide(args);

@@ -291,8 +291,8 @@
         <div class="window-body">
           <p><span class="t-blue">$</span> <span class="t-bold">codex plugin marketplace add PauloFH/skill-sentry</span></p>
           <p><span class="t-blue">$</span> <span class="t-bold">codex plugin add skill-sentry@skill-sentry</span></p>
-          <p class="t-dim" data-i18n="codex.untested">Installing from the public GitHub repo is not tested end to end yet. The same commands were verified against a local copy.</p>
-          <p style="margin-top:12px"><span class="t-blue">●</span> <span data-i18n="codex.trust">Then open <code>/hooks</code>, review the skill-sentry hook and trust it. Codex does not run a hook until you do, and enabling a plugin does not trust its hooks.</span></p>
+          <p class="t-dim" data-i18n="codex.verified">Verified from the public GitHub repo on Windows and WSL Codex.</p>
+          <p style="margin-top:12px"><span class="t-blue">●</span> <span data-i18n="codex.trust">Start Codex once, then open <code>/hooks</code>, review the skill-sentry hook and trust it. On its first start Codex writes an install file into the plugin folder, which changes the hook's fingerprint. Codex does not run a hook until you trust it, and enabling a plugin does not trust its hooks.</span></p>
         </div>
       </figure>
     </div>
@@ -303,6 +303,7 @@
         <li data-i18n="codex.lim1">No “ask”: the guard can only allow or deny.</li>
         <li data-i18n="codex.lim2">It fails open: if the hook errors or runs past Codex's timeout, about 5 seconds, the call runs.</li>
         <li data-i18n="codex.lim3">Until you trust the hook in <code>/hooks</code>, the guard does not run.</li>
+        <li data-i18n="codex.lim7">After a plugin update Codex marks the hook <code>modified</code> and stops running it until you trust it again in <code>/hooks</code>.</li>
         <li data-i18n="codex.lim6">Commands that build names or paths at run time (<code>eval</code>, variables, globs, <code>python -c</code>) are not analysed.</li>
         <li data-i18n="codex.lim4">Harden is recommend-only: skill-sentry never edits Codex files. <code>harden.mjs check --agent codex</code> prints snippets for you to apply.</li>
         <li data-i18n="codex.lim5">Update both installs after each release, so the Claude Code and Codex copies match.</li>
@@ -549,12 +550,13 @@
     "codex.d5": "Escritas nos arquivos do próprio skill-sentry (qualquer cópia instalada), ou por formas incomuns de caminho. Negado.",
     "codex.patch": "Os patches enviados pelo <code>apply_patch</code> também são inspecionados. A maioria dos patches que a guarda não consegue ler, vindos de um arquivo, de um pipe ou de expansão de shell, é negada. Shell dinâmico ou ofuscado não é analisado.",
     "codex.termLabel": "Instalação no Codex",
-    "codex.untested": "A instalação a partir do repositório público do GitHub ainda não foi testada de ponta a ponta. Os mesmos comandos foram verificados contra uma cópia local.",
-    "codex.trust": "Depois, abra <code>/hooks</code>, revise o hook do skill-sentry e confie nele. O Codex não executa um hook enquanto você não confiar, e ativar um plugin não faz o Codex confiar nos hooks dele.",
+    "codex.verified": "Verificado a partir do repositório público do GitHub no Codex do Windows e do WSL.",
+    "codex.trust": "Inicie o Codex uma vez e depois abra <code>/hooks</code>, revise o hook do skill-sentry e confie nele. No primeiro início, o Codex grava um arquivo de instalação na pasta do plugin, o que muda a impressão digital do hook. O Codex não executa um hook enquanto você não confiar nele, e ativar um plugin não faz o Codex confiar nos hooks dele.",
     "codex.limTitle": "Principais limites no Codex",
     "codex.lim1": "Sem “ask”: a guarda só pode permitir ou negar.",
     "codex.lim2": "Ela falha aberta: se o hook der erro ou passar do tempo limite do Codex, cerca de 5 segundos, a chamada roda.",
     "codex.lim3": "Até você confiar no hook em <code>/hooks</code>, a guarda não roda.",
+    "codex.lim7": "Depois de uma atualização do plugin, o Codex marca o hook como <code>modified</code> e para de executá-lo até você confiar nele de novo em <code>/hooks</code>.",
     "codex.lim6": "Comandos que montam nomes ou caminhos em tempo de execução (<code>eval</code>, variáveis, globs, <code>python -c</code>) não são analisados.",
     "codex.lim4": "O harden só recomenda: o skill-sentry nunca edita arquivos do Codex. O <code>harden.mjs check --agent codex</code> mostra trechos para você aplicar.",
     "codex.lim5": "Atualize as duas instalações a cada versão, para que as cópias do Claude Code e do Codex fiquem iguais.",

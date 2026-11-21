@@ -108,6 +108,35 @@ test('the Codex section documents install, the hook trust step, the tiers and th
   assert.match(dictionary(src).pt['codex.title'], /Codex/);
 });
 
+test('v0.1.2: the GitHub install for Codex is documented as verified, with the trust step after the first start', () => {
+  const src = html();
+  const sec = /<section id="codex"[\s\S]*?<\/section>/.exec(src)[0];
+  const pt = dictionary(src).pt;
+  assert.doesNotMatch(src, /not tested end to end|ponta a ponta/i, 'no "untested" note left on the page');
+  assert.match(sec, /Start Codex once/, 'start Codex before trusting');
+  assert.match(sec, /install file/, 'why: Codex writes an install file on its first start');
+  assert.match(sec, /After a plugin update Codex marks the hook <code>modified<\/code> and stops running it until you trust it again in <code>\/hooks<\/code>/, 'limit: Codex stops the hook after an update');
+  assert.match(Object.values(pt).join('\n'), /inicie o Codex uma vez/i, 'pt: start Codex once');
+  assert.match(pt['codex.lim7'], /marca o hook como <code>modified<\/code> e para de executá-lo/, 'pt: Codex stops the hook after an update');
+  assert.doesNotMatch(`${sec}\n${pt['codex.lim7']}`, /does not warn|não avisa/, 'no unevidenced "no warning" claim on the page');
+  // The four READMEs stay parallel: same verified flow, same new limit.
+  const readme = f => fs.readFileSync(path.join(ROOT, f), 'utf8');
+  for (const [f, untested, startOnce, afterUpdate] of [
+    ['README.md', /not been tested end to end/, /start Codex once/i, /After a plugin update Codex marks the hook `modified` and stops running it until you trust it again in `\/hooks`/],
+    ['README.pt.md', /de ponta a ponta/, /inicie o Codex uma vez/i, /Depois de uma atualização do plugin, o Codex marca o hook como `modified` e para de executá-lo até você confiar nele de novo em `\/hooks`/],
+    ['README.es.md', /de extremo a extremo/, /inicia Codex una vez/i, /Después de una actualización del plugin, Codex marca el hook como `modified` y deja de ejecutarlo hasta que vuelvas a confiar en él en `\/hooks`/],
+    ['README.zh.md', /端到端/, /先启动一次 Codex/, /插件更新后，Codex 会把 hook 标记为 `modified` 并停止运行它，直到你在 `\/hooks` 中重新信任它/],
+  ]) {
+    const t = readme(f);
+    assert.doesNotMatch(t, untested, `${f}: untested note removed`);
+    assert.match(t, startOnce, `${f}: start Codex once before trusting`);
+    assert.match(t, afterUpdate, `${f}: re-trust limit`);
+    // Not evidenced (Codex's own UI after an update was not observed): no claim that it gives no warning.
+    assert.doesNotMatch(t, /does not warn|não avisa|no te avisa|不会提醒/i,`${f}: no unevidenced "no warning" claim`);
+    assert.match(t, /codex plugin marketplace add PauloFH\/skill-sentry\r?\ncodex plugin add skill-sentry@skill-sentry/, `${f}: install commands`);
+  }
+});
+
 test('English copy lives in the markup, not in JavaScript', () => {
   const src = html();
   assert.ok(src.includes('Your plugins run with your privileges.'), 'hero headline in the HTML');

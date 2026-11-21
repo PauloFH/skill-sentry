@@ -1,0 +1,16 @@
+version: 2
+updates:
+  # Keeps the SHA-pinned actions in .github/workflows current (the tag stays in a comment next to each SHA).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+  # The locked semantic-release toolchain of the release job (CI-only; the plugin itself has no dependencies).
+  - package-ecosystem: npm
+    directory: /tools/ci/release
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
