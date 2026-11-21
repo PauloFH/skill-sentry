@@ -510,6 +510,31 @@ test('releases: the embedded table knows v0.1.0 (the tagged tree) with a hash an
   assert.ok(!names.some(n => /^(?:\.git|\.omc|\.superpowers|docs\/superpowers|node_modules|\.in_use)\//.test(n)), 'nothing unshipped');
 });
 
+test('releases (v0.1.2 P2): the embedded table knows v0.1.1, and a clean git archive of the tag is recognised as 0.1.1', () => {
+  const e = KNOWN_RELEASES['0.1.1'];
+  assert.ok(e, 'v0.1.1 entry');
+  const names = Object.keys(e);
+  assert.ok(names.length >= 70 && names.length <= 110, `plausible file count: ${names.length}`);
+  for (const must of ['scripts/guard.mjs', 'scripts/lib/codex/guardpolicy.mjs', 'scripts/lib/selfcopy.mjs', 'scripts/lib/releases.mjs', '.claude-plugin/plugin.json', 'hooks/hooks.json', 'skills/audit/SKILL.md']) {
+    assert.ok(names.includes(must), must);
+  }
+  assert.deepEqual(Object.keys(KNOWN_RELEASE_SIZES['0.1.1']).sort(), [...names].sort());
+  const repo = path.resolve(path.dirname(SCAN), '..');
+  const out = tmp('v011');
+  const a = spawnSync('git', ['-C', repo, 'archive', '--format=tar', 'v0.1.1'], { maxBuffer: 64 * 1024 * 1024 });
+  assert.equal(a.status, 0, `git archive v0.1.1 (needs the tag): ${a.stderr}`);
+  const x = spawnSync('tar', ['-xf', '-'], { input: a.stdout, cwd: out, encoding: 'utf8' }); // relative names only
+  assert.equal(x.status, 0, x.stderr);
+  assert.equal(knownRelease(out), '0.1.1', 'clean export');
+  // As Codex installs it (shallow .git plus its install marker) and as Claude Code runs it (.in_use marker).
+  fs.mkdirSync(path.join(out, '.git'));
+  fs.writeFileSync(path.join(out, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  putCodexMarker(out);
+  fs.mkdirSync(path.join(out, '.in_use'));
+  fs.writeFileSync(path.join(out, '.in_use', '31700'), JSON.stringify({ pid: 31700, procStartFt: '134080000000000000' }));
+  assert.equal(knownRelease(out), '0.1.1', 'installed forms');
+});
+
 test('tools/release-hashes.mjs prints the entry the runtime matches, and the runtime never references it', () => {
   const old = buildSelfTree(tmp('old'));
   const gen = path.resolve(path.dirname(SCAN), '..', 'tools', 'release-hashes.mjs');
