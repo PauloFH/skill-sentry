@@ -36,7 +36,7 @@ Medidas que conviene tomar de todos modos: fijar las versiones de los plugins, e
 /plugin install skill-sentry@skill-sentry
 ```
 
-Este repositorio es a la vez el plugin y su propio marketplace.
+Este repositorio es a la vez el plugin y su propio marketplace. El marketplace instala desde `main`, y `main` solo recibe cambios que pasaron la CI (la suite de pruebas en Linux, Windows y macOS, más comprobaciones de instalación con las CLI reales de Claude Code y Codex).
 
 ## Uso
 

@@ -36,7 +36,7 @@ Mitigations worth doing regardless: pin plugin versions, avoid auto-update for t
 /plugin install skill-sentry@skill-sentry
 ```
 
-This repository is both the plugin and its own marketplace.
+This repository is both the plugin and its own marketplace. The marketplace installs from `main`, and `main` only receives changes that passed CI (the test suite on Linux, Windows and macOS, plus install checks against the real Claude Code and Codex CLIs).
 
 ## Usage
 

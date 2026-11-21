@@ -36,7 +36,7 @@ skill-sentry 是一双额外的眼睛，而不是一面盾牌。在信任它之�
 /plugin install skill-sentry@skill-sentry
 ```
 
-本仓库既是插件，也是它自己的 marketplace。
+本仓库既是插件，也是它自己的 marketplace。marketplace 从 `main` 安装，而 `main` 只接收通过 CI 的改动（Linux、Windows 和 macOS 上的测试套件，以及用真实的 Claude Code 和 Codex CLI 做的安装检查）。
 
 ## 使用
 
