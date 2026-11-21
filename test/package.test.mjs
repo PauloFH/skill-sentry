@@ -40,6 +40,17 @@ test('manifests parse and carry the expected identity', () => {
   }
 });
 
+test('npm test runs every test file by name (Node 22 no longer accepts a directory for --test)', () => {
+  const script = readJson('package.json').scripts.test;
+  assert.equal(script, 'node tools/test.mjs');
+  const runner = fs.readFileSync(path.join(ROOT, 'tools', 'test.mjs'), 'utf8');
+  assert.match(runner, /\.test\.mjs/);
+  assert.doesNotMatch(runner, /'--test',\s*'test\/?'/, 'no directory argument');
+  // The runner sees exactly the suite's files.
+  const files = fs.readdirSync(path.join(ROOT, 'test')).filter(f => f.endsWith('.test.mjs'));
+  assert.ok(files.includes('package.test.mjs') && files.length >= 15, files.join(','));
+});
+
 test('hooks.json registers the guard on the exact matcher', () => {
   const h = readJson('hooks/hooks.json');
   const pre = h.hooks.PreToolUse;
