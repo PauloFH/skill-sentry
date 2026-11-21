@@ -140,6 +140,27 @@ test('R6 both directions: Claude-shaped input keeps ask even with turn_id inject
   assert.match(assertDeny(JSON.parse(cx.stdout)), RUN_YOURSELF);
 });
 
+test('SELF_PROTECT denies writes and rm -rf under standalone skill-sentry installs (~/.claude/skills, ~/.agents/skills); other skills pass', async () => {
+  const H = os.homedir();
+  const fwd = s => s.replace(/\\/g, '/');
+  for (const dir of [path.join(H, '.claude', 'skills', 'skill-sentry-audit'), path.join(H, '.agents', 'skills', 'skill-sentry'), path.join(PROJECT, '.agents', 'skills', 'skill-sentry')]) {
+    const file = path.join(dir, 'scripts', 'scan.mjs');
+    for (const input of [
+      codex('Bash', { command: `rm -rf "${fwd(dir)}"` }),
+      codex('Bash', { command: `echo x > "${fwd(file)}"` }),
+      codex('apply_patch', { command: `*** Begin Patch\n*** Add File: ${file}\n+x\n*** End Patch` }),
+    ]) {
+      const { json } = await handleWith(input);
+      assert.match(assertDeny(json, input.tool_input.command), RUN_YOURSELF, input.tool_input.command);
+    }
+  }
+  for (const dir of [path.join(H, '.agents', 'skills', 'other'), path.join(H, '.claude', 'skills', 'audit')]) {
+    for (const input of [codex('Bash', { command: `rm -rf "${fwd(dir)}"` }), codex('apply_patch', { command: `*** Begin Patch\n*** Add File: ${path.join(dir, 'x.md')}\n+x\n*** End Patch` })]) {
+      assert.equal((await handleWith(input)).raw, '', input.tool_input.command);
+    }
+  }
+});
+
 // ---------------------------------------------------------------- apply_patch headers
 
 test('patchPaths reads Add/Update/Delete/Move headers only (content never inspected)', () => {
@@ -908,6 +929,7 @@ test('codex: anything beyond a single plain read of our own SKILL.md still denie
     `cat ${SKILL_AUDIT}.bak`,
     `cat ${nested}`,
     `cat ${fwdSlash(path.join(SELF_REAL, 'skills', 'audit', 'scripts', 'scan.mjs'))}`,
+    `cat ${fwdSlash(SELF_REAL)}/skills/harden/../audit/scripts/scan.mjs`,
     `cat ${fwdSlash(path.join(data, 'allowlist.json'))}`,
     `sed -i 's/a/b/' ${SKILL_AUDIT}`,
     `sed -n '1w out.txt' ${SKILL_AUDIT}`,

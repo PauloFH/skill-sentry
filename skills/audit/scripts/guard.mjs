@@ -38,9 +38,10 @@ function readStdin() {
 async function main() {
   const [raw, { handle }, { roots }] = await Promise.all([readStdin(), import('./lib/guardmain.mjs'), import('./lib/roots.mjs')]);
   // Ruling D: selfRoot is the plugin root (the directory containing skills/audit/scripts/), else the skill root.
+  // Ruling M: the read-only self invocations are the scripts next to this file (`<skillRoot>/scripts/`).
   const { skillRoot, pluginRoot } = roots(import.meta.url);
   const selfRoot = pluginRoot ?? skillRoot;
-  await handle({ raw, selfRoot, deadline: DEADLINE, write: s => process.stdout.write(s), log: appendLog });
+  await handle({ raw, selfRoot, selfSkill: skillRoot, deadline: DEADLINE, write: s => process.stdout.write(s), log: appendLog });
 }
 
 main().catch(e => {

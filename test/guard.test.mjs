@@ -210,7 +210,8 @@ test('Ruling L2: exact read-only invocations of our own scan.mjs / harden.mjs pa
   // Long (realpath) form: an 8.3 temp dir would make the script path an unusual form (Ruling K).
   const S = fs.realpathSync.native(SELF);
   const scan = path.join(S, 'skills', 'audit', 'scripts', 'scan.mjs');
-  const viaSkill = path.join(S, 'skills', 'audit', '.', 'scripts', 'scan.mjs');
+  // Literal `..` (path.join would collapse it): the spelling the harden SKILL.md produces for the shared scripts.
+  const viaSkill = [S, 'skills', 'harden', '..', 'audit', 'scripts', 'scan.mjs'].join(path.sep);
   const harden = path.join(S, 'skills', 'harden', '..', 'audit', 'scripts', 'harden.mjs');
   const fwd = s => s.replace(/\\/g, '/');
   // Ruling L3: under Bash every `\` disqualifies (it escapes and merges words), so Bash forms use
@@ -312,7 +313,7 @@ test('Ruling M: only fixed token lists bypass SELF_PROTECT (PowerShell array/com
   const S = fs.realpathSync.native(SELF);
   const scanWin = path.join(S, 'skills', 'audit', 'scripts', 'scan.mjs');
   const scanFwd = scanWin.replace(/\\/g, '/');
-  const viaSkillWin = path.join(S, 'skills', 'audit', '.', 'scripts', 'scan.mjs');
+  const viaSkillWin = [S, 'skills', 'harden', '..', 'audit', 'scripts', 'scan.mjs'].join(path.sep);
   const hardenWin = path.join(S, 'skills', 'audit', 'scripts', 'harden.mjs');
   const UB = '--update-baseline';
   const asks = {
@@ -409,6 +410,89 @@ test('Ruling M self invocations at the new path pass, the old path asks', async 
       }
     }
   }
+});
+
+test('Ruling M in a standalone skill install: <skill dir>/scripts/{scan,harden}.mjs pass, every other form asks', async () => {
+  // A standalone install (npx skills add) has no plugin root: the skill dir is the self root.
+  const SA = path.join(tmp('sa'), 'skill-sentry-audit');
+  copyTree(path.join(HERE, '..', 'skills', 'audit'), SA);
+  const fwd = s => s.replace(/\\/g, '/');
+  const scan = path.join(SA, 'scripts', 'scan.mjs');
+  const harden = path.join(SA, 'scripts', 'harden.mjs');
+  const none = {
+    Bash: [`node "${fwd(scan)}" --json`, `node ${fwd(scan)} --json --diff-only`, `node '${fwd(harden)}' check`],
+    PowerShell: [`node "${scan}" --json`, `node "${harden}" check`],
+  };
+  const asks = {
+    Bash: [
+      `node "${fwd(scan)}" --update-baseline`, `node "${fwd(scan)}" --json --path x`, `node "${fwd(harden)}"`,
+      `node "${fwd(path.join(SA, 'scripts', 'guard.mjs'))}"`, `node "${fwd(path.join(SA, 'scripts', 'lib', 'rules.mjs'))}"`,
+      `node "${fwd(path.join(SA, 'skills', 'audit', 'scripts', 'scan.mjs'))}" --json`, `rm -rf "${fwd(SA)}"`,
+    ],
+    PowerShell: [`node "${scan}" --update-baseline`, `Remove-Item -Recurse "${SA}"`],
+  };
+  for (const [agent, extra] of [['claude', {}], ['codex', { selfViews: true, shellCwd: false }]]) {
+    const dd = (toolName, command) => decide({ toolName, toolInput: { command }, origin: null, allowlist: EMPTY, selfRoot: SA, selfSkill: SA, dataDir: DATA, ...extra });
+    for (const tool of ['Bash', 'PowerShell']) {
+      for (const command of none[tool]) assert.equal(dd(tool, command).decision, 'none', `${agent} ${tool}: ${command}`);
+      for (const command of asks[tool]) assert.equal(dd(tool, command).ruleId, 'SELF_PROTECT', `${agent} ${tool}: ${command}`);
+    }
+  }
+  // The plugin layout keeps asking for <root>/scripts/scan.mjs (the old path) even with the skill dir passed.
+  const P = fs.realpathSync.native(path.resolve(HERE, '..'));
+  const old = `node "${fwd(path.join(P, 'scripts', 'scan.mjs'))}" --json`;
+  assert.equal(decide({ toolName: 'Bash', toolInput: { command: old }, origin: null, allowlist: EMPTY, selfRoot: P, selfSkill: path.join(P, 'skills', 'audit'), dataDir: DATA }).decision, 'ask');
+  // The guard spawned from the standalone copy derives the same roots.
+  const guard = path.join(SA, 'scripts', 'guard.mjs');
+  const input = command => JSON.stringify({ session_id: 'c1', prompt_id: 'p1', transcript_path: null, cwd: tmp('mcwd'), hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } });
+  for (const command of none.Bash) {
+    const r = await runGuard(input(command), {}, guard);
+    assert.equal(`${r.code}|${r.stderr}|${r.stdout}`, '0||', command);
+  }
+  const r = await runGuard(input(asks.Bash[0]), {}, guard);
+  assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'ask');
+});
+
+test('SELF_PROTECT covers standalone skill-sentry installs (~/.claude/skills, ~/.agents/skills, project dirs); other skills stay none', () => {
+  const H = os.homedir();
+  const proj = tmp('proj');
+  const dirs = [
+    path.join(H, '.claude', 'skills', 'skill-sentry'),
+    path.join(H, '.claude', 'skills', 'skill-sentry-audit'),
+    path.join(H, '.agents', 'skills', 'skill-sentry'),
+    path.join(H, '.agents', 'skills', 'my-skill-sentry-copy'),
+    path.join(proj, '.claude', 'skills', 'skill-sentry-audit'),
+    path.join(proj, '.agents', 'skills', 'skill-sentry'),
+  ];
+  const fwd = s => s.replace(/\\/g, '/');
+  for (const dir of dirs) {
+    const file = path.join(dir, 'scripts', 'scan.mjs');
+    for (const [tool, input] of [['Write', { file_path: file, content: 'x' }], ['Edit', { file_path: path.join(dir, 'SKILL.md'), old_string: 'a', new_string: 'b' }]]) {
+      const r = d(tool, input);
+      assert.equal(r.decision, 'ask', `${tool} ${file}`);
+      assert.equal(r.ruleId, 'SELF_PROTECT_WRITE', `${tool} ${file}`);
+    }
+    for (const [tool, command] of [
+      ['Bash', `rm -rf "${fwd(dir)}"`],
+      ['Bash', `echo x > "${fwd(file)}"`],
+      ['PowerShell', `Remove-Item -Recurse -Force "${dir}"`],
+    ]) {
+      const r = d(tool, { command });
+      assert.equal(r.decision, 'ask', `${tool}: ${command}`);
+      assert.equal(r.ruleId, 'SELF_PROTECT', `${tool}: ${command}`);
+    }
+  }
+  for (const command of ['rm -rf ~/.claude/skills/skill-sentry-audit', 'rm -rf $HOME/.agents/skills/skill-sentry', 'rm -rf .claude/skills/skill-sentry-audit',
+    'cd /x && rm -rf ./.agents/skills/skill-sentry']) {
+    assert.equal(d('Bash', { command }).ruleId, 'SELF_PROTECT', command);
+  }
+  // Unrelated skill dirs, and skill-sentry names outside a skills dir, are untouched.
+  for (const dir of [path.join(H, '.claude', 'skills', 'other'), path.join(H, '.agents', 'skills', 'audit'), path.join(proj, '.claude', 'skills', 'sentry')]) {
+    assert.equal(d('Write', { file_path: path.join(dir, 'SKILL.md'), content: 'x' }).decision, 'none', dir);
+    assert.equal(d('Bash', { command: `rm -rf "${fwd(dir)}"` }).decision, 'none', dir);
+  }
+  assert.equal(d('Bash', { command: 'rm -rf ~/.claude/skills/other' }).decision, 'none');
+  assert.equal(d('Bash', { command: `ls ${fwd(path.join(proj, 'skills', 'skill-sentry-notes'))}` }).decision, 'none');
 });
 
 test('relative and non-canonical shell references to skill-sentry ask', () => {
@@ -1520,11 +1604,12 @@ test('guard (L1): deny skips the component check; an expired budget skips it for
   assert.ok(ask.out.permissionDecisionReason.includes('component check skipped (time budget)'), ask.out.permissionDecisionReason);
 });
 
-test('originMayNameSkillSentry (R23): only an origin that can map onto a plugin named skill-sentry', () => {
-  for (const o of [{ skill: 'skill-sentry:audit' }, { mcpPlugin: 'skill-sentry' }, { mcpPlugin: 'other', mcpQualified: 'skill-sentry_srv' }]) {
+test('originMayNameSkillSentry (R23): only an origin that can map onto a plugin or standalone skill named skill-sentry', () => {
+  for (const o of [{ skill: 'skill-sentry:audit' }, { mcpPlugin: 'skill-sentry' }, { mcpPlugin: 'other', mcpQualified: 'skill-sentry_srv' },
+    { skill: 'skill-sentry' }, { skill: 'skill-sentry-audit' }]) {
     assert.equal(originMayNameSkillSentry(o), true, JSON.stringify(o));
   }
-  for (const o of [null, {}, { skill: 'evil:helper' }, { skill: 'skill-sentry' }, { skill: 'skill-sentry-x:y' },
+  for (const o of [null, {}, { skill: 'evil:helper' }, { skill: 'audit' }, { skill: 'skill-sentry-x:y' },
     { mcpPlugin: 'evil', mcpQualified: 'evil_srv' }, { mcpPlugin: 'skill-sentry-x', mcpQualified: 'skill-sentry-x_srv' }]) {
     assert.equal(originMayNameSkillSentry(o), false, JSON.stringify(o));
   }

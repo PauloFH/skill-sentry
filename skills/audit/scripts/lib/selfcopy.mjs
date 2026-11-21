@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { normalizePath } from './text.mjs';
 import { KNOWN_RELEASES, KNOWN_RELEASE_SIZES } from './releases.mjs';
 
@@ -168,6 +169,29 @@ export function shippedFiles(root, { allowed = null, skipDirs = null, limits = C
 const sameUpToEol = (a, b) => Math.max(a, b) <= 2 * Math.min(a, b);
 
 /**
+ * `root` holds exactly the regular files of `ref` (no extra, no missing; `refSkip` dirs of `ref` and install markers
+ * aside, `rootSkip` dirs of `root` not entered), every file with identical bytes (CRLF and LF line ends count as
+ * equal), and carries every relpath in `must`. Links, special files, limits, `deadline` or read errors -> false.
+ */
+function sameTree(root, ref, { must, refSkip, rootSkip, limits, deadline }) {
+  for (const m of must) {
+    if (!fs.lstatSync(abs(root, m)).isFile()) return false;
+  }
+  const mine = shippedFiles(ref, { skipDirs: refSkip, limits, deadline });
+  if (!mine || !mine.size) return false;
+  const theirs = shippedFiles(root, { allowed: new Set(mine.keys()), skipDirs: rootSkip, limits, deadline });
+  if (!theirs || theirs.size !== mine.size) return false;
+  for (const [rel, size] of theirs) if (!sameUpToEol(size, mine.get(rel))) return false;
+  for (const [rel, size] of theirs) {
+    if (late(deadline)) return false;
+    const x = readListed(abs(root, rel), size);
+    const y = readListed(abs(ref, rel), mine.get(rel));
+    if (!x || !y || (!x.equals(y) && !lfBytes(x).equals(lfBytes(y)))) return false;
+  }
+  return true;
+}
+
+/**
  * Another installed copy of the running scanner: its set of regular files equals the running scanner's
  * shipped set (no extra, no missing; dev-only dirs of a checkout and install markers aside), every file with
  * identical bytes (CRLF and LF line ends count as equal), and it carries `skills/audit/scripts/guard.mjs` and
@@ -178,23 +202,11 @@ export function isCopyOfSelf(root, selfRoot, { limits = COPY_LIMITS, deadline } 
   if (!root || !selfRoot) return false;
   try {
     if (realDir(root) === realDir(selfRoot)) return true;
-    for (const must of ['skills/audit/scripts/guard.mjs', '.claude-plugin/plugin.json']) {
-      if (!fs.lstatSync(abs(root, must)).isFile()) return false;
-    }
-    const mine = shippedFiles(selfRoot, { skipDirs: DEV_DIRS, limits, deadline });
-    if (!mine || !mine.size) return false;
     // m6: the other copy may carry a `.git` (or `node_modules`) dir too; nothing in either is ever executed and the
     // scanner never reads them. Every other extra file still makes the copy not-self.
-    const theirs = shippedFiles(root, { allowed: new Set(mine.keys()), skipDirs: OTHER_COPY_SKIP_DIRS, limits, deadline });
-    if (!theirs || theirs.size !== mine.size) return false;
-    for (const [rel, size] of theirs) if (!sameUpToEol(size, mine.get(rel))) return false;
-    for (const [rel, size] of theirs) {
-      if (late(deadline)) return false;
-      const x = readListed(abs(root, rel), size);
-      const y = readListed(abs(selfRoot, rel), mine.get(rel));
-      if (!x || !y || (!x.equals(y) && !lfBytes(x).equals(lfBytes(y)))) return false;
-    }
-    return true;
+    return sameTree(root, selfRoot, {
+      must: ['skills/audit/scripts/guard.mjs', '.claude-plugin/plugin.json'], refSkip: DEV_DIRS, rootSkip: OTHER_COPY_SKIP_DIRS, limits, deadline,
+    });
   } catch {
     return false;
   }
@@ -207,9 +219,10 @@ const isObj = v => v !== null && typeof v === 'object' && !Array.isArray(v);
  * LF-normalised SHA-256 for each), else null. Cheap checks first: the walk stops at the first relpath no
  * release has, then file count and sizes (LF size up to twice it, for CRLF) are compared before any byte is
  * read, and hashing stops at the first mismatch. Links, special files, read errors, limits or `deadline` ->
- * null. `releases` ({ hashes, sizes }) defaults to the embedded table (tests inject their own). Never throws.
+ * null. `releases` ({ hashes, sizes }) defaults to the embedded table (tests inject their own). `skipDirs`: top-level
+ * dirs of `root` not entered (default `.git` and `node_modules`, see isCopyOfSelf). Never throws.
  */
-export function knownRelease(root, { releases = { hashes: KNOWN_RELEASES, sizes: KNOWN_RELEASE_SIZES }, deadline } = {}) {
+export function knownRelease(root, { releases = { hashes: KNOWN_RELEASES, sizes: KNOWN_RELEASE_SIZES }, deadline, skipDirs = OTHER_COPY_SKIP_DIRS } = {}) {
   try {
     const hashes = isObj(releases?.hashes) ? releases.hashes : {};
     const sizes = isObj(releases?.sizes) ? releases.sizes : {};
@@ -222,7 +235,7 @@ export function knownRelease(root, { releases = { hashes: KNOWN_RELEASES, sizes:
       maxBytes: Math.max(...versions.map(v => 2 * total(v))),
     };
     // A Codex install is a shallow git clone: its `.git` (and any `node_modules`) is skipped as in isCopyOfSelf (m6).
-    const files = shippedFiles(root, { allowed, skipDirs: OTHER_COPY_SKIP_DIRS, limits, deadline });
+    const files = shippedFiles(root, { allowed, skipDirs, limits, deadline });
     if (!files) return null;
     candidates: for (const v of versions) {
       const names = Object.keys(hashes[v]);
@@ -245,16 +258,162 @@ export function knownRelease(root, { releases = { hashes: KNOWN_RELEASES, sizes:
   }
 }
 
+// ---- Self-manifest ----
+// Every release writes skills/audit/scripts/lib/selfmanifest.json last in its prepare step (tools/ci/write-manifest.mjs):
+// { "version": "x.y.z", "files": { "<relpath>": "<lfSha256>" } } over every file of the release tree except the manifest
+// itself (and `.git`, install markers). The trust anchor is the manifest carried by the RUNNING scanner, next to this
+// module; a copy's own selfmanifest.json is only one of its files, compared by hash with the running one, never read
+// as a manifest. In a dev checkout the committed manifest is the last release's: the checkout itself differs from it,
+// yet installed copies of that release still match it.
+
+export const MANIFEST_REL = 'skills/audit/scripts/lib/selfmanifest.json';
+const SKILL_PREFIX = 'skills/audit/';
+const SKILL_MANIFEST_REL = MANIFEST_REL.slice(SKILL_PREFIX.length);
+const DEFAULT_MANIFEST = fileURLToPath(new URL('./selfmanifest.json', import.meta.url));
+const MANIFEST_MAX_BYTES = 1024 * 1024;
+const VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+const HEX64 = /^[0-9a-f]{64}$/;
+/** A relpath as the walk produces it: `/`-separated, relative, no empty, `.` or `..` segment, no control or `\`. */
+const safeRel = r => typeof r === 'string' && r.length > 0 && r.length <= 1024 && !/[\\\x00-\x1f:]/.test(r)
+  && r.split('/').every(s => s !== '' && s !== '.' && s !== '..');
+
+/** The manifest text: `version`, then `files` with sorted keys; 2-space JSON, LF, trailing newline. */
+export function serializeManifest({ version, files }) {
+  const sorted = Object.fromEntries(Object.keys(files).sort().map(k => [k, files[k]]));
+  return `${JSON.stringify({ version, files: sorted }, null, 2)}\n`;
+}
+
+let defaultManifest;
 /**
- * Mark `comp` (a plugin dir named skill-sentry, not the running scanner's own dir) as self when the running
- * scanner can vouch for it: a copy of itself, or a known release (then `comp.meta.knownRelease` holds the
- * version taken from the table key, never from the copy). Otherwise `comp` is left as is and scanned.
+ * `{ version, files, sha }` of a self-manifest file (`sha`: lfSha256 of its own bytes, what a copy's selfmanifest.json
+ * must hash to), or null when it is missing, oversized, not a regular file or malformed. Never throws. The default
+ * file (the running scanner's) is read once, lazily.
  */
-export function markSkillSentryCopy(comp, root, selfRoot, { releases, deadline } = {}) {
-  if (isCopyOfSelf(root, selfRoot, { deadline })) { comp.self = true; return; }
-  const version = knownRelease(root, { ...(releases ? { releases } : {}), deadline });
-  if (version !== null) {
-    comp.self = true;
-    comp.meta = { ...comp.meta, knownRelease: version };
+export function loadSelfManifest(file = DEFAULT_MANIFEST) {
+  const isDefault = file === DEFAULT_MANIFEST;
+  if (isDefault && defaultManifest !== undefined) return defaultManifest;
+  let out = null;
+  try {
+    const st = fs.lstatSync(file);
+    const buf = st.isFile() && st.size <= MANIFEST_MAX_BYTES ? readListed(file, st.size) : null;
+    const m = buf ? JSON.parse(buf.toString('utf8')) : null;
+    if (isObj(m) && typeof m.version === 'string' && VERSION_RE.test(m.version) && isObj(m.files)
+      && Object.entries(m.files).every(([k, v]) => safeRel(k) && k !== MANIFEST_REL && typeof v === 'string' && HEX64.test(v))) {
+      out = { version: m.version, files: Object.fromEntries(Object.entries(m.files)), sha: lfSha256(buf) };
+    }
+  } catch {
+    out = null;
   }
+  if (isDefault) defaultManifest = out;
+  return out;
+}
+
+/**
+ * relpath -> lfSha256 a copy of `kind` must hold exactly: the whole manifest (plugin) or its skills/audit subset
+ * re-rooted (skill), plus the manifest file itself hashed as the running one. null for a manifest that cannot vouch
+ * for a skill-sentry tree (missing, empty, no scan.mjs).
+ */
+function manifestSet(manifest, kind) {
+  if (!isObj(manifest?.files) || typeof manifest.sha !== 'string') return null;
+  const out = new Map();
+  for (const [rel, h] of Object.entries(manifest.files)) {
+    if (kind === 'plugin') out.set(rel, h);
+    else if (rel.startsWith(SKILL_PREFIX)) out.set(rel.slice(SKILL_PREFIX.length), h);
+  }
+  if (!out.has(kind === 'plugin' ? `${SKILL_PREFIX}scripts/scan.mjs` : 'scripts/scan.mjs')) return null;
+  out.set(kind === 'plugin' ? MANIFEST_REL : SKILL_MANIFEST_REL, manifest.sha);
+  return out;
+}
+
+/** `root` holds exactly the relpaths of `expected`, each with that LF-normalised SHA-256. Never throws. */
+function matchesHashes(root, expected, { skipDirs, deadline }) {
+  const files = shippedFiles(root, { allowed: new Set(expected.keys()), skipDirs, deadline });
+  if (!files || files.size !== expected.size) return false;
+  for (const [rel, size] of files) {
+    if (late(deadline)) return false;
+    const buf = readListed(abs(root, rel), size);
+    if (!buf || lfSha256(buf) !== expected.get(rel)) return false;
+  }
+  return true;
+}
+
+/**
+ * The skills/audit subset of a release table, re-rooted at the skill dir, for the releases that shipped a standalone
+ * skill (their subset carries scripts/scan.mjs; a 0.1.x subset is a lone SKILL.md and is never a skill copy).
+ */
+function skillTables({ hashes, sizes } = {}) {
+  const out = { hashes: {}, sizes: {} };
+  for (const v of Object.keys(isObj(hashes) ? hashes : {})) {
+    if (!isObj(hashes[v]) || !isObj(sizes?.[v]) || !Object.hasOwn(hashes[v], `${SKILL_PREFIX}scripts/scan.mjs`)) continue;
+    out.hashes[v] = {};
+    out.sizes[v] = {};
+    for (const rel of Object.keys(hashes[v])) {
+      if (!rel.startsWith(SKILL_PREFIX)) continue;
+      out.hashes[v][rel.slice(SKILL_PREFIX.length)] = hashes[v][rel];
+      out.sizes[v][rel.slice(SKILL_PREFIX.length)] = sizes[v][rel];
+    }
+  }
+  return out;
+}
+let embeddedSkillTables;
+
+/** The running scanner's skill dir: `<selfRoot>/skills/audit` in a plugin (or checkout) layout, else `selfRoot`. */
+function selfSkillDir(selfRoot) {
+  const inPlugin = path.join(selfRoot, 'skills', 'audit');
+  try { if (fs.statSync(path.join(inPlugin, 'scripts', 'guard.mjs')).isFile()) return inPlugin; } catch { /* standalone */ }
+  return selfRoot;
+}
+
+/**
+ * Whether the running scanner can vouch for `dir` as a copy of skill-sentry. `kind` 'plugin' compares a whole plugin
+ * tree, 'skill' a standalone skill dir (npx skills add). In order:
+ *   path     - `dir` is the running scanner's own dir (its plugin root, or its skill dir), by real path;
+ *   copy     - same files and bytes as the running tree (isCopyOfSelf, or the running skill dir for 'skill');
+ *   manifest - exactly the running self-manifest's file set (plugin) or its skills/audit subset (skill);
+ *   release  - exactly a KNOWN_RELEASES entry (or its skills/audit subset, from 0.2.0 on).
+ * `version` is the release that matched (the running manifest's for path/copy/manifest, null without one). A plugin
+ * copy may carry install markers and a `.git`/`node_modules` dir (a Codex git install); a skill copy only the
+ * markers. `selfManifest` (default: the running scanner's) and `releases` (default: the embedded table) are seams
+ * for tests. Never throws.
+ */
+export function matchSelf(dir, kind, { selfRoot = null, selfManifest, releases, deadline } = {}) {
+  const no = { self: false, version: null, via: null };
+  if (!dir || (kind !== 'plugin' && kind !== 'skill')) return no;
+  try {
+    const manifest = selfManifest === undefined ? loadSelfManifest() : selfManifest;
+    const running = typeof manifest?.version === 'string' ? manifest.version : null;
+    const plugin = kind === 'plugin';
+    if (selfRoot) {
+      const ref = plugin ? selfRoot : selfSkillDir(selfRoot);
+      if (realDir(dir) === realDir(ref)) return { self: true, version: running, via: 'path' };
+      const same = plugin ? isCopyOfSelf(dir, selfRoot, { deadline })
+        : sameTree(dir, ref, { must: ['SKILL.md', 'scripts/guard.mjs'], refSkip: null, rootSkip: null, limits: COPY_LIMITS, deadline });
+      if (same) return { self: true, version: running, via: 'copy' };
+    }
+    const skipDirs = plugin ? OTHER_COPY_SKIP_DIRS : null;
+    const expected = manifestSet(manifest, kind);
+    if (expected && matchesHashes(dir, expected, { skipDirs, deadline })) return { self: true, version: manifest.version, via: 'manifest' };
+    let tables = releases ?? { hashes: KNOWN_RELEASES, sizes: KNOWN_RELEASE_SIZES };
+    if (!plugin) tables = releases ? skillTables(releases) : (embeddedSkillTables ??= skillTables(tables));
+    const version = knownRelease(dir, { releases: tables, deadline, skipDirs });
+    return version === null ? no : { self: true, version, via: 'release' };
+  } catch {
+    return no;
+  }
+}
+
+/** A standalone skill dir name that may hold skill-sentry: only this gates the (costly) copy check. */
+export const isSkillSentryName = name => typeof name === 'string' && name.toLowerCase().includes('skill-sentry');
+
+/**
+ * Mark `comp` (a plugin or skill dir named after skill-sentry) as self when the running scanner can vouch for it
+ * (matchSelf). A recorded older release also gets `comp.meta.knownRelease` (the version taken from the table key,
+ * never from the copy), which the scanner reports as SKILL_SENTRY_OLD_VERSION. Otherwise `comp` is left as is and
+ * scanned.
+ */
+export function markSkillSentryCopy(comp, root, selfRoot, { kind = 'plugin', releases, selfManifest, deadline } = {}) {
+  const m = matchSelf(root, kind, { selfRoot, selfManifest, releases, deadline });
+  if (!m.self) return;
+  comp.self = true;
+  if (m.via === 'release') comp.meta = { ...comp.meta, knownRelease: m.version };
 }

@@ -330,7 +330,12 @@ const SELF_SEGMENT = /(?:^|[^\w.-])skill-sentry[. ]*(?=$|[^\w.-])/i;
 // a `.claude` or `.codex` directory. Tested on normalized (`/`-separated) absolute paths.
 const SIBLING_INSTALL = /(?:^|\/)plugins\/cache\/(?:[^/]+\/)?skill-sentry[. ]*(?:\/|$)/i;
 const AGENT_HOME_CHILD = /(?:^|\/)\.(?:claude|codex)[. ]*\/skill-sentry[. ]*(?:\/|$)/i;
-const siblingInstall = f => SIBLING_INSTALL.test(f) || AGENT_HOME_CHILD.test(f);
+// A standalone skill install (npx skills add): any dir whose name contains `skill-sentry` directly in a `skills` dir of
+// `.claude` (Claude Code), `.agents` (Codex, the skills CLI) or `.codex` (older Codex), in a home or in a project.
+const STANDALONE_INSTALL = /(?:^|\/)\.(?:claude|agents|codex)[. ]*\/skills[. ]*\/[^/]*skill-sentry[^/]*(?:\/|$)/i;
+// The same place in shell text: the name runs to the next separator, quote or shell metacharacter.
+const STANDALONE_IN_TEXT = /(?:^|[^\w-])\.(?:claude|agents|codex)[. ]*\/skills[. ]*\/[^/\s'"`;|&()<>]*skill-sentry/i;
+const siblingInstall = f => SIBLING_INSTALL.test(f) || AGENT_HOME_CHILD.test(f) || STANDALONE_INSTALL.test(f);
 
 // ---- Ruling R9 (revised): one narrow exemption from the segment rule ----
 // Every `skill-sentry` segment asks (Ruling J) unless its shell word is a literal absolute path that
@@ -823,7 +828,8 @@ function rootForms(r) {
 // Only fixed token lists are exempt from SELF_PROTECT; no shell argument is parsed beyond them
 // (PowerShell's grammar - arrays from `,`, splatting, dropped empty strings - kept defeating that):
 //   node <scanPath> [--json | --diff-only]...      node <hardenPath> check
-// with both scripts at exactly `<selfRoot>/skills/audit/scripts/`.
+// with both scripts at exactly `<skill dir>/scripts/`, the running guard's own skill dir: `<selfRoot>/skills/audit`
+// in a plugin install (the default), the skill dir itself in a standalone one (roots.mjs; callers pass `selfSkill`).
 // `<path>` is bare or wrapped in one pair of matching quotes, absolute (`X:\`, `X:/` or `/`), and made
 // only of `[A-Za-z0-9 ._:/\~-]` (space only when quoted, `\` only under PowerShell). Anything else,
 // including every value-taking flag, keeps the prompt.
@@ -848,7 +854,7 @@ const SCAN_FLAGS = new Set(['--json', '--diff-only']);
  * `agentFlag` (Codex only, T7) also accepts one `--agent claude|codex|all` pair after `scan.mjs` or `harden.mjs check`:
  * a closed set of values that only narrows what is read (and a partial scan never writes the baseline).
  */
-export function isReadOnlySelfInvocation(cmd, selfRoot, toolName = 'Bash', { agentFlag = false } = {}) {
+export function isReadOnlySelfInvocation(cmd, selfRoot, toolName = 'Bash', { agentFlag = false, selfSkill = null } = {}) {
   if (!str(cmd) || !str(selfRoot)) return false;
   const m = SELF_INVOCATION.exec(cmd);
   if (!m) return false;
@@ -857,7 +863,8 @@ export function isReadOnlySelfInvocation(cmd, selfRoot, toolName = 'Bash', { age
   if (script.includes('\\') && toolName !== 'PowerShell') return false;
   if (!/^(?:[A-Za-z]:[\\/]|\/(?![\\/]))/.test(script) || isUnusualPath(script)) return false;
   const target = lowerOnWin(slashes(path.resolve(script)));
-  const is = name => rootForms(selfRoot).some(f => target === `${f}/skills/audit/scripts/${lowerOnWin(name)}`);
+  const scripts = rootForms(path.join(str(selfSkill) ? selfSkill : path.join(selfRoot, 'skills', 'audit'), 'scripts'));
+  const is = name => scripts.some(f => target === `${f}/${lowerOnWin(name)}`);
   const args = m[4].split(' ').filter(Boolean);
   if (is('harden.mjs')) return args[0] === 'check' && fixedTokens(args.slice(1), new Set(), agentFlag);
   return is('scan.mjs') && fixedTokens(args, SCAN_FLAGS, agentFlag);
@@ -971,11 +978,12 @@ const synthetic = (ruleId, p) => ({ ruleId, category: 'path', severity: 'high', 
  * `extraWritePaths` (Codex apply_patch header paths) join the write targets; Claude callers never pass it.
  * `selfViews` (Codex only) exempts a plain read of one of our own SKILL.md files from SELF_PROTECT.
  * `shellCwd` (P3): `cwd` is the directory the shell command runs in (Claude Code); Codex passes false.
+ * `selfSkill`: the running guard's skill dir (Ruling M); defaults to `<selfRoot>/skills/audit` (a plugin install).
  * A `high` decision also carries `highs` (every high match: ruleId, category, snippet) for the Codex tiers.
  * @returns {{ decision: 'deny'|'ask'|'log'|'none', ruleId?: string, severity?: string, reason?: string, snippet?: string,
  *   highs?: { ruleId: string, category: string, snippet: string }[] }}
  */
-export function decide({ toolName, toolInput, origin = null, allowlist = null, selfRoot, dataDir, cwd, extraWritePaths = null, selfViews = false, shellCwd = true }) {
+export function decide({ toolName, toolInput, origin = null, allowlist = null, selfRoot, selfSkill = null, dataDir, cwd, extraWritePaths = null, selfViews = false, shellCwd = true }) {
   const { targets: t, mcp, truncated } = extractTargetsEx(toolName, toolInput, cwd);
   if (Array.isArray(extraWritePaths)) t.writePaths.push(...extraWritePaths.filter(str));
   const matches = [];
@@ -996,7 +1004,8 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
   }
 
   // Shell commands that mention the data dir or the install dir (any access, read or write) always ask:
-  // a redirect like `echo ... > ~/.claude/skill-sentry/allowlist.json` must not slip through (§6.2).
+  // a redirect like `echo ... > ~/.claude/skill-sentry/allowlist.json` must not slip through (§6.2). So do those
+  // naming a standalone skill-sentry install (`.claude/skills/skill-sentry*`, `.agents/skills/…`; STANDALONE_IN_TEXT).
   // Any other `skill-sentry` segment asks too (Ruling J), unless its word is a literal absolute path
   // that resolves away from Claude's home and the protected roots (Ruling R9 revised), or a relative one
   // whose literal, known base and resolution do (P3, relativeContext).
@@ -1009,7 +1018,7 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
       const ask = reason => ({ decision: 'ask', ruleId: 'SELF_PROTECT', severity: 'high', reason, snippet: snip(c) });
       if (ps && changesPsDrive(c)) return ask('PowerShell command creates or removes a drive (Ruling R14)');
       if (relinksClaude(c, ps)) return ask('shell command moves or links the Claude config directory');
-      if (isReadOnlySelfInvocation(c, selfRoot, toolName, { agentFlag: selfViews })) continue; // Rulings L2, L3 (+ Codex --agent)
+      if (isReadOnlySelfInvocation(c, selfRoot, toolName, { agentFlag: selfViews, selfSkill })) continue; // Rulings L2, L3 (+ Codex --agent)
       if (selfViews && isReadOnlySelfView(c, selfRoot, toolName)) continue; // Codex skill loading (T7)
       // Line continuations (bash `\`, PowerShell backtick) are joined in the de-obfuscated copy.
       const joined = String(c).replace(/\\\r?\n/g, '').replace(/`\r?\n/g, ' ');
@@ -1020,7 +1029,7 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
       const segAt = words.flatMap((w, k) => (SELF_SEGMENT.test(w.value) || SELF_SEGMENT.test(w.raw) ? [k] : []));
       const dynamicPs = segAt.length > 0 && (ps || RUNS_PWSH.test(c)) && psDynamic(String(c));
       const rel = segAt.length ? relativeContext(String(c), words, ps, cwd, shellCwd, placeOk) : null; // P3
-      if (texts.some(text => needles.some(n => mentions(text, n)))
+      if (texts.some(text => needles.some(n => mentions(text, n)) || STANDALONE_IN_TEXT.test(text))
         || segAt.some(k => dynamicPs || segmentAsks(words[k], ps, scriptAt !== -1 && k > scriptAt, rel(k)))
         || (!segAt.length && texts.some(text => SELF_SEGMENT.test(text)))) {
         return ask('shell command touches skill-sentry data or install directory');
@@ -1100,14 +1109,17 @@ export function formatReason(d, originLabel, summary) {
 
 /**
  * Ruling R23: whether `originToComponentId` could map this origin onto a plugin named skill-sentry (a
- * `skill-sentry:<skill>` skill, MCP plugin `skill-sentry`, or a qualified MCP name starting `skill-sentry_`).
+ * `skill-sentry:<skill>` skill, MCP plugin `skill-sentry`, or a qualified MCP name starting `skill-sentry_`), or onto
+ * a standalone skill whose name contains skill-sentry.
  * Only then does the guard need to know whether an installed skill-sentry copy is self.
  */
 export function originMayNameSkillSentry(origin) {
   if (!origin || typeof origin !== 'object') return false;
   const name = 'skill-sentry';
   if (str(origin.mcpPlugin)) return origin.mcpPlugin === name || (str(origin.mcpQualified) && origin.mcpQualified.startsWith(`${name}_`));
-  return str(origin.skill) && origin.skill.startsWith(`${name}:`);
+  if (!str(origin.skill)) return false;
+  // A plugin skill `skill-sentry:<skill>`, or a standalone skill whose name contains skill-sentry (npx skills add).
+  return origin.skill.startsWith(`${name}:`) || (!origin.skill.includes(':') && origin.skill.toLowerCase().includes(name));
 }
 
 /** Map an origin onto an inventoried component id (skill-sentry itself is never returned). */

@@ -17,11 +17,26 @@ import { dataDir } from './lib/datadir.mjs';
 import { buildReport, renderMarkdown } from './lib/report.mjs';
 import { untrusted } from './lib/text.mjs';
 import { roots } from './lib/roots.mjs';
+import { loadSelfManifest } from './lib/selfcopy.mjs';
 
 // Ruling D: selfRoot is the plugin root (the directory containing skills/audit/scripts/), else the skill root.
 const { skillRoot, pluginRoot } = roots(import.meta.url);
 const selfRoot = pluginRoot ?? skillRoot;
 const SCAN_BUDGET_MS = 120_000;
+
+/**
+ * The report version: the running self-manifest's (it exists in both layouts and carries the release version), else
+ * the plugin's package.json, else 'unknown'. Never throws.
+ */
+function selfVersion() {
+  const m = loadSelfManifest();
+  if (m) return m.version;
+  try {
+    const v = JSON.parse(fs.readFileSync(path.join(selfRoot, 'package.json'), 'utf8')).version;
+    if (typeof v === 'string' && v) return v;
+  } catch { /* standalone install or unreadable */ }
+  return 'unknown';
+}
 
 const USAGE = `usage: node scan.mjs [--json] [--path <dir>] [--component <id>] [--diff-only] [--update-baseline] [--claude-home <dir>] [--project <dir>]
                     [--agent claude|codex|all] [--codex-home <dir>]... [--no-wsl]
@@ -88,7 +103,7 @@ const projectDir = path.resolve(opts.project ?? process.cwd());
 const dir = dataDir();
 const deadline = Date.now() + SCAN_BUDGET_MS;
 const problems = [];
-const meta = { version: JSON.parse(fs.readFileSync(path.join(selfRoot, 'package.json'), 'utf8')).version };
+const meta = { version: selfVersion() };
 
 let components;
 if (opts.path) {

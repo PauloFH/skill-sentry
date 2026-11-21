@@ -22,6 +22,10 @@ test('manifests parse and carry the expected identity', () => {
   // Versions are set by the release pipeline: the three version fields only have to agree.
   assert.match(plugin.version, /^\d+\.\d+\.\d+$/);
   assert.equal(readJson('package.json').version, plugin.version, 'package.json version matches plugin.json');
+  // The self-manifest is written last in every release (tools/ci/write-manifest.mjs): same version, and committed.
+  const manifest = readJson('skills/audit/scripts/lib/selfmanifest.json');
+  assert.deepEqual(Object.keys(manifest), ['version', 'files']);
+  assert.equal(manifest.version, plugin.version, 'selfmanifest.json version matches plugin.json');
   assert.equal(plugin.license, 'MIT');
   assert.equal(plugin.repository, 'https://github.com/PauloFH/skill-sentry');
   assert.equal(plugin.homepage, 'https://github.com/PauloFH/skill-sentry');
@@ -102,6 +106,15 @@ test('release tooling names files that exist (committed assets, the release tabl
   const config = fs.readFileSync(path.join(ROOT, 'tools', 'ci', 'release', 'release.config.cjs'), 'utf8');
   const assets = [.../assets: \[([^\]]*)\]/.exec(config)[1].matchAll(/'([^']+)'/g)].map(m => m[1]);
   assert.ok(assets.includes('skills/audit/scripts/lib/releases.mjs'), assets.join(', '));
+  assert.ok(assets.includes('skills/audit/scripts/lib/selfmanifest.json'), assets.join(', '));
+  // Prepare order: the manifest is written after every other file of the release commit changed (version,
+  // KNOWN_RELEASES, CHANGELOG.md), then checked against the tree.
+  const at = s => { const i = config.indexOf(s); assert.ok(i !== -1, s); return i; };
+  assert.ok(at('set-version.mjs') < at('record-release.mjs'), 'set-version, then record-release');
+  assert.ok(at('record-release.mjs') < at("'@semantic-release/changelog'"), 'then the changelog');
+  assert.ok(at("'@semantic-release/changelog'") < at('write-manifest.mjs .'), 'then the manifest');
+  assert.ok(at('write-manifest.mjs .') < at('write-manifest.mjs . --verify'), 'then its check');
+  assert.ok(at('write-manifest.mjs . --verify') < at("'@semantic-release/git'"), 'all before the commit');
   for (const a of assets) assert.ok(fs.statSync(path.join(ROOT, a)).isFile(), a);
   const record = fs.readFileSync(path.join(ROOT, 'tools', 'ci', 'record-release.mjs'), 'utf8');
   const parts = [.../const RELEASES = path\.join\(ROOT, ([^)]*)\)/.exec(record)[1].matchAll(/'([^']+)'/g)].map(m => m[1]);
