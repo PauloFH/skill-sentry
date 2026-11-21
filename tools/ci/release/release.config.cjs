@@ -17,12 +17,16 @@ module.exports = {
     ['@semantic-release/commit-analyzer', { preset: 'conventionalcommits' }],
     ['@semantic-release/release-notes-generator', { preset: 'conventionalcommits' }],
     ['@semantic-release/exec', {
-      // Write the version, then check that the three version fields agree before anything is committed.
-      prepareCmd: 'node tools/ci/set-version.mjs ${nextRelease.version} && node --test test/package.test.mjs',
+      // Write the version; record the previous release in KNOWN_RELEASES (a release cannot carry its own hashes,
+      // so each release commit carries the one before it); then check the manifests and the table before anything
+      // is committed. `lastRelease.gitTag` is empty on a first release, and record-release then does nothing.
+      prepareCmd: 'node tools/ci/set-version.mjs ${nextRelease.version}'
+        + ' && node tools/ci/record-release.mjs ${lastRelease.gitTag}'
+        + ' && node --test test/package.test.mjs test/known-releases.test.mjs',
     }],
     ['@semantic-release/changelog', { changelogFile: 'CHANGELOG.md', changelogTitle: '# Changelog' }],
     ['@semantic-release/git', {
-      assets: ['.claude-plugin/plugin.json', '.claude-plugin/marketplace.json', 'package.json', 'CHANGELOG.md'],
+      assets: ['.claude-plugin/plugin.json', '.claude-plugin/marketplace.json', 'package.json', 'CHANGELOG.md', 'scripts/lib/releases.mjs'],
       // One line, no body, no trailer (the project's commit format).
       message: 'chore: release ${nextRelease.version}',
     }],
