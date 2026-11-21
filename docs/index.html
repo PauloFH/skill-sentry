@@ -303,7 +303,7 @@
         <li data-i18n="codex.lim1">No “ask”: the guard can only allow or deny.</li>
         <li data-i18n="codex.lim2">It fails open: if the hook errors or runs past Codex's timeout, about 5 seconds, the call runs.</li>
         <li data-i18n="codex.lim3">Until you trust the hook in <code>/hooks</code>, the guard does not run.</li>
-        <li data-i18n="codex.lim7">After any plugin update, Codex may ask you to trust the hook again in <code>/hooks</code>. Until then, the guard does not run.</li>
+        <li data-i18n="codex.lim7">After a plugin update Codex marks the hook <code>modified</code> and stops running it until you trust it again in <code>/hooks</code>. It does not warn you.</li>
         <li data-i18n="codex.lim6">Commands that build names or paths at run time (<code>eval</code>, variables, globs, <code>python -c</code>) are not analysed.</li>
         <li data-i18n="codex.lim4">Harden is recommend-only: skill-sentry never edits Codex files. <code>harden.mjs check --agent codex</code> prints snippets for you to apply.</li>
         <li data-i18n="codex.lim5">Update both installs after each release, so the Claude Code and Codex copies match.</li>
@@ -556,7 +556,7 @@
     "codex.lim1": "Sem “ask”: a guarda só pode permitir ou negar.",
     "codex.lim2": "Ela falha aberta: se o hook der erro ou passar do tempo limite do Codex, cerca de 5 segundos, a chamada roda.",
     "codex.lim3": "Até você confiar no hook em <code>/hooks</code>, a guarda não roda.",
-    "codex.lim7": "Depois de qualquer atualização do plugin, o Codex pode pedir que você confie no hook de novo em <code>/hooks</code>. Até lá, a guarda não roda.",
+    "codex.lim7": "Depois de uma atualização do plugin, o Codex marca o hook como <code>modified</code> e para de executá-lo até você confiar nele de novo em <code>/hooks</code>. Ele não avisa.",
     "codex.lim6": "Comandos que montam nomes ou caminhos em tempo de execução (<code>eval</code>, variáveis, globs, <code>python -c</code>) não são analisados.",
     "codex.lim4": "O harden só recomenda: o skill-sentry nunca edita arquivos do Codex. O <code>harden.mjs check --agent codex</code> mostra trechos para você aplicar.",
     "codex.lim5": "Atualize as duas instalações a cada versão, para que as cópias do Claude Code e do Codex fiquem iguais.",

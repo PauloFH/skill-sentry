@@ -115,15 +115,16 @@ test('v0.1.2: the GitHub install for Codex is documented as verified, with the t
   assert.doesNotMatch(src, /not tested end to end|ponta a ponta/i, 'no "untested" note left on the page');
   assert.match(sec, /Start Codex once/, 'start Codex before trusting');
   assert.match(sec, /install file/, 'why: Codex writes an install file on its first start');
-  assert.match(sec, /after any plugin update/i, 'limit: trust again after an update');
+  assert.match(sec, /After a plugin update Codex marks the hook <code>modified<\/code> and stops running it until you trust it again in <code>\/hooks<\/code>/, 'limit: Codex stops the hook after an update');
   assert.match(Object.values(pt).join('\n'), /inicie o Codex uma vez/i, 'pt: start Codex once');
+  assert.match(pt['codex.lim7'], /marca o hook como <code>modified<\/code> e para de executá-lo/, 'pt: Codex stops the hook after an update');
   // The four READMEs stay parallel: same verified flow, same new limit.
   const readme = f => fs.readFileSync(path.join(ROOT, f), 'utf8');
   for (const [f, untested, startOnce, afterUpdate] of [
-    ['README.md', /not been tested end to end/, /start Codex once/i, /after any plugin update/i],
-    ['README.pt.md', /de ponta a ponta/, /inicie o Codex uma vez/i, /depois de qualquer atualização do plugin/i],
-    ['README.es.md', /de extremo a extremo/, /inicia Codex una vez/i, /después de cualquier actualización del plugin/i],
-    ['README.zh.md', /端到端/, /先启动一次 Codex/, /每次插件更新后/],
+    ['README.md', /not been tested end to end/, /start Codex once/i, /After a plugin update Codex marks the hook `modified` and stops running it until you trust it again in `\/hooks`/],
+    ['README.pt.md', /de ponta a ponta/, /inicie o Codex uma vez/i, /Depois de uma atualização do plugin, o Codex marca o hook como `modified` e para de executá-lo até você confiar nele de novo em `\/hooks`/],
+    ['README.es.md', /de extremo a extremo/, /inicia Codex una vez/i, /Después de una actualización del plugin, Codex marca el hook como `modified` y deja de ejecutarlo hasta que vuelvas a confiar en él en `\/hooks`/],
+    ['README.zh.md', /端到端/, /先启动一次 Codex/, /插件更新后，Codex 会把 hook 标记为 `modified` 并停止运行它，直到你在 `\/hooks` 中重新信任它/],
   ]) {
     const t = readme(f);
     assert.doesNotMatch(t, untested, `${f}: untested note removed`);

@@ -174,7 +174,7 @@ Los parches de `apply_patch` también se inspeccionan. La mayoría de los parche
 - Codex no tiene "ask": la guardia solo puede permitir o denegar.
 - Falla en abierto: si el hook da error o supera el tiempo límite de Codex (unos 5 segundos), la llamada se ejecuta.
 - Los hooks necesitan confianza (`/hooks`). La opción `dangerously-bypass-hook-trust` de Codex desactiva esa protección.
-- Después de cualquier actualización del plugin, Codex puede pedirte que vuelvas a confiar en el hook en `/hooks` (aparece como `modified`). Hasta que lo hagas, la guardia no se ejecuta.
+- Después de una actualización del plugin, Codex marca el hook como `modified` y deja de ejecutarlo hasta que vuelvas a confiar en él en `/hooks`. No te avisa: la guardia simplemente queda desactivada hasta entonces.
 - El reintento del nivel 3 lo confirma el modelo, no tú.
 - La entrada interactiva enviada a un shell en ejecución (`write_stdin`) no pasa por el hook.
 - Los comandos que construyen nombres o rutas en tiempo de ejecución no se analizan: `eval`, variables, globs, comandos de una línea de un intérprete como `python -c`, o un script escrito en una llamada y ejecutado en otra posterior.

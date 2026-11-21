@@ -174,7 +174,7 @@ The guard is a PreToolUse hook here too. Codex has no "ask", so it can only allo
 - Codex has no "ask": the guard can only allow or deny.
 - It fails open: if the hook errors or exceeds Codex's timeout (about 5 seconds), the call runs.
 - Hooks need trust (`/hooks`). The `dangerously-bypass-hook-trust` flag of Codex turns that protection off.
-- After any plugin update, Codex may ask you to trust the hook again in `/hooks` (it shows as `modified`). Until you do, the guard does not run.
+- After a plugin update Codex marks the hook `modified` and stops running it until you trust it again in `/hooks`. It does not warn you: the guard is simply off until then.
 - The tier 3 retry is confirmed by the model, not by you.
 - Interactive input sent to a running shell (`write_stdin`) is not hooked.
 - Commands that build names or paths at run time are not analysed: `eval`, variables, globs, interpreter one-liners such as `python -c`, or a script written in one call and run in a later one.
