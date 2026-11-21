@@ -25,7 +25,8 @@ permissions:
 
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: false
+  # A newer push to a pull request supersedes the older run; runs on main are never cancelled.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # semantic-release toolchain, installed in CI only (the plugin has no dependencies).

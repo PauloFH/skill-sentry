@@ -1,8 +1,8 @@
 name: CI
 
+# The checks themselves. Pull requests and pushes to main run them once, through release.yml (workflow_call);
+# this workflow also runs on its own weekly (latest CLIs) and on demand.
 on:
-  push:
-  pull_request:
   schedule:
     # Weekly: the e2e job tries the latest Claude Code and Codex CLIs instead of the pinned ones.
     - cron: '17 6 * * 1'
