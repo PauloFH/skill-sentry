@@ -1,10 +1,13 @@
 // End-to-end install checks against the real Claude Code and Codex CLIs, without a real model and without secrets.
 //
 // Opt-in only: nothing runs unless SKILL_SENTRY_E2E=1, so `npm test` never touches a real CLI. Every CLI process
-// gets a tmp HOME / USERPROFILE / CODEX_HOME (test/e2e/lib.mjs isolatedEnv); the developer's homes are never read
-// or written. CI installs the CLIs globally (.github/workflows/ci.yml); locally point SKILL_SENTRY_E2E_NPM_ROOT at
-// the node_modules of a scratch npm prefix that holds both. CI runs it through tools/ci/run-e2e.mjs, which also
-// fails on a test count below the expected minimum.
+// gets a tmp HOME / USERPROFILE / CODEX_HOME (test/e2e/lib.mjs isolatedEnv), and nothing is ever written to the
+// developer's homes. One read escapes it: on Windows, Codex finds `~/.agents` through the OS profile folder, not
+// USERPROFILE, so its skill loading reads the real `%USERPROFILE%\.agents\skills` (read only). On Windows the file
+// therefore runs only in CI (CI=true) or with SKILL_SENTRY_E2E_WIN_REAL_AGENTS=1. CI installs the CLIs globally
+// (.github/workflows/ci.yml); locally point SKILL_SENTRY_E2E_NPM_ROOT at the node_modules of a scratch npm prefix that
+// holds them. CI runs it through tools/ci/run-e2e.mjs, which also fails on a test count below the expected minimum
+// (so a run gated off here fails there instead of passing empty).
 //
 // A. Local directory marketplace (an export of HEAD):
 //    1. install through each CLI's own non-interactive commands;
@@ -41,7 +44,11 @@ import {
   gitMarketplace, codexStubArgs, claudeTurn, codexTurn, skillsEnv,
 } from './lib.mjs';
 
-if (process.env.SKILL_SENTRY_E2E === '1') defineTests();
+const WIN_OK = !WIN || process.env.CI === 'true' || process.env.SKILL_SENTRY_E2E_WIN_REAL_AGENTS === '1';
+if (process.env.SKILL_SENTRY_E2E === '1') {
+  if (WIN_OK) defineTests();
+  else console.log('skill-sentry e2e: on Windows set CI=true or SKILL_SENTRY_E2E_WIN_REAL_AGENTS=1 (Codex reads the real %USERPROFILE%\\.agents)');
+}
 
 function defineTests() {
   const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
