@@ -46,8 +46,10 @@ const PIPE_TO_INTERPRETER = new RegExp(
 const PS_DOWNLOAD = '(?:new-object\\s+(?:system\\.)?net\\.webclient|iwr|irm|invoke-webrequest|invoke-restmethod)\\b';
 
 /** @returns {Rule} */
-const r = (id, category, severity, pattern, appliesTo, description) =>
-  ({ id, category, severity, pattern, appliesTo, description });
+// `needs` (optional): a cheap test every match of `pattern` must pass (a literal the pattern requires). It skips
+// patterns that scan a 300-char window after every `>` on long lines (CI: 1 MB of `curl => x;` took 645 ms).
+const r = (id, category, severity, pattern, appliesTo, description, needs) =>
+  ({ id, category, severity, pattern, appliesTo, description, ...(needs ? { needs } : {}) });
 
 /** @type {Rule[]} */
 export const RULES = [
@@ -61,7 +63,7 @@ export const RULES = [
 
   // ---- RCE ----
   r('RCE_DOWNLOAD_PIPE_SHELL', 'rce', 'critical', PIPE_TO_INTERPRETER, ALL,
-    'Downloads content and pipes it straight into a shell or interpreter'),
+    'Downloads content and pipes it straight into a shell or interpreter', /\|/),
   r('RCE_PROCESS_SUBST', 'rce', 'critical',
     /(?:^|[\s;&|(])(?:(?:ba|z|da|k)?sh|source|\.)\s+<\(\s*(?:curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod)\b/i, ALL,
     'Shell sources or executes the output of a download'),
@@ -81,7 +83,7 @@ export const RULES = [
     'Reverse shell construction'),
   r('RCE_DOWNLOAD_EXEC', 'rce', 'high',
     /\b(?:curl|wget)\b[^\n;]{0,120}?(?:\s-o\s*|>\s*)\S{1,100}\s*(?:&&|;)\s*(?:sudo\s+)?(?:chmod\s+\+?[ugoa]*x|\.\/|sh\s|bash\s)/i, ALL,
-    'Downloads a file then makes it executable / runs it'),
+    'Downloads a file then makes it executable / runs it', /&&|;/),
   r('RCE_LOLBIN_DOWNLOAD', 'rce', 'high',
     /\bmshta\b[^\n]{0,300}https?:|\bcertutil(?:\.exe)?\s+[^\n]{0,300}-urlcache\b|\bbitsadmin\b[^\n]{0,300}\/transfer\b|\bregsvr32\b[^\n]{0,300}\/i:https?:/i, ALL,
     'Windows living-off-the-land downloader'),
@@ -122,7 +124,7 @@ export const RULES = [
     'Known data-exfiltration / paste / tunnel service'),
   r('EXFIL_UPLOAD_FILE', 'exfil', 'high',
     /\bcurl\b[^\n]{0,120}?\s(?:-d|--data(?:-binary|-raw|-urlencode)?|-F|--form|-T|--upload-file)(?:\s+|=)["']?(?:[\w.-]+=)?@\S|\bwget\b[^\n]{0,300}--post-file\b|\b(?:iwr|irm|invoke-webrequest|invoke-restmethod)\b[^\n]{0,300}-infile\b/i,
-    CODE_CMD, 'Uploads a local file to a remote host'),
+    CODE_CMD, 'Uploads a local file to a remote host', /@|--post-file|-infile/i),
   r('EXFIL_RAW_IP_URL', 'exfil', 'high',
     /\bhttps?:\/\/(?!(?:127\.|0\.0\.0\.0|10\.|192\.168\.|169\.254\.|172\.(?:1[6-9]|2\d|3[01])\.))\d{1,3}(?:\.\d{1,3}){3}\b/i,
     SCRIPTY, 'Request to a raw public IP address'),
@@ -145,11 +147,11 @@ export const RULES = [
     CODE_CMD, 'Appends to a shell startup file'),
   r('PERSIST_CLAUDE_SETTINGS_WRITE', 'persistence', 'high',
     /(?:>>?|\btee\b|\bsed\s+-i|\bset-content\b|\badd-content\b|\bout-file\b)[^\n]{0,300}\.claude[/\\]settings(?:\.local)?\.json/i,
-    CODE_CMD, 'Modifies Claude Code settings from a script'),
+    CODE_CMD, 'Modifies Claude Code settings from a script', /\.claude/i),
   // Final review I3: the Codex control files (see CODEX_CONTROL_TAIL), under `.codex` or `$CODEX_HOME`.
   r('PERSIST_CODEX_CONFIG_WRITE', 'persistence', 'high',
     /(?:>>?|\btee\b|\bsed\s+-i|\bset-content\b|\badd-content\b|\bout-file\b|\bcp\b|\bmv\b|\bcopy-item\b|\bmove-item\b)[^\n]{0,300}(?:\.codex|codex_home[}%]?)[/\\](?:(?:[\w-]+\.)?config\.toml|hooks\.json|requirements\.toml|rules\b|\.hook-trust\b)/i,
-    CODE_CMD, 'Modifies Codex config, hooks, requirements or execpolicy rules from a script'),
+    CODE_CMD, 'Modifies Codex config, hooks, requirements or execpolicy rules from a script', /\.codex|codex_home/i),
 
   // ---- PERMISSIONS ----
   r('PERM_SKIP_PERMISSIONS', 'permissions', 'high',
@@ -302,6 +304,7 @@ const PATH_RULES = [
 // ---- Matching ----
 
 function lineMatch(rule, line, lineNo, kind) {
+  if (rule.needs && !rule.needs.test(line)) return null; // cheap necessary condition before a costly pattern
   const hit = rule.pattern.exec(line);
   if (!hit) return null;
   const idx = hit.index;

@@ -143,6 +143,23 @@ test('adversarial 1 MB lines scan quickly', () => {
   }
 });
 
+test('a rule prefilter (`needs`) never rejects a line its pattern matches', () => {
+  const withNeeds = RULES.filter(x => x.needs);
+  assert.ok(withNeeds.length >= 5, withNeeds.map(x => x.id).join(','));
+  const frags = [CURL, WGET, 'iwr', ' -o x', ' > x', ' >> ', ' | ', ' |tee y ', 's' + 'h', 'ba' + 'sh', ' && ', '; ', ' -d @f', ' -T f', ' --post-file=f',
+    ' -InFile f', ' chmod +x x', ' ./x', ' ~/.claude/settings.json', ' .codex/config.toml', ' $CODEX_HOME/hooks.json', ' sed -i ', ' cp a ', ' tee '];
+  let checked = 0;
+  const walk = (line, depth) => {
+    for (const rule of withNeeds) {
+      if (rule.pattern.test(line)) { checked++; assert.ok(rule.needs.test(line), `${rule.id}: ${JSON.stringify(line)}`); }
+    }
+    if (depth === 0) return;
+    for (const f of frags) walk(line + f, depth - 1);
+  };
+  for (const start of [CURL, WGET, 'iwr', 'echo x']) walk(start, 3);
+  assert.ok(checked > 100, `pattern matches checked: ${checked}`);
+});
+
 test('source files contain no raw invisible characters', async () => {
   const { readFileSync } = await import('node:fs');
   const re = /[​-‏⁠﻿‪-‮⁦-⁩]|[\u{E0000}-\u{E007F}]/u;
