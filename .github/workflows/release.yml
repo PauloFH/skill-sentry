@@ -179,10 +179,19 @@ jobs:
         run: |
           set -o pipefail
           args=(--extends "$RUNNER_TEMP/semrel/release.config.cjs" --dry-run --no-ci)
-          # A dispatch releases from the dispatched branch; a pull request is analysed against main (the config).
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then args+=(--branches "$GITHUB_REF_NAME"); fi
+          runner=()
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            # A dispatch is analysed as a release from the dispatched branch.
+            args+=(--branches "$GITHUB_REF_NAME")
+          else
+            # A pull request: semantic-release would see the branch refs/pull/N/merge and stop. Name the checked-out
+            # merge commit after the base branch, locally only, and let env-ci read the branch from git, so the
+            # dry run shows what merging would release from main.
+            git checkout -q -B "$GITHUB_BASE_REF"
+            runner=(env -u GITHUB_ACTIONS)
+          fi
           case " ${args[*]} " in *" --dry-run "*) ;; *) echo "::error::refusing to run semantic-release without --dry-run"; exit 1 ;; esac
-          "$RUNNER_TEMP/semrel/node_modules/.bin/semantic-release" "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/semrel.log"
+          "${runner[@]}" "$RUNNER_TEMP/semrel/node_modules/.bin/semantic-release" "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/semrel.log"
           log="$(sed -E 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/semrel.log")"
           next="$(printf '%s\n' "$log" | sed -nE 's/.*The next release version is ([^ ]+).*/\1/p' | tail -n1)"
           {
