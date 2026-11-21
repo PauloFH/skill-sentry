@@ -1,5 +1,5 @@
 ---
-name: audit
+name: skill-sentry-audit
 description: Audit the Claude Code and OpenAI Codex plugins, skills, hooks, rules and MCP servers installed on this machine for malicious behavior, or vet a skill or plugin folder before installing it. Use when the user asks for a security audit or a safety check of extensions, or when a skill-sentry guard message suggests running it.
 ---
 

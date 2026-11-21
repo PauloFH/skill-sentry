@@ -122,14 +122,20 @@ test('release tooling names files that exist (committed assets, the release tabl
 });
 
 test('skills have name/description frontmatter and no allowed-tools or shell injection lines', () => {
-  for (const name of ['audit', 'harden']) {
+  // The plugin commands come from the folder names (/skill-sentry:audit, /skill-sentry:harden). The skills CLI
+  // (npx skills add) names the installed folder after the frontmatter `name`, so the audit's carries skill-sentry
+  // (never a bare `audit` that would replace a user's own skill), and harden, which needs the plugin layout, is
+  // hidden from it (metadata.internal: true; the CLI shows it only with INSTALL_INTERNAL_SKILLS=1).
+  for (const [name, fmName] of [['audit', 'skill-sentry-audit'], ['harden', 'harden']]) {
     const text = fs.readFileSync(path.join(ROOT, 'skills', name, 'SKILL.md'), 'utf8');
     const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
     assert.ok(fm, `${name} frontmatter`);
-    assert.match(fm[1], new RegExp(`^name: ${name}$`, 'm'));
+    assert.match(fm[1], new RegExp(`^name: ${fmName}$`, 'm'));
     assert.match(fm[1], /^description: .{20,}/m);
     assert.ok(!/allowed-tools/i.test(text), `${name}: no allowed-tools`);
     assert.ok(!text.includes('!`'), `${name}: no !-backtick lines`);
+    const internal = /^metadata:\r?\n {2}internal: true$/m.test(fm[1]);
+    assert.equal(internal, name === 'harden', `${name}: metadata.internal`);
   }
 });
 

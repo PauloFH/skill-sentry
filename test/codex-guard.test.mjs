@@ -974,6 +974,24 @@ test('codex: Get-Content / gc / type reads of our own SKILL.md are exempt only a
     assert.equal(decide({ ...base, toolName: 'Bash', toolInput: { command } }).decision, 'none', `Bash: ${command}`);
   }
 });
+test('codex: a standalone skill-sentry install (npx skills add) can be loaded and run next to the plugin guard; other forms deny', async () => {
+  const dir = fwdSlash(path.join(os.homedir(), '.agents', 'skills', 'skill-sentry-audit'));
+  for (const command of [`cat ${dir}/SKILL.md`, `sed -n '1,200p' "${dir}/SKILL.md"`, `node "${dir}/scripts/scan.mjs" --json`,
+    `node ${dir}/scripts/scan.mjs --json --agent codex`]) {
+    const r = await runGuard(codex('Bash', { command }));
+    assert.equal(r.stdout, '', command);
+  }
+  for (const command of [`cat ${dir}/SKILL.md > out.txt`, `cat ${dir}/SKILL.md && rm -r x`, `cat ${dir}/SKILL.md ${dir}/scripts/scan.mjs`,
+    `cat ${dir}/scripts/scan.mjs`, `node "${dir}/scripts/scan.mjs" --update-baseline`, `node "${dir}/scripts/scan.mjs" --json; rm -r x`,
+    `node "${dir}/scripts/harden.mjs" check`, `rm -rf ${dir}`]) {
+    const r = await runGuard(codex('Bash', { command }));
+    assert.match(assertDeny(JSON.parse(r.stdout), command), RUN_YOURSELF, command);
+  }
+  // Claude Code: the scan invocation passes, the SKILL.md read still asks (Claude loads skills itself).
+  assert.equal((await runGuard(claude('Bash', { command: `node "${dir}/scripts/scan.mjs" --json` }))).stdout, '');
+  const r = await runGuard(claude('Bash', { command: `cat ${dir}/SKILL.md` }));
+  assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'ask');
+});
 test('codex C3: --agent self invocations pass with the working directory inside the install or data dir', async () => {
   const data = path.join(tmp('cwdagent'), 'skill-sentry');
   fs.mkdirSync(data, { recursive: true });

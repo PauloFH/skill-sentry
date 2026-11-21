@@ -849,12 +849,29 @@ function fixedTokens(args, flags, agentFlag) {
 }
 const SCAN_FLAGS = new Set(['--json', '--diff-only']);
 
+// Standalone installs (npx skills add): a skill dir whose one name segment contains `skill-sentry`, directly in a
+// `.claude`, `.agents` or `.codex` skills dir (the dirs STANDALONE_INSTALL protects). Next to the plugin guard, the
+// two read-only forms such a copy needs are exempt from SELF_PROTECT exactly as the plugin's own are: the scan
+// invocation (Ruling M, `scan.mjs` only) and, Codex only, the plain SKILL.md read (T7). The match is on the literal
+// path shape (no `.`/`..` segment), never on content: hashing the copy here would be slow work before the decision
+// (Ruling L1). The exemption skips SELF_PROTECT and nothing else, the treatment any other skill's script gets. A
+// target inside the data dir or the running plugin root never matches.
+const STANDALONE_SELF_FILE = /\/\.(?:claude|agents|codex)\/skills\/[a-z0-9._-]*skill-sentry[a-z0-9._-]*\/(scripts\/scan\.mjs|skill\.md)$/i;
+const DOT_SEGMENT = /(?:^|[\\/])\.{1,2}(?:[\\/]|$)/;
+function isStandaloneSelfFile(file, target, which, protectedRoots) {
+  if (DOT_SEGMENT.test(file)) return false;
+  const m = STANDALONE_SELF_FILE.exec(target);
+  if (!m || m[1].toLowerCase() !== which) return false;
+  return !protectedRoots.filter(str).flatMap(rootForms).some(f => target === f || target.startsWith(`${f}/`));
+}
+
 /**
  * Exact read-only self invocation (Ruling M); mutating or parameterized forms return false.
  * `agentFlag` (Codex only, T7) also accepts one `--agent claude|codex|all` pair after `scan.mjs` or `harden.mjs check`:
  * a closed set of values that only narrows what is read (and a partial scan never writes the baseline).
+ * The same `scan.mjs` forms of a standalone skill-sentry install pass too (isStandaloneSelfFile; `dataDir` excluded).
  */
-export function isReadOnlySelfInvocation(cmd, selfRoot, toolName = 'Bash', { agentFlag = false, selfSkill = null } = {}) {
+export function isReadOnlySelfInvocation(cmd, selfRoot, toolName = 'Bash', { agentFlag = false, selfSkill = null, dataDir = null } = {}) {
   if (!str(cmd) || !str(selfRoot)) return false;
   const m = SELF_INVOCATION.exec(cmd);
   if (!m) return false;
@@ -863,9 +880,10 @@ export function isReadOnlySelfInvocation(cmd, selfRoot, toolName = 'Bash', { age
   if (script.includes('\\') && toolName !== 'PowerShell') return false;
   if (!/^(?:[A-Za-z]:[\\/]|\/(?![\\/]))/.test(script) || isUnusualPath(script)) return false;
   const target = lowerOnWin(slashes(path.resolve(script)));
+  const args = m[4].split(' ').filter(Boolean);
+  if (isStandaloneSelfFile(script, target, 'scripts/scan.mjs', [dataDir, selfRoot])) return fixedTokens(args, SCAN_FLAGS, agentFlag);
   const scripts = rootForms(path.join(str(selfSkill) ? selfSkill : path.join(selfRoot, 'skills', 'audit'), 'scripts'));
   const is = name => scripts.some(f => target === `${f}/${lowerOnWin(name)}`);
-  const args = m[4].split(' ').filter(Boolean);
   if (is('harden.mjs')) return args[0] === 'check' && fixedTokens(args.slice(1), new Set(), agentFlag);
   return is('scan.mjs') && fixedTokens(args, SCAN_FLAGS, agentFlag);
 }
@@ -886,8 +904,11 @@ const SELF_VIEWS_POWERSHELL = [
   new RegExp(String.raw`^(?:get-content|gc)(?: +-raw)?(?: +-(?:literal)?path)? +${VIEW_OPERAND}(?: +-raw)? *$`, 'i'),
 ];
 
-/** Exact read-only view of one of our own skills' SKILL.md (Codex only; callers opt in). */
-export function isReadOnlySelfView(cmd, selfRoot, toolName = 'Bash') {
+/**
+ * Exact read-only view of one of our own skills' SKILL.md (Codex only; callers opt in), or of a standalone
+ * skill-sentry install's SKILL.md (isStandaloneSelfFile; `dataDir` excluded).
+ */
+export function isReadOnlySelfView(cmd, selfRoot, toolName = 'Bash', { dataDir = null } = {}) {
   if (!str(cmd) || !str(selfRoot)) return false;
   const m = (toolName === 'PowerShell' ? SELF_VIEWS_POWERSHELL : SELF_VIEWS).map(re => re.exec(cmd)).find(Boolean);
   if (!m) return false;
@@ -896,6 +917,7 @@ export function isReadOnlySelfView(cmd, selfRoot, toolName = 'Bash') {
   if (file.includes('\\') && toolName !== 'PowerShell') return false;
   if (!/^(?:[A-Za-z]:[\\/]|\/(?![\\/]))/.test(file) || isUnusualPath(file)) return false;
   const target = lowerOnWin(slashes(path.resolve(file)));
+  if (isStandaloneSelfFile(file, target, 'skill.md', [dataDir, selfRoot])) return true;
   return rootForms(selfRoot).some(f => {
     const rest = target.startsWith(`${f}/skills/`) ? target.slice(f.length + '/skills/'.length) : null;
     return rest !== null && /^[a-z0-9_-]+\/skill\.md$/i.test(rest);
@@ -1018,8 +1040,8 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
       const ask = reason => ({ decision: 'ask', ruleId: 'SELF_PROTECT', severity: 'high', reason, snippet: snip(c) });
       if (ps && changesPsDrive(c)) return ask('PowerShell command creates or removes a drive (Ruling R14)');
       if (relinksClaude(c, ps)) return ask('shell command moves or links the Claude config directory');
-      if (isReadOnlySelfInvocation(c, selfRoot, toolName, { agentFlag: selfViews, selfSkill })) continue; // Rulings L2, L3 (+ Codex --agent)
-      if (selfViews && isReadOnlySelfView(c, selfRoot, toolName)) continue; // Codex skill loading (T7)
+      if (isReadOnlySelfInvocation(c, selfRoot, toolName, { agentFlag: selfViews, selfSkill, dataDir })) continue; // Rulings L2, L3 (+ Codex --agent)
+      if (selfViews && isReadOnlySelfView(c, selfRoot, toolName, { dataDir })) continue; // Codex skill loading (T7)
       // Line continuations (bash `\`, PowerShell backtick) are joined in the de-obfuscated copy.
       const joined = String(c).replace(/\\\r?\n/g, '').replace(/`\r?\n/g, ' ');
       const texts = [normCommandText(c), normCommandText(deobfuscate(joined))];

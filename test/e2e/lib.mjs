@@ -24,7 +24,22 @@ export function clis(root = npmRoot()) {
   return {
     claude: [path.join(root, '@anthropic-ai', 'claude-code', 'bin', 'claude.exe')],
     codex: [process.execPath, path.join(root, '@openai', 'codex', 'bin', 'codex.js')],
+    // vercel-labs `skills` (npx skills add): an ESM bin, run with this Node (it needs Node >= 22.20).
+    skills: [process.execPath, path.join(root, 'skills', 'bin', 'cli.mjs')],
   };
+}
+
+/**
+ * Environment for the `skills` CLI on top of an isolated one: no telemetry, and none of the variables its agent
+ * detection reads (`AI_AGENT`, an agent's own markers), so it behaves as in a user's terminal driven by flags;
+ * INSTALL_INTERNAL_SKILLS is cleared so hidden skills stay hidden.
+ */
+export function skillsEnv(env) {
+  const out = { ...env, DISABLE_TELEMETRY: '1', DO_NOT_TRACK: '1' };
+  for (const k of Object.keys(out)) {
+    if (/^(AI_AGENT|INSTALL_INTERNAL_SKILLS|CURSOR_|GEMINI_CLI|AUGMENT_AGENT|OPENCODE|REPL_ID|COPILOT_|ANTIGRAVITY_AGENT)/i.test(k)) delete out[k];
+  }
+  return out;
 }
 
 /** Run a CLI to completion. Resolves { code, stdout, stderr }; never rejects on a non-zero exit. */

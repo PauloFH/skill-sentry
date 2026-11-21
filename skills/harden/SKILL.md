@@ -1,6 +1,8 @@
 ---
 name: harden
 description: Review and tighten the user's Claude Code and OpenAI Codex settings against supply-chain risks from third-party plugins and skills. For Claude Code it can apply settings such as asking before curl or wget, denying reads of SSH and cloud credentials, and disabling shell execution inside skills. For Codex it only recommends changes. Use when the user asks to harden or lock down their Claude Code or Codex setup.
+metadata:
+  internal: true
 ---
 
 # skill-sentry harden

@@ -453,6 +453,59 @@ test('Ruling M in a standalone skill install: <skill dir>/scripts/{scan,harden}.
   assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'ask');
 });
 
+test('plugin guard + standalone skill-sentry install: only the fixed scan invocation (and, Codex only, the SKILL.md read) of the standalone dir pass', () => {
+  // npx skills add puts the audit at ~/.agents/skills/<name> (+ a link in ~/.claude/skills); <name> contains skill-sentry.
+  const H = os.homedir();
+  const proj = tmp('saproj');
+  const fwd = s => s.replace(/\\/g, '/');
+  const dirs = [
+    path.join(H, '.agents', 'skills', 'skill-sentry-audit'),
+    path.join(H, '.claude', 'skills', 'skill-sentry-audit'),
+    path.join(H, '.codex', 'skills', 'skill-sentry'),
+    path.join(proj, '.agents', 'skills', 'skill-sentry-audit'),
+  ];
+  for (const [agent, extra] of [['claude', {}], ['codex', { selfViews: true, shellCwd: false }]]) {
+    const dd = (toolName, command) => decide({ toolName, toolInput: { command }, origin: null, allowlist: EMPTY, selfRoot: SELF, dataDir: DATA, ...extra });
+    for (const dir of dirs) {
+      const scan = path.join(dir, 'scripts', 'scan.mjs');
+      const skillMd = path.join(dir, 'SKILL.md');
+      const none = {
+        Bash: [`node "${fwd(scan)}" --json`, `node ${fwd(scan)} --json --diff-only`, `node '${fwd(scan)}'`,
+          ...(agent === 'codex' ? [`node "${fwd(scan)}" --json --agent codex`, `cat "${fwd(skillMd)}"`, `sed -n '1,200p' ${fwd(skillMd)}`] : [])],
+        PowerShell: [`node "${scan}" --json`,
+          ...(agent === 'codex' ? [`Get-Content -LiteralPath "${skillMd}" -Raw`, `type "${skillMd}"`] : [])],
+      };
+      const asks = {
+        Bash: [
+          `node "${fwd(scan)}" --update-baseline`, `node "${fwd(scan)}" --json --path x`, `node "${fwd(scan)}" --json > out.txt`,
+          `node "${fwd(scan)}" --json; rm -rf x`, `node "${fwd(scan)}" --json && rm -rf x`, `node "${fwd(scan)}" --json | tee x`,
+          `node "${fwd(path.join(dir, 'scripts', 'harden.mjs'))}" check`, `node "${fwd(path.join(dir, 'scripts', 'guard.mjs'))}"`,
+          `node "${fwd(path.join(dir, 'scripts', 'lib', 'rules.mjs'))}"`, `node "${fwd(path.join(dir, 'x', 'scripts', 'scan.mjs'))}" --json`,
+          `node "${fwd(dir)}/scripts/../scripts/scan.mjs" --json`, `node "${fwd(dir)}/./scripts/scan.mjs" --json`,
+          `node ~/${fwd(path.relative(H, scan))} --json`, `node "${fwd(scan)}" --agent codex --agent claude`,
+          `cat "${fwd(skillMd)}" > out.txt`, `cat "${fwd(skillMd)}"; rm -rf x`, `cat "${fwd(skillMd)}" "${fwd(scan)}"`,
+          `cat "${fwd(scan)}"`, `cat "${fwd(path.join(dir, 'x', 'SKILL.md'))}"`, `cat "${fwd(skillMd)}.bak"`, `sed -i 's/a/b/' "${fwd(skillMd)}"`,
+          `rm -rf "${fwd(dir)}"`,
+          ...(agent === 'claude' ? [`cat "${fwd(skillMd)}"`, `node "${fwd(scan)}" --json --agent codex`] : []),
+        ],
+        PowerShell: [`node "${scan}" --update-baseline`, `node "${scan}" --json > out.txt`, `Remove-Item -Recurse "${dir}"`,
+          `Get-Content -LiteralPath "${skillMd}" "${scan}"`, ...(agent === 'claude' ? [`Get-Content -Raw "${skillMd}"`] : [])],
+      };
+      for (const tool of ['Bash', 'PowerShell']) {
+        for (const command of none[tool]) assert.equal(dd(tool, command).decision, 'none', `${agent} ${tool}: ${command}`);
+        for (const command of asks[tool]) assert.equal(dd(tool, command).ruleId, 'SELF_PROTECT', `${agent} ${tool}: ${command}`);
+      }
+    }
+    // The shape is anchored: a skill-sentry dir that is not directly in a skills dir, or a standalone-looking path
+    // inside the data dir or the running plugin root, gets no exemption.
+    for (const dir of [path.join(DATA, '.agents', 'skills', 'skill-sentry-audit'), path.join(SELF, '.claude', 'skills', 'skill-sentry-audit')]) {
+      for (const command of [`node "${fwd(path.join(dir, 'scripts', 'scan.mjs'))}" --json`, ...(agent === 'codex' ? [`cat "${fwd(path.join(dir, 'SKILL.md'))}"`] : [])]) {
+        assert.equal(dd('Bash', command).ruleId, 'SELF_PROTECT', `${agent}: ${command}`);
+      }
+    }
+  }
+});
+
 test('SELF_PROTECT covers standalone skill-sentry installs (~/.claude/skills, ~/.agents/skills, project dirs); other skills stay none', () => {
   const H = os.homedir();
   const proj = tmp('proj');
@@ -1607,7 +1660,7 @@ test('guard (L1): deny skips the component check; an expired budget skips it for
 
 test('originMayNameSkillSentry (R23): only an origin that can map onto a plugin or standalone skill named skill-sentry', () => {
   for (const o of [{ skill: 'skill-sentry:audit' }, { mcpPlugin: 'skill-sentry' }, { mcpPlugin: 'other', mcpQualified: 'skill-sentry_srv' },
-    { skill: 'skill-sentry' }, { skill: 'skill-sentry-audit' }]) {
+    { skill: 'skill-sentry' }, { skill: 'skill-sentry-audit' }, { skill: 'skill-sentry:skill-sentry-audit' }]) {
     assert.equal(originMayNameSkillSentry(o), true, JSON.stringify(o));
   }
   for (const o of [null, {}, { skill: 'evil:helper' }, { skill: 'audit' }, { skill: 'skill-sentry-x:y' },

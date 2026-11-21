@@ -27,6 +27,8 @@ env:
   # CLI builds verified to install skill-sentry non-interactively (see test/e2e/install.test.mjs).
   CLAUDE_CODE_PIN: 2.1.330
   CODEX_PIN: 0.171.0
+  # vercel-labs skills CLI (npx skills add), verified to install the audit alone, under its frontmatter name.
+  SKILLS_CLI_PIN: 1.9.0
 
 jobs:
   test:
@@ -83,22 +85,24 @@ jobs:
           CLI_INPUT: ${{ inputs.cli }}
         run: |
           if [ "$EVENT" = "schedule" ] || [ "$CLI_INPUT" = "latest" ]; then
-            echo "claude=latest" >> "$GITHUB_OUTPUT"; echo "codex=latest" >> "$GITHUB_OUTPUT"
+            echo "claude=latest" >> "$GITHUB_OUTPUT"; echo "codex=latest" >> "$GITHUB_OUTPUT"; echo "skills=latest" >> "$GITHUB_OUTPUT"
           else
-            echo "claude=$CLAUDE_CODE_PIN" >> "$GITHUB_OUTPUT"; echo "codex=$CODEX_PIN" >> "$GITHUB_OUTPUT"
+            echo "claude=$CLAUDE_CODE_PIN" >> "$GITHUB_OUTPUT"; echo "codex=$CODEX_PIN" >> "$GITHUB_OUTPUT"; echo "skills=$SKILLS_CLI_PIN" >> "$GITHUB_OUTPUT"
           fi
-      - name: Install Claude Code and Codex
+      - name: Install Claude Code, Codex and the skills CLI
         shell: bash
         env:
           CLAUDE_VERSION: ${{ steps.cli.outputs.claude }}
           CODEX_VERSION: ${{ steps.cli.outputs.codex }}
+          SKILLS_VERSION: ${{ steps.cli.outputs.skills }}
         run: |
-          npm install -g "@anthropic-ai/claude-code@$CLAUDE_VERSION" "@openai/codex@$CODEX_VERSION"
+          npm install -g "@anthropic-ai/claude-code@$CLAUDE_VERSION" "@openai/codex@$CODEX_VERSION" "skills@$SKILLS_VERSION"
           root="$(npm root -g)"
           # The native claude binary is put in place by the package's postinstall; run it if npm skipped it.
           claude --version || node "$root/@anthropic-ai/claude-code/install.cjs"
           claude --version
           codex --version
+          node "$root/skills/bin/cli.mjs" --version
           echo "SKILL_SENTRY_E2E_NPM_ROOT=$root" >> "$GITHUB_ENV"
       - name: e2e install checks
         env:
@@ -106,4 +110,4 @@ jobs:
           # The download-to-shell deny case runs only here: if the guard ever failed open, the real CLI would put
           # that command line on the process list, which antivirus on a developer machine may flag.
           SKILL_SENTRY_E2E_CRITICAL: '1'
-        run: node tools/ci/run-e2e.mjs test/e2e/install.test.mjs 31
+        run: node tools/ci/run-e2e.mjs test/e2e/install.test.mjs 39
