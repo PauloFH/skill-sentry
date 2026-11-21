@@ -682,6 +682,19 @@ test('taint marker (I2): create-only, survives concurrent token rewrites, EEXIST
   assert.equal(readTaint(dir, SID_A, t0 + 30 + TAINT_LIMITS.ttlMs), true, 'TTL counts from the latest read');
   assert.equal(readTaint(dir, SID_A, t0 + 31 + TAINT_LIMITS.ttlMs + 60_000), false);
 });
+test('taint marker: the TTL counts in whole milliseconds (ext4/APFS keep sub-ms mtimes below the time set)', () => {
+  // utimes takes seconds as a double: on Linux and macOS (ns timestamps) the mtime read back for t ms is a hair
+  // below t (CI: ubuntu and macOS failed "TTL counts from the latest read"). Reproduced here with 1 us less (a few
+  // double ulps at this epoch; NTFS keeps 100 ns).
+  const dir = path.join(tmp('marker-ms'), 'skill-sentry');
+  const t = 1_800_000_000_030;
+  assert.equal(markTaint(dir, SID_A, t), true);
+  const m = taintMarker(dir, SID_A);
+  fs.utimesSync(m, (t - 0.001) / 1000, (t - 0.001) / 1000);
+  assert.ok(fs.statSync(m).mtimeMs < t, `mtime below t: ${fs.statSync(m).mtimeMs}`);
+  assert.equal(readTaint(dir, SID_A, t + TAINT_LIMITS.ttlMs), true, 'exactly the TTL after the read');
+  assert.equal(readTaint(dir, SID_A, t + TAINT_LIMITS.ttlMs + 1), false, 'one ms later');
+});
 test('taint store: at most 500 files, oldest pruned', () => {
   const dir = path.join(tmp('prune'), 'skill-sentry');
   const sdir = path.dirname(taintFile(dir, SID_A));

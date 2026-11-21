@@ -138,7 +138,8 @@ export function readTaint(dataDir, sessionId, now = Date.now()) {
   try {
     const m = taintMarker(dataDir, sessionId);
     const st = m && fs.lstatSync(m, { throwIfNoEntry: false });
-    return !!st && st.isFile() && fresh(st.mtimeMs, now, TAINT_LIMITS.ttlMs);
+    // Whole ms: markTaint sets ms times, and ext4/APFS read them back a hair below (utimes takes double seconds).
+    return !!st && st.isFile() && fresh(Math.round(st.mtimeMs), now, TAINT_LIMITS.ttlMs);
   } catch {
     return false;
   }
