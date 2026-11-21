@@ -1,6 +1,6 @@
 {
   "name": "skill-sentry",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Static scanner and runtime guard that audits installed Claude Code plugins, skills, hooks and MCP servers for malicious behavior.",
   "author": {
     "name": "Paulo Roberto Fernandes Holanda"

@@ -9,7 +9,7 @@
     {
       "name": "skill-sentry",
       "source": "./",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "category": "security",
       "description": "Static scanner and runtime guard that audits installed Claude Code plugins, skills, hooks and MCP servers for malicious behavior.",
       "homepage": "https://github.com/PauloFH/skill-sentry"
