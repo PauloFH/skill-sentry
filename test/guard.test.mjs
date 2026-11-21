@@ -1815,6 +1815,17 @@ test('P3 fix round 1 (I1): a lone CR is a PowerShell statement break, and cd.. /
   asksSelf('PowerShell', 'Get-Date\ncd..\nRemove-Item -Recurse -Force skill-sentry', data);
 });
 
+test('fix round 2 (N1): any CR (CRLF too) drops the relative exemption: POSIX bash reads `&&\\r\\n` as `&& $\'\\r\'`', () => {
+  // `cd <missing> &&\r\nrm -rf skill-sentry` runs rm unconditionally in the hook cwd under WSL bash.
+  for (const c of [`cd ${VAULT}/nope &&\r\nrm -rf skill-sentry`, `cd ${VAULT} && rm -rf skill-sentry\r\n`, `ls skill-sentry\r\n`].filter(onThisOs)) {
+    asksSelf('Bash', c, { cwd: HOME_CLAUDE });
+    asksSelf('Bash', c, atVault);
+    const r = decide({ toolName: 'Bash', toolInput: { command: c }, origin: null, allowlist: EMPTY, selfRoot: SELF, dataDir: DATA,
+      cwd: HOME_CLAUDE, shellCwd: false, selfViews: true });
+    assert.equal(r.ruleId, 'SELF_PROTECT', `Codex: ${JSON.stringify(c)}`);
+  }
+});
+
 test('P3 fix round 1 (I2, M1): relative cd targets and searches by name keep asking', () => {
   for (const [tool, c, o = atVault] of [
     // I2: a relative cd operand goes through CDPATH or a zoxide `cd` first, so its target is not known

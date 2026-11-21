@@ -551,9 +551,10 @@ const relativePiece = v => LITERAL_PATH.test(v) && !v.includes(':') && !/^[/~-]/
 function relativeContext(cmd, words, ps, cwd, shellCwd, placeOk) {
   let ctx;
   const build = () => {
-    // A lone CR splits statements in PowerShell but not in bash: one more reading to get wrong, so no exemption.
-    // The same for the Unicode line breaks (NEL, U+2028, U+2029), whose reading differs between parsers.
-    if (/\r(?!\n)/.test(cmd) || UNICODE_BREAKS.some(ch => cmd.includes(ch))) return { ok: false };
+    // Any CR: a lone CR splits statements in PowerShell but not in bash, and POSIX bash reads CRLF after `&&` as
+    // `&& $'\r'` then an unconditional next line (fix round 2, N1). The Unicode line breaks (NEL, U+2028, U+2029)
+    // are read differently by different parsers too. No exemption for any of them.
+    if (/\r/.test(cmd) || UNICODE_BREAKS.some(ch => cmd.includes(ch))) return { ok: false };
     const starts = words.flatMap((w, i) => (i === 0 || w.sep ? [i] : []));
     const stmtOf = [];
     const stmts = starts.map((s, n) => {
