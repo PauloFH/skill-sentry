@@ -14,6 +14,8 @@ Third-party skills and plugins are code and instructions that run with your priv
 
 Requires Node 18 or newer. No npm dependencies.
 
+Since 0.1.1 it also works in OpenAI Codex: see [Codex support](#codex-support).
+
 ## Threat model and honest limits
 
 skill-sentry is a second pair of eyes, not a shield. Read this before trusting it.
@@ -119,11 +121,98 @@ An entry is tied to the sha256 of that file, so it **stops applying as soon as t
 
 If the `skillspector` command is installed, the audit can offer a second opinion with it. skill-sentry never installs it.
 
+## Codex support
+
+skill-sentry 0.1.1 brings the same audit and guard to OpenAI Codex, plus a recommend-only harden.
+
+### What the audit covers in Codex
+
+- `config.toml`: approval and sandbox settings, MCP servers, literal secrets, trusted projects, the shell environment policy
+- `rules/*.rules` execution policy files
+- plugins, and the hooks they ship together with each hook's trust state
+- MCP servers
+- skills, including `~/.agents/skills`
+- `AGENTS.md` instruction files
+- the `notify` program
+
+Windows and WSL Codex homes are detected automatically. Pick what to audit with `--agent claude|codex|all` (default `all`), add a home with `--codex-home <dir>` (repeatable) and skip WSL with `--no-wsl`:
+
+```
+node scripts/scan.mjs --agent codex
+node scripts/scan.mjs --agent all --codex-home <dir> --no-wsl
+```
+
+### Install in Codex
+
+```
+codex plugin marketplace add PauloFH/skill-sentry
+codex plugin add skill-sentry@skill-sentry
+```
+
+Then **trust the guard hook**. Codex does not run a hook until you trust it, and enabling a plugin does not trust its hooks. Open `/hooks` in Codex (or "Review hooks" in the desktop app), review the skill-sentry hook and trust it. Until you do, the guard does not run. Trust it again after every update, because a changed hook shows as `modified`.
+
+Then ask Codex to run the skill-sentry audit skill for your first report.
+
+### Guard under Codex
+
+The guard is a PreToolUse hook here too. Codex has no "ask", so it can only allow or deny, and the tiers are:
+
+| Tier | When | Codex behaviour |
+| --- | --- | --- |
+| 1 | A critical rule matches | deny |
+| 2 | A high rule for rce, exfil, miner or destructive; a secret and network egress in one command; a secret read earlier in the session followed by a network-capable call | deny. If you really meant it, run it yourself in a terminal. |
+| 3 | Any other high rule with an attributed origin (a skill or plugin) | denied the first time, with the reason. An identical retry in the same session within 10 minutes is allowed once. |
+| 4 | A high rule without an origin (you typed it) | logged only |
+| 5 | Writes to skill-sentry's own files, or unusual path forms | deny |
+
+`apply_patch` patches are inspected too. A patch the guard cannot read (one that comes from a file or a pipe, or that uses shell expansion) is denied.
+
+### Codex limits
+
+- Codex has no "ask": the guard can only allow or deny.
+- It fails open: if the hook errors or exceeds Codex's timeout (about 5 seconds), the call runs.
+- Hooks need trust (`/hooks`). The `dangerously-bypass-hook-trust` flag of Codex turns that protection off.
+- The tier 3 retry is confirmed by the model, not by you.
+- Interactive input sent to a running shell (`write_stdin`) is not hooked.
+- Under WSL, if the session starts under `/mnt/c` and your node toolchain (for example mise) refuses to start there, the guard fails open. Start the session under `/home/...`.
+- WSL Codex and Windows Codex keep separate skill-sentry data (taint, baseline, allowlist).
+- Under the `workspace-write` sandbox the audit needs your approval to write its report to `~/.claude/skill-sentry`.
+- Reading skill-sentry's own `SKILL.md` through a chained shell command (`cd ... && cat ...`) may be denied. The plain read works.
+- Mentioning a bare `skill-sentry` path in a shell command can still prompt in Claude Code (self-protect).
+
+### Harden under Codex
+
+```
+node scripts/harden.mjs check --agent codex
+```
+
+Plain `check` stays Claude-only. Codex hardening is **recommend-only**: skill-sentry never edits Codex files. Each recommendation comes with a snippet for you to apply yourself:
+
+| Id | What it recommends |
+| --- | --- |
+| `approval-sandbox` | Keep `approval_policy` and `sandbox_mode` on the sandboxed, ask-on-request defaults |
+| `broad-allow-rules` | Replace execution policy allow rules that end at a shell or interpreter with prompt rules |
+| `secrets-in-config` | Move literal secrets out of `config.toml` and reference an environment variable |
+| `env-excludes` | Keep the default environment excludes so secret-looking variables are not passed to commands |
+| `mcp-auto-approve` | Do not auto-approve MCP servers or tools |
+| `approvals-reviewer` | Keep `approvals_reviewer` on `user` |
+| `trusted-tmp-projects` | Do not trust projects that live in temp directories |
+| `hooks-enabled` | Keep Codex hooks enabled, so the guard can run |
+| `trust-guard-hook` | Trust the skill-sentry hook in `/hooks` |
+
+### Two installs, one version
+
+If Claude Code and Codex run different skill-sentry versions, a newer scanner recognises older releases and shows an "update both installs" note. An older scanner may flag a newer copy as unknown until both are updated. **Update both installs** after each release.
+
+### skills.sh
+
+Not supported yet (planned): skills.sh copies only the skill folder, so it cannot install the guard hook.
+
 ## Data and privacy
 
 - **No network calls and no telemetry.** Everything runs locally.
 - It writes only to `~/.claude/skill-sentry/`: `baseline.json`, `allowlist.json`, `guard.log` and `reports/`. The one exception is `harden`, which edits your `settings.json` after approval, with a backup.
-- Environment variables (mainly for testing): `SKILL_SENTRY_DATA_DIR` (data directory), `SKILL_SENTRY_CLAUDE_HOME` (default `~/.claude`), `SKILL_SENTRY_HOME_DIR` (where `~/.claude.json` is read from).
+- Environment variables (mainly for testing): `SKILL_SENTRY_DATA_DIR` (data directory), `SKILL_SENTRY_CLAUDE_HOME` (default `~/.claude`), `SKILL_SENTRY_HOME_DIR` (where `~/.claude.json` is read from), `SKILL_SENTRY_CODEX_HOME` (replaces the default Codex home) and `SKILL_SENTRY_NO_WSL=1` (do not look for Codex homes inside WSL).
 
 ## Validation
 
