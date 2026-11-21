@@ -510,7 +510,7 @@ test('releases: the embedded table knows v0.1.0 (the tagged tree) with a hash an
   assert.ok(!names.some(n => /^(?:\.git|\.omc|\.superpowers|docs\/superpowers|node_modules|\.in_use)\//.test(n)), 'nothing unshipped');
 });
 
-test('releases (v0.1.2 P2): the embedded table knows v0.1.1, and a clean git archive of the tag is recognised as 0.1.1', () => {
+test('releases (v0.1.2 P2): the embedded table knows v0.1.1, and a clean git archive of the tag is recognised as 0.1.1', t => {
   const e = KNOWN_RELEASES['0.1.1'];
   assert.ok(e, 'v0.1.1 entry');
   const names = Object.keys(e);
@@ -521,9 +521,18 @@ test('releases (v0.1.2 P2): the embedded table knows v0.1.1, and a clean git arc
   assert.deepEqual(Object.keys(KNOWN_RELEASE_SIZES['0.1.1']).sort(), [...names].sort());
   const repo = path.resolve(path.dirname(SCAN), '..');
   const out = tmp('v011');
+  // The table checks above always run; the export check needs git, tar and the local v0.1.1 tag (a shallow or
+  // tagless clone has no tag), so without them it is skipped with the reason instead of failing.
   const a = spawnSync('git', ['-C', repo, 'archive', '--format=tar', 'v0.1.1'], { maxBuffer: 64 * 1024 * 1024 });
-  assert.equal(a.status, 0, `git archive v0.1.1 (needs the tag): ${a.stderr}`);
+  if (a.error || a.status !== 0) {
+    t.skip(`git archive v0.1.1 unavailable (git missing or no local v0.1.1 tag; run git fetch --tags): ${a.error?.code ?? String(a.stderr).trim()}`);
+    return;
+  }
   const x = spawnSync('tar', ['-xf', '-'], { input: a.stdout, cwd: out, encoding: 'utf8' }); // relative names only
+  if (x.error) {
+    t.skip(`tar unavailable: ${x.error.code}`);
+    return;
+  }
   assert.equal(x.status, 0, x.stderr);
   assert.equal(knownRelease(out), '0.1.1', 'clean export');
   // As Codex installs it (shallow .git plus its install marker) and as Claude Code runs it (.in_use marker).
