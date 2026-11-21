@@ -1,76 +1,67 @@
 name: Release
 
-# On every push to main: run the whole CI (unit matrix + e2e), then the model e2e when its secrets exist, and only
-# if all of that passed, let semantic-release pick the version from the Conventional Commits since the last v* tag,
-# write it into the manifests and CHANGELOG.md, commit `chore: release <version>`, tag v<version> and create the
-# GitHub Release. A push with only docs/chore/ci/test commits releases nothing.
+# The single entry point for pull requests and pushes to main (docs/RELEASING.md).
 #
-# A pull request (from this repository) and workflow_dispatch are dry runs: the same checks, then
-# `semantic-release --dry-run` prints the next version in the job summary. They never commit, tag or release: the
-# publish job runs only for a push to main, and the dry-run job refuses to run semantic-release without --dry-run.
+# Pull request (also from a fork) or dispatch: the checks (ci.yml) run once, then a release dry run whose summary
+# says which version merging would release. The dry run holds no write token and points semantic-release at a local
+# bare clone, so it cannot push, tag or release anything.
+#
+# Push to main: the checks, then the model e2e (keys from the `model-e2e` environment, skipped with a warning when
+# absent), and only if all of that passed, semantic-release with the locked toolchain in tools/ci/release: version
+# from the Conventional Commits since the last v* tag, manifests and CHANGELOG.md updated, commit
+# `chore: release <version>`, tag v<version>, GitHub Release. The push is made with a GitHub App token, because a
+# ruleset on main only lets that App push directly. That push runs this workflow again; that run releases nothing,
+# since the last tag is on that very commit.
 
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: Dry run (a dispatch is always a dry run; only a push to main publishes)
-        type: boolean
-        default: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.event_name }}-${{ github.ref }}
   # A newer push to a pull request supersedes the older run; runs on main are never cancelled.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
-env:
-  # semantic-release toolchain, installed in CI only (the plugin has no dependencies).
-  SEMANTIC_RELEASE_PACKAGES: >-
-    semantic-release@25.0.9
-    @semantic-release/exec@7.1.0
-    @semantic-release/changelog@7.0.0
-    @semantic-release/git@11.0.1
-    @semantic-release/github@12.0.11
-    conventional-changelog-conventionalcommits@8.0.0
 
 jobs:
   ci:
     uses: ./.github/workflows/ci.yml
 
   model-e2e:
+    # A real model asked to run a fixed, harmless high-risk command; the installed guard must block it. Push to main
+    # only: the keys never reach pull request code. They live in the `model-e2e` environment (deployments limited
+    # to main) or in repository secrets; without them the job warns and succeeds, so it does not block a release.
     name: model e2e
     needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # The keys are handed over only for a push to main or a dispatch: pull request code never gets them, and PR
-    # pushes never spend model calls (the job then reports the keys as missing and skips).
-    env:
-      ANTHROPIC_API_KEY: ${{ github.event_name != 'pull_request' && secrets.ANTHROPIC_API_KEY || '' }}
-      OPENAI_API_KEY: ${{ github.event_name != 'pull_request' && secrets.OPENAI_API_KEY || '' }}
+    environment: model-e2e
     steps:
       - name: Check for model API keys
         id: keys
+        env:
+          HAS_ANTHROPIC: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+          HAS_OPENAI: ${{ secrets.OPENAI_API_KEY != '' }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            echo "::notice title=model e2e::not run on pull requests (the API keys are only used for a push to main or a dispatch)"
-          fi
           missing=""
-          [ -n "$ANTHROPIC_API_KEY" ] || missing="$missing ANTHROPIC_API_KEY"
-          [ -n "$OPENAI_API_KEY" ] || missing="$missing OPENAI_API_KEY"
+          [ "$HAS_ANTHROPIC" = "true" ] || missing="$missing ANTHROPIC_API_KEY"
+          [ "$HAS_OPENAI" = "true" ] || missing="$missing OPENAI_API_KEY"
           if [ -n "$missing" ]; then
-            echo "::warning title=model e2e skipped::missing repository secrets:$missing. The agents without a key are not exercised; this does not block the release."
+            echo "::warning title=model e2e skipped::missing secrets:$missing. The agents without a key are not exercised; this does not block the release."
             echo "### :warning: model e2e: missing secrets:$missing (those agents are skipped; the release is not blocked)" >> "$GITHUB_STEP_SUMMARY"
           fi
-          if [ -z "$ANTHROPIC_API_KEY" ] && [ -z "$OPENAI_API_KEY" ]; then echo "run=false" >> "$GITHUB_OUTPUT"; else echo "run=true" >> "$GITHUB_OUTPUT"; fi
+          if [ "$HAS_ANTHROPIC" = "true" ] || [ "$HAS_OPENAI" = "true" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; else echo "run=false" >> "$GITHUB_OUTPUT"; fi
       - if: steps.keys.outputs.run == 'true'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - if: steps.keys.outputs.run == 'true'
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
       - name: Install Claude Code and Codex (pinned)
@@ -86,148 +77,156 @@ jobs:
         if: steps.keys.outputs.run == 'true'
         env:
           SKILL_SENTRY_E2E_MODEL: '1'
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: node --test --test-reporter=spec test/e2e/model.test.mjs
 
   publish:
-    # The only job that can write: a push to main, after every check passed.
+    # The only job that changes the repository: a push to main, after every check passed. Its own token stays
+    # read-only; every write uses the release App's token.
     name: release
     needs: [ci, model-e2e]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      contents: write
-      issues: write
-      pull-requests: write
+      contents: read
     outputs:
       version: ${{ steps.result.outputs.version }}
+      sha: ${{ steps.result.outputs.sha }}
     steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '22'
-      - name: Install semantic-release
-        run: |
-          mkdir -p "$RUNNER_TEMP/semrel" && echo '{"private":true}' > "$RUNNER_TEMP/semrel/package.json"
-          npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/semrel" $SEMANTIC_RELEASE_PACKAGES
-          # semantic-release resolves the plugins of an --extends config from the config's own dir.
-          cp tools/ci/release.config.cjs "$RUNNER_TEMP/semrel/release.config.cjs"
       - name: Only a push to main publishes
         run: |
           if [ "$GITHUB_EVENT_NAME" != "push" ] || [ "$GITHUB_REF" != "refs/heads/main" ]; then
             echo "::error::refusing to publish for $GITHUB_EVENT_NAME on $GITHUB_REF"; exit 1
           fi
+      - name: Check the release App credentials
+        env:
+          APP_CLIENT_ID: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          APP_ID: ${{ vars.RELEASE_APP_ID }}
+          HAS_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY != '' }}
+        run: |
+          if { [ -z "$APP_CLIENT_ID" ] && [ -z "$APP_ID" ]; } || [ "$HAS_KEY" != "true" ]; then
+            echo "::error title=release App missing::set the repository variable RELEASE_APP_CLIENT_ID (or RELEASE_APP_ID) and the secret RELEASE_APP_PRIVATE_KEY. The release push needs the App token: GITHUB_TOKEN is not allowed to push to main (ruleset), and there is no fallback."
+            exit 1
+          fi
+      - name: Release App token
+        id: app
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          app-id: ${{ vars.RELEASE_APP_CLIENT_ID == '' && vars.RELEASE_APP_ID || '' }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-issues: write
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - name: Install the locked release toolchain
+        run: npm ci --ignore-scripts --no-audit --no-fund --prefix tools/ci/release
+      - name: Commit identity of the release App
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          APP_SLUG: ${{ steps.app.outputs.app-slug }}
+        run: |
+          id="$(gh api "/users/${APP_SLUG}%5Bbot%5D" --jq .id)"
+          {
+            echo "GIT_AUTHOR_NAME=${APP_SLUG}[bot]"
+            echo "GIT_AUTHOR_EMAIL=${id}+${APP_SLUG}[bot]@users.noreply.github.com"
+            echo "GIT_COMMITTER_NAME=${APP_SLUG}[bot]"
+            echo "GIT_COMMITTER_EMAIL=${id}+${APP_SLUG}[bot]@users.noreply.github.com"
+          } >> "$GITHUB_ENV"
       - name: semantic-release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GIT_AUTHOR_NAME: github-actions[bot]
-          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
-          GIT_COMMITTER_NAME: github-actions[bot]
-          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
-        run: '"$RUNNER_TEMP/semrel/node_modules/.bin/semantic-release" --extends "$RUNNER_TEMP/semrel/release.config.cjs"'
+          GITHUB_TOKEN: ${{ steps.app.outputs.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: tools/ci/release/node_modules/.bin/semantic-release --extends ./tools/ci/release/release.config.cjs
       - name: Result
         id: result
         run: |
-          git fetch --quiet --tags origin
-          head="$(git ls-remote origin refs/heads/main | cut -f1)"
-          tag="$(git tag --points-at "$head" 'v*' | head -n1)"
+          # semantic-release commits and tags the release locally before pushing: a new release is a v* tag on a
+          # HEAD that moved past the commit this run started from.
+          head="$(git rev-parse HEAD)"
+          tag="$(git tag --points-at HEAD --list 'v*' | head -n1)"
           if [ -n "$tag" ] && [ "$head" != "$GITHUB_SHA" ]; then
             echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
-            echo "### released $tag" >> "$GITHUB_STEP_SUMMARY"
+            echo "sha=$head" >> "$GITHUB_OUTPUT"
+            echo "### released $tag ($head)" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "### no release (no fix, feat or breaking commit since the last tag)" >> "$GITHUB_STEP_SUMMARY"
           fi
 
   dry-run:
-    # A pull request from this repository, or a dispatch on any branch: same checks, then semantic-release
-    # --dry-run. Nothing is committed, tagged or released. contents: write only because semantic-release checks
-    # push access with `git push --dry-run` even in a dry run (fork PRs get a read-only token: see fork-notice).
-    # On a pull request semantic-release sees the base branch (main) and analyses the merge commit, so the summary
-    # shows what merging would release.
-    # It runs even when a check failed (always()), so the next version is visible on every PR; the summary states
-    # the check results, and a push to main publishes only when they all passed.
+    # Pull requests (forks and Dependabot included) and dispatches. No write token: semantic-release runs with the
+    # analysis-only config against a bare clone of this checkout, which a git `insteadOf` puts in place of the
+    # GitHub URL, so even its push-access probe (`git push --dry-run`) stays local. It runs even when a check
+    # failed, so the summary always shows the next version together with the check result.
     name: release (dry run)
-    needs: [ci, model-e2e]
-    if: >-
-      always() && (github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))
+    needs: ci
+    if: ${{ !cancelled() && github.event_name != 'push' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     permissions:
-      contents: write
+      contents: read
     steps:
-      - name: Refuse to publish from this job
-        run: |
-          case "$GITHUB_EVENT_NAME" in
-            pull_request|workflow_dispatch) echo "dry run for $GITHUB_EVENT_NAME" ;;
-            *) echo "::error::the dry-run job ran for $GITHUB_EVENT_NAME"; exit 1 ;;
-          esac
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
-      - name: Install semantic-release
-        run: |
-          mkdir -p "$RUNNER_TEMP/semrel" && echo '{"private":true}' > "$RUNNER_TEMP/semrel/package.json"
-          npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/semrel" $SEMANTIC_RELEASE_PACKAGES
-          cp tools/ci/release.config.cjs "$RUNNER_TEMP/semrel/release.config.cjs"
+      - name: Install the locked release toolchain
+        run: npm ci --ignore-scripts --no-audit --no-fund --prefix tools/ci/release
       - name: semantic-release --dry-run
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CI_RESULT: ${{ needs.ci.result }}
-          MODEL_RESULT: ${{ needs.model-e2e.result }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -o pipefail
-          args=(--extends "$RUNNER_TEMP/semrel/release.config.cjs" --dry-run --no-ci)
-          runner=()
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            # A dispatch is analysed as a release from the dispatched branch.
-            args+=(--branches "$GITHUB_REF_NAME")
-          else
-            # A pull request: semantic-release would see the branch refs/pull/N/merge and stop. Name the checked-out
-            # merge commit after the base branch, locally only, and let env-ci read the branch from git, so the
-            # dry run shows what merging would release from main.
-            git checkout -q -B "$GITHUB_BASE_REF"
-            runner=(env -u GITHUB_ACTIONS)
+          summary() { printf '%s\n' "$@" >> "$GITHUB_STEP_SUMMARY"; }
+          case "$GITHUB_EVENT_NAME" in
+            pull_request) branch="$GITHUB_BASE_REF" ;;
+            workflow_dispatch) branch="$GITHUB_REF_NAME" ;;
+            *) echo "::error::the dry-run job ran for $GITHUB_EVENT_NAME"; exit 1 ;;
+          esac
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ] && ! printf '%s' "$PR_TITLE" | grep -Eq '^[a-z]+(\([^)]+\))?!?: [^ ]'; then
+            echo "::warning title=pull request title::not a Conventional Commit ('type: message'). Releases are computed from the commits, not the title, but keep the format."
           fi
-          case " ${args[*]} " in *" --dry-run "*) ;; *) echo "::error::refusing to run semantic-release without --dry-run"; exit 1 ;; esac
-          "${runner[@]}" "$RUNNER_TEMP/semrel/node_modules/.bin/semantic-release" "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/semrel.log"
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ] && [ "$branch" != "main" ]; then
+            summary "### release dry run skipped" "" "This pull request targets \`$branch\`; the dry run analyses main only."
+            exit 0
+          fi
+          # Name the checked-out commit (a PR's merge commit) after the analysed branch, locally only, and serve a
+          # bare clone of it in place of the GitHub URL. No token is passed.
+          git checkout -q -B "$branch"
+          bare="$RUNNER_TEMP/dry-run.git"
+          git clone -q --bare . "$bare"
+          url="https://github.com/$GITHUB_REPOSITORY.git"
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="url.file://$bare.insteadOf" GIT_CONFIG_VALUE_0="$url" \
+            env -u GITHUB_ACTIONS -u GITHUB_TOKEN -u GH_TOKEN \
+            tools/ci/release/node_modules/.bin/semantic-release --extends ./tools/ci/release/dry-run.config.cjs \
+              --dry-run --no-ci --repository-url "$url" --branches "$branch" 2>&1 | tee "$RUNNER_TEMP/semrel.log"
           log="$(sed -E 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/semrel.log")"
           next="$(printf '%s\n' "$log" | sed -nE 's/.*The next release version is ([^ ]+).*/\1/p' | tail -n1)"
-          {
-            if [ -n "$next" ]; then echo "### next release: $next"; else echo "### no release"; fi
-            echo
-            echo "checks: CI \`$CI_RESULT\`, model e2e \`$MODEL_RESULT\`. A push to main publishes only when both succeeded."
-            echo
-            echo "semantic-release --dry-run ($GITHUB_EVENT_NAME, $GITHUB_REF_NAME):"
-            echo '```'
-            printf '%s\n' "$log" | grep -E 'associated with version|commits since last release|Analysis of|next release version|no relevant changes' || true
-            echo '```'
-            if [ -n "$next" ]; then
-              echo '<details><summary>release notes</summary>'; echo
-              printf '%s\n' "$log" | sed -n '/Release note for version/,$p' | sed '1d'
-              echo '</details>'
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  fork-notice:
-    name: release (dry run skipped for forks)
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
-    runs-on: ubuntu-latest
-    steps:
-      - run: |
-          echo "::notice title=release dry run::skipped for a fork pull request (its token is read-only, and semantic-release needs push access even for --dry-run)"
-          echo "### release dry run skipped for a fork pull request" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$next" ]; then summary "### next release: $next"; else summary "### no release"; fi
+          summary "" "checks: CI \`$CI_RESULT\`. A push to main publishes only when every check passed." ""
+          summary "semantic-release --dry-run ($GITHUB_EVENT_NAME, analysed as \`$branch\`):" '```'
+          printf '%s\n' "$log" | grep -E 'associated with version|commits since last release|Analysis of|next release version|no relevant changes' >> "$GITHUB_STEP_SUMMARY" || true
+          summary '```'
+          if [ -n "$next" ]; then
+            summary '<details><summary>release notes</summary>' ''
+            printf '%s\n' "$log" | sed -n '/Release note for version/,$p' | sed '1d' >> "$GITHUB_STEP_SUMMARY"
+            summary '</details>'
+          fi
 
   pages:
-    # Non-blocking: wait for the Pages build of the release commit, then check that the live page responds and
-    # mentions the version or the Codex section.
+    # Non-blocking: the Pages site is built from main; check that the build of the release commit succeeds and the
+    # live page answers. Warnings only: Pages may lag, and the release itself is already done.
     name: pages check
     needs: publish
     if: needs.publish.outputs.version != ''
@@ -239,20 +238,22 @@ jobs:
       contents: read
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      VERSION: ${{ needs.publish.outputs.version }}
+      SHA: ${{ needs.publish.outputs.sha }}
     steps:
-      - name: Wait for the Pages build and check the page
+      - name: Wait for the Pages build of the release commit
         run: |
-          sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
           url="$(gh api "repos/$GITHUB_REPOSITORY/pages" --jq .html_url)"
-          build=""
+          state=""
           for i in $(seq 1 60); do
-            build="$(gh api "repos/$GITHUB_REPOSITORY/pages/builds/latest" --jq '.commit + " " + .status' || true)"
-            echo "pages build: $build (want: $sha built)"
-            [ "$build" = "$sha built" ] && break
+            state="$(gh api "repos/$GITHUB_REPOSITORY/pages/builds" --jq ".[] | select(.commit == \"$SHA\") | .status" | head -n1 || true)"
+            echo "pages build of $SHA: ${state:-not started}"
+            case "$state" in built|errored) break ;; esac
             sleep 10
           done
-          [ "$build" = "$sha built" ] || echo "::warning title=pages::the Pages build of $sha did not finish within 10 minutes (last: $build)"
-          page="$(curl -fsSL "$url")" || { echo "::warning title=pages::$url does not respond"; exit 0; }
-          if printf '%s' "$page" | grep -q -e "$VERSION" -e "Codex"; then echo "pages ok: $url mentions $VERSION or Codex"
-          else echo "::warning title=pages::$url mentions neither $VERSION nor Codex"; fi
+          case "$state" in
+            built) echo "pages: built $SHA" ;;
+            errored) echo "::warning title=pages::the Pages build of the release commit $SHA failed" ;;
+            *) echo "::warning title=pages::no finished Pages build of the release commit $SHA within 10 minutes (last: ${state:-none})" ;;
+          esac
+          code="$(curl -s -o /dev/null -w '%{http_code}' -L "$url")"
+          [ "$code" = "200" ] && echo "pages: $url answers 200" || echo "::warning title=pages::$url answers $code"

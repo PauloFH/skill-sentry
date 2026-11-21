@@ -1,7 +1,8 @@
-// semantic-release configuration for .github/workflows/release.yml. CI-only: the release job installs the pinned
-// tooling into a tmp prefix, copies this file next to that node_modules (semantic-release resolves the plugins of
-// an --extends config from the config's dir) and runs `semantic-release --extends <copy>`. Never a dependency of
-// the plugin.
+// semantic-release configuration for the publish job of .github/workflows/release.yml. CI-only: the toolchain is
+// locked in this directory (package.json + package-lock.json) and installed with
+// `npm ci --ignore-scripts --prefix tools/ci/release`; semantic-release resolves the plugins of an --extends config
+// from the config's own directory, which is why this file lives next to that node_modules. Never a dependency of
+// the plugin. See docs/RELEASING.md.
 //
 // Conventional Commits since the last v* tag decide the version (conventionalcommits preset): fix -> patch,
 // feat -> minor, a breaking change (`type!:` or a BREAKING CHANGE footer) -> major; docs, chore, ci, test,
@@ -15,13 +16,17 @@ module.exports = {
   plugins: [
     ['@semantic-release/commit-analyzer', { preset: 'conventionalcommits' }],
     ['@semantic-release/release-notes-generator', { preset: 'conventionalcommits' }],
-    ['@semantic-release/exec', { prepareCmd: 'node tools/ci/set-version.mjs ${nextRelease.version}' }],
+    ['@semantic-release/exec', {
+      // Write the version, then check that the three version fields agree before anything is committed.
+      prepareCmd: 'node tools/ci/set-version.mjs ${nextRelease.version} && node --test test/package.test.mjs',
+    }],
     ['@semantic-release/changelog', { changelogFile: 'CHANGELOG.md', changelogTitle: '# Changelog' }],
     ['@semantic-release/git', {
       assets: ['.claude-plugin/plugin.json', '.claude-plugin/marketplace.json', 'package.json', 'CHANGELOG.md'],
       // One line, no body, no trailer (the project's commit format).
       message: 'chore: release ${nextRelease.version}',
     }],
-    '@semantic-release/github',
+    // No success comments or "released" labels on issues and PRs; a failed release still opens an issue.
+    ['@semantic-release/github', { successComment: false, releasedLabels: false }],
   ],
 };
