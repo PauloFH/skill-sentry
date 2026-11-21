@@ -19,7 +19,8 @@ test('manifests parse and carry the expected identity', () => {
   const market = readJson('.claude-plugin/marketplace.json');
   readJson('hooks/hooks.json');
   assert.equal(plugin.name, 'skill-sentry');
-  assert.equal(plugin.version, '0.1.1');
+  assert.equal(plugin.version, '0.1.2');
+  assert.equal(readJson('package.json').version, '0.1.2');
   assert.equal(plugin.license, 'MIT');
   assert.equal(plugin.repository, 'https://github.com/PauloFH/skill-sentry');
   assert.equal(plugin.homepage, 'https://github.com/PauloFH/skill-sentry');
@@ -31,7 +32,7 @@ test('manifests parse and carry the expected identity', () => {
   const p = market.plugins[0];
   assert.equal(p.name, 'skill-sentry');
   assert.equal(p.source, './');
-  assert.equal(p.version, '0.1.1');
+  assert.equal(p.version, '0.1.2');
   assert.equal(p.category, 'security');
   for (const f of ['plugin.json', 'marketplace.json']) {
     assert.ok(!/email|@[a-z0-9-]+\.[a-z]/i.test(fs.readFileSync(path.join(ROOT, '.claude-plugin', f), 'utf8').replace(/https?:\/\/\S+/g, '')), `${f} has no email`);
