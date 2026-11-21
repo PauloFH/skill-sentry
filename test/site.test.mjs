@@ -118,6 +118,7 @@ test('v0.1.2: the GitHub install for Codex is documented as verified, with the t
   assert.match(sec, /After a plugin update Codex marks the hook <code>modified<\/code> and stops running it until you trust it again in <code>\/hooks<\/code>/, 'limit: Codex stops the hook after an update');
   assert.match(Object.values(pt).join('\n'), /inicie o Codex uma vez/i, 'pt: start Codex once');
   assert.match(pt['codex.lim7'], /marca o hook como <code>modified<\/code> e para de executá-lo/, 'pt: Codex stops the hook after an update');
+  assert.doesNotMatch(`${sec}\n${pt['codex.lim7']}`, /does not warn|não avisa/, 'no unevidenced "no warning" claim on the page');
   // The four READMEs stay parallel: same verified flow, same new limit.
   const readme = f => fs.readFileSync(path.join(ROOT, f), 'utf8');
   for (const [f, untested, startOnce, afterUpdate] of [
@@ -130,6 +131,8 @@ test('v0.1.2: the GitHub install for Codex is documented as verified, with the t
     assert.doesNotMatch(t, untested, `${f}: untested note removed`);
     assert.match(t, startOnce, `${f}: start Codex once before trusting`);
     assert.match(t, afterUpdate, `${f}: re-trust limit`);
+    // Not evidenced (Codex's own UI after an update was not observed): no claim that it gives no warning.
+    assert.doesNotMatch(t, /does not warn|não avisa|no te avisa|不会提醒/i,`${f}: no unevidenced "no warning" claim`);
     assert.match(t, /codex plugin marketplace add PauloFH\/skill-sentry\r?\ncodex plugin add skill-sentry@skill-sentry/, `${f}: install commands`);
   }
 });

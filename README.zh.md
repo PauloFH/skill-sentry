@@ -174,7 +174,7 @@ codex plugin add skill-sentry@skill-sentry
 - Codex 没有 "ask"：守卫只能放行或拒绝。
 - 它是失败即放行：如果 hook 出错或超过 Codex 的超时（约 5 秒），调用照常执行。
 - hook 需要信任（`/hooks`）。Codex 的 `dangerously-bypass-hook-trust` 选项会关闭这层保护。
-- 插件更新后，Codex 会把 hook 标记为 `modified` 并停止运行它，直到你在 `/hooks` 中重新信任它。它不会提醒你：在此之前守卫就是关闭的。
+- 插件更新后，Codex 会把 hook 标记为 `modified` 并停止运行它，直到你在 `/hooks` 中重新信任它。
 - 第 3 级的重试由模型确认，而不是由你确认。
 - 发给正在运行的 shell 的交互式输入（`write_stdin`）不经过 hook。
 - 在运行时才拼出名称或路径的命令不会被分析：`eval`、变量、通配符（glob）、`python -c` 这类解释器单行命令，或在一次调用里写入、在之后的调用里运行的脚本。
