@@ -38,6 +38,8 @@ Mitigations worth doing regardless: pin plugin versions, avoid auto-update for t
 
 This repository is both the plugin and its own marketplace. The marketplace installs from `main`, and `main` only receives changes that passed CI (the test suite on Linux, Windows and macOS, plus install checks against the real Claude Code and Codex CLIs).
 
+Install the audit with `npx skills add PauloFH/skill-sentry` (Claude Code, Codex and other agents). The runtime guard and harden need the plugin. Similarly named skills exist, so use the exact `PauloFH/skill-sentry` source. See [skills.sh](#skillssh).
+
 ## Usage
 
 ### Audit installed components
@@ -211,7 +213,11 @@ If Claude Code and Codex run different skill-sentry versions, a newer scanner re
 
 ### skills.sh
 
-Not supported yet (planned): skills.sh copies only the skill folder, so it cannot install the guard hook.
+`npx skills add PauloFH/skill-sentry` installs the audit only, as the skill `skill-sentry-audit` (in Claude Code, `/skill-sentry-audit`). It cannot install the runtime guard (a hook) or harden: install the plugin for those. With `-g` the skills CLI copies the skill to `~/.agents/skills/skill-sentry-audit`, where Codex reads it, and links `~/.claude/skills/skill-sentry-audit` to it for Claude Code. CI checks this install with the real skills CLI on Linux and Windows.
+
+Similarly named skills exist on skills.sh (for example `skillsentry`). They are other projects: use the exact `PauloFH/skill-sentry` source.
+
+Next to the plugin of the same release, every scanner (plugin or standalone) recognises the other copies as skill-sentry. The guard lets the standalone audit run its scan, and lets Codex read its `SKILL.md`; any other command on that folder asks (Claude Code) or is denied (Codex). Update both installs after each release. A copy installed under another name with `--rename` has a changed `SKILL.md`, so the scanners no longer recognise it.
 
 ## Data and privacy
 

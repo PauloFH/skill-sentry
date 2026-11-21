@@ -82,6 +82,19 @@ test('install commands appear verbatim', () => {
   assert.ok(src.includes('/plugin install skill-sentry@skill-sentry'));
 });
 
+test('the install section offers the audit alone through npx skills add, says the guard needs the plugin, in both languages', () => {
+  const src = html();
+  const m = /<section id="install"[\s\S]*?<\/section>/.exec(src);
+  assert.ok(m, 'a real #install section');
+  const p = /<p[^>]*data-i18n="install\.skills"[^>]*>([\s\S]*?)<\/p>/.exec(m[0]);
+  assert.ok(p, 'the install.skills paragraph');
+  assert.ok(p[1].includes('<code>npx skills add PauloFH/skill-sentry</code>'), p[1]);
+  assert.match(p[1], /guard and harden need the plugin/);
+  const pt = dictionary(src).pt['install.skills'];
+  assert.ok(pt.includes('<code>npx skills add PauloFH/skill-sentry</code>'), pt);
+  assert.match(pt, /precisam do plugin/);
+});
+
 test('the nine sections exist', () => {
   const src = html();
   for (const id of ['hero', 'why', 'what', 'how', 'codex', 'tested', 'limits', 'install', 'footer']) {

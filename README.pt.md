@@ -38,6 +38,8 @@ Medidas que valem a pena de qualquer forma: fixar as versões dos plugins, evita
 
 Este repositório é ao mesmo tempo o plugin e o seu próprio marketplace. O marketplace instala a partir de `main`, e `main` só recebe mudanças que passaram na CI (a suíte de testes no Linux, no Windows e no macOS, mais verificações de instalação com os CLIs reais do Claude Code e do Codex).
 
+Instale a auditoria com `npx skills add PauloFH/skill-sentry` (Claude Code, Codex e outros agentes). A guarda em tempo de execução e o harden precisam do plugin. Existem skills com nomes parecidos, então use exatamente a origem `PauloFH/skill-sentry`. Veja [skills.sh](#skillssh).
+
 ## Uso
 
 ### Auditar os componentes instalados
@@ -211,7 +213,11 @@ Se o Claude Code e o Codex rodarem versões diferentes do skill-sentry, um scann
 
 ### skills.sh
 
-Ainda não é suportado (previsto): o skills.sh copia só a pasta da skill, então não consegue instalar o hook da guarda.
+`npx skills add PauloFH/skill-sentry` instala só a auditoria, como a skill `skill-sentry-audit` (no Claude Code, `/skill-sentry-audit`). Ele não consegue instalar a guarda em tempo de execução (um hook) nem o harden: para esses, instale o plugin. Com `-g`, o CLI do skills copia a skill para `~/.agents/skills/skill-sentry-audit`, onde o Codex a lê, e liga `~/.claude/skills/skill-sentry-audit` a ela para o Claude Code. A CI verifica essa instalação com o CLI real do skills no Linux e no Windows.
+
+Existem skills com nomes parecidos no skills.sh (por exemplo `skillsentry`). São outros projetos: use exatamente a origem `PauloFH/skill-sentry`.
+
+Ao lado do plugin da mesma versão, todo scanner (do plugin ou avulso) reconhece as outras cópias como skill-sentry. A guarda deixa a auditoria avulsa rodar o seu scan e deixa o Codex ler o `SKILL.md` dela; qualquer outro comando nessa pasta pede confirmação (Claude Code) ou é negado (Codex). Atualize as duas instalações a cada versão. Uma cópia instalada com outro nome via `--rename` tem o `SKILL.md` alterado, então os scanners deixam de reconhecê-la.
 
 ## Dados e privacidade
 
