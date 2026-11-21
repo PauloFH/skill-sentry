@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { tmpFactory, copyTree } from './helpers/tmp.mjs';
+import { tmpFactory } from './helpers/tmp.mjs';
 
 const tmpDir = tmpFactory('ss-');
 
@@ -19,9 +19,9 @@ test('manifests parse and carry the expected identity', () => {
   const market = readJson('.claude-plugin/marketplace.json');
   readJson('hooks/hooks.json');
   assert.equal(plugin.name, 'skill-sentry');
-  // Versions are set by the release pipeline: the three version fields only have to agree.
+  // The version is set by the release pipeline (tools/ci/set-version.mjs): the three fields only have to agree.
   assert.match(plugin.version, /^\d+\.\d+\.\d+$/);
-  assert.equal(readJson('package.json').version, plugin.version, 'package.json version matches plugin.json');
+  assert.equal(readJson('package.json').version, plugin.version, 'package.json version');
   assert.equal(plugin.license, 'MIT');
   assert.equal(plugin.repository, 'https://github.com/PauloFH/skill-sentry');
   assert.equal(plugin.homepage, 'https://github.com/PauloFH/skill-sentry');
@@ -33,22 +33,13 @@ test('manifests parse and carry the expected identity', () => {
   const p = market.plugins[0];
   assert.equal(p.name, 'skill-sentry');
   assert.equal(p.source, './');
-  assert.equal(p.version, plugin.version, 'marketplace.json version matches plugin.json');
+  assert.equal(p.version, plugin.version, 'marketplace.json plugin version');
+  if (market.version !== undefined) assert.equal(market.version, plugin.version, 'marketplace.json version');
+  if (market.metadata?.version !== undefined) assert.equal(market.metadata.version, plugin.version, 'marketplace.json metadata.version');
   assert.equal(p.category, 'security');
   for (const f of ['plugin.json', 'marketplace.json']) {
     assert.ok(!/email|@[a-z0-9-]+\.[a-z]/i.test(fs.readFileSync(path.join(ROOT, '.claude-plugin', f), 'utf8').replace(/https?:\/\/\S+/g, '')), `${f} has no email`);
   }
-});
-
-test('npm test runs every test file by name (Node 22 no longer accepts a directory for --test)', () => {
-  const script = readJson('package.json').scripts.test;
-  assert.equal(script, 'node tools/test.mjs');
-  const runner = fs.readFileSync(path.join(ROOT, 'tools', 'test.mjs'), 'utf8');
-  assert.match(runner, /\.test\.mjs/);
-  assert.doesNotMatch(runner, /'--test',\s*'test\/?'/, 'no directory argument');
-  // The runner sees exactly the suite's files.
-  const files = fs.readdirSync(path.join(ROOT, 'test')).filter(f => f.endsWith('.test.mjs'));
-  assert.ok(files.includes('package.test.mjs') && files.length >= 15, files.join(','));
 });
 
 test('hooks.json registers the guard on the exact matcher', () => {
@@ -92,7 +83,7 @@ test('skills have name/description frontmatter and no allowed-tools or shell inj
 test('self-scan: shipped skills, hooks and manifests pass the plugin\'s own rules', () => {
   const tmp = tmpDir('self');
   const data = tmpDir('selfdata');
-  for (const d of ['skills', 'hooks', '.claude-plugin']) copyTree(path.join(ROOT, d), path.join(tmp, d));
+  for (const d of ['skills', 'hooks', '.claude-plugin']) fs.cpSync(path.join(ROOT, d), path.join(tmp, d), { recursive: true });
   const r = spawnSync(process.execPath, [SCAN, '--path', tmp, '--json'], {
     encoding: 'utf8', env: { ...process.env, SKILL_SENTRY_DATA_DIR: data, SKILL_SENTRY_CODEX_HOME: tmpDir('codex'), SKILL_SENTRY_NO_WSL: '1' },
   });

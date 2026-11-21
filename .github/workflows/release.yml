@@ -1,0 +1,188 @@
+name: Release
+
+# On every push to main: run the whole CI (unit matrix + e2e), then the model e2e when its secrets exist, and only
+# if all of that passed, let semantic-release pick the version from the Conventional Commits since the last v* tag,
+# write it into the manifests and CHANGELOG.md, commit `chore: release <version>`, tag v<version> and create the
+# GitHub Release. A push with only docs/chore/ci/test commits releases nothing.
+#
+# workflow_dispatch is a dry run on any branch: the same checks, then `semantic-release --dry-run` prints the
+# next version. It never commits, tags or releases: the publish job runs only for a push to main.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Dry run (a dispatch is always a dry run; only a push to main publishes)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # semantic-release toolchain, installed in CI only (the plugin has no dependencies).
+  SEMANTIC_RELEASE_PACKAGES: >-
+    semantic-release@25.0.9
+    @semantic-release/exec@7.1.0
+    @semantic-release/changelog@7.0.0
+    @semantic-release/git@11.0.1
+    @semantic-release/github@12.0.11
+    conventional-changelog-conventionalcommits@8.0.0
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  model-e2e:
+    name: model e2e
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - name: Check for model API keys
+        id: keys
+        run: |
+          missing=""
+          [ -n "$ANTHROPIC_API_KEY" ] || missing="$missing ANTHROPIC_API_KEY"
+          [ -n "$OPENAI_API_KEY" ] || missing="$missing OPENAI_API_KEY"
+          if [ -n "$missing" ]; then
+            echo "::warning title=model e2e skipped::missing repository secrets:$missing. The agents without a key are not exercised; this does not block the release."
+            echo "### :warning: model e2e: missing secrets:$missing (those agents are skipped; the release is not blocked)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -z "$ANTHROPIC_API_KEY" ] && [ -z "$OPENAI_API_KEY" ]; then echo "run=false" >> "$GITHUB_OUTPUT"; else echo "run=true" >> "$GITHUB_OUTPUT"; fi
+      - if: steps.keys.outputs.run == 'true'
+        uses: actions/checkout@v7
+      - if: steps.keys.outputs.run == 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Install Claude Code and Codex (pinned)
+        if: steps.keys.outputs.run == 'true'
+        run: |
+          npm install -g "@anthropic-ai/claude-code@2.1.330" "@openai/codex@0.171.0"
+          root="$(npm root -g)"
+          claude --version || node "$root/@anthropic-ai/claude-code/install.cjs"
+          claude --version
+          codex --version
+          echo "SKILL_SENTRY_E2E_NPM_ROOT=$root" >> "$GITHUB_ENV"
+      - name: Model e2e
+        if: steps.keys.outputs.run == 'true'
+        env:
+          SKILL_SENTRY_E2E_MODEL: '1'
+        run: node --test --test-reporter=spec test/e2e/model.test.mjs
+
+  publish:
+    # The only job that can write: a push to main, after every check passed.
+    name: release
+    needs: [ci, model-e2e]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      version: ${{ steps.result.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Install semantic-release
+        run: npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/semrel" $SEMANTIC_RELEASE_PACKAGES
+      - name: semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: '"$RUNNER_TEMP/semrel/node_modules/.bin/semantic-release" --extends ./tools/ci/release.config.cjs'
+      - name: Result
+        id: result
+        run: |
+          git fetch --quiet --tags origin
+          head="$(git ls-remote origin refs/heads/main | cut -f1)"
+          tag="$(git tag --points-at "$head" 'v*' | head -n1)"
+          if [ -n "$tag" ] && [ "$head" != "$GITHUB_SHA" ]; then
+            echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+            echo "### released $tag" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### no release (no fix, feat or breaking commit since the last tag)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  dry-run:
+    # A dispatch on any branch: same checks, then semantic-release --dry-run. --dry-run is fixed here, so nothing is
+    # committed, tagged or released. contents: write only because semantic-release checks push access with
+    # `git push --dry-run` even in a dry run.
+    name: release (dry run)
+    needs: [ci, model-e2e]
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Install semantic-release
+        run: npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/semrel" $SEMANTIC_RELEASE_PACKAGES
+      - name: semantic-release --dry-run
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          "$RUNNER_TEMP/semrel/node_modules/.bin/semantic-release" --extends ./tools/ci/release.config.cjs \
+            --dry-run --no-ci --branches "$GITHUB_REF_NAME" 2>&1 | tee "$RUNNER_TEMP/semrel.log"
+          {
+            echo "### semantic-release --dry-run on $GITHUB_REF_NAME"
+            echo '```'
+            grep -E 'next release version|no new version|no relevant changes|associated with version|Published release|Release note for version' "$RUNNER_TEMP/semrel.log" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  pages:
+    # Non-blocking: wait for the Pages build of the release commit, then check that the live page responds and
+    # mentions the version or the Codex section.
+    name: pages check
+    needs: publish
+    if: needs.publish.outputs.version != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    permissions:
+      pages: read
+      contents: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ needs.publish.outputs.version }}
+    steps:
+      - name: Wait for the Pages build and check the page
+        run: |
+          sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+          url="$(gh api "repos/$GITHUB_REPOSITORY/pages" --jq .html_url)"
+          build=""
+          for i in $(seq 1 60); do
+            build="$(gh api "repos/$GITHUB_REPOSITORY/pages/builds/latest" --jq '.commit + " " + .status' || true)"
+            echo "pages build: $build (want: $sha built)"
+            [ "$build" = "$sha built" ] && break
+            sleep 10
+          done
+          [ "$build" = "$sha built" ] || echo "::warning title=pages::the Pages build of $sha did not finish within 10 minutes (last: $build)"
+          page="$(curl -fsSL "$url")" || { echo "::warning title=pages::$url does not respond"; exit 0; }
+          if printf '%s' "$page" | grep -q -e "$VERSION" -e "Codex"; then echo "pages ok: $url mentions $VERSION or Codex"
+          else echo "::warning title=pages::$url mentions neither $VERSION nor Codex"; fi
