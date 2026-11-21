@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0](https://github.com/PauloFH/skill-sentry/compare/v0.1.2...v0.2.0) (2026-11-21)
+
+### Features
+
+* install the audit with npx skills add ([92eb4ae](https://github.com/PauloFH/skill-sentry/commit/92eb4aebac790fd2a2b3f75d645b9e8c8edaa6d4))
+* recognise standalone skill-sentry copies ([4b14b02](https://github.com/PauloFH/skill-sentry/commit/4b14b02296a08f8c5094dc893386ad65a9746354))
+
+### Bug Fixes
+
+* exempt only verified standalone copies and protect skill-sentry-audit paths ([e5dd146](https://github.com/PauloFH/skill-sentry/commit/e5dd146b2c349f27a9a605c1b47002c7314f044c))
+
 ## [0.1.2](https://github.com/PauloFH/skill-sentry/compare/v0.1.1...v0.1.2) (2026-11-21)
 
 ### Bug Fixes
