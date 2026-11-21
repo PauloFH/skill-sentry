@@ -1808,6 +1808,36 @@ test('P3 fix round 1 (I2, M1): relative cd targets and searches by name keep ask
   }
 });
 
+/** 8.3 short form of an existing dir (Windows, via cmd's %~sI), or null when the volume makes none. */
+function shortForm(dir) {
+  if (process.platform !== 'win32') return null;
+  const r = spawnSync('cmd.exe', ['/d', '/s', '/c', `"for %I in ("${dir}") do @echo %~sI"`], { encoding: 'utf8', windowsVerbatimArguments: true });
+  const s = String(r.stdout ?? '').trim();
+  return s && s.toLowerCase() !== dir.toLowerCase() && /~\d/.test(s) ? s : null;
+}
+
+test('CI C-A: an 8.3 hook cwd (C:\\Users\\RUNNER~1\\…) is a trusted base; only what the caller writes is form-checked', t => {
+  const long = path.join(tmp('p83'), 'a-long-project-directory-name');
+  fs.mkdirSync(path.join(long, 'src'), { recursive: true });
+  const data = path.join(tmp('p83data'), 'a-long-data-directory-name', 'skill-sentry');
+  fs.mkdirSync(data, { recursive: true });
+  const short = shortForm(long);
+  const shortData = shortForm(data);
+  if (!short || !shortData) { t.skip('8.3 short names exist only on Windows volumes that generate them'); return; }
+  const w = (file_path, o = {}) => decide({ toolName: 'Write', toolInput: { file_path, content: 'x' }, origin: null, allowlist: EMPTY,
+    selfRoot: SELF, dataDir: o.dataDir ?? DATA, cwd: o.cwd ?? short });
+  assert.equal(w('src/hello.txt').decision, 'none', 'relative path under an 8.3 cwd');
+  assert.equal(w(path.join(short, 'src', 'hello.txt')).decision, 'none', 'the cwd spelling copied into an absolute path');
+  assert.equal(w(`${short.replace(/\\/g, '/')}/src/hello.txt`).decision, 'none', 'same with forward slashes');
+  assert.equal(w(path.join(short, 'src', 'notes.')).ruleId, 'PATH_UNUSUAL_WRITE', 'a trailing dot the caller wrote');
+  assert.equal(w('SRC~1/x.txt').ruleId, 'PATH_UNUSUAL_WRITE', 'an 8.3 name the caller wrote');
+  assert.equal(w(path.join(shortData, 'notes.md')).ruleId, 'PATH_UNUSUAL_WRITE', 'an 8.3 path outside the cwd');
+  // A data dir configured in 8.3 form: its own spelling and a relative path from inside it are self-protect writes.
+  assert.equal(w(path.join(shortData, 'allowlist.json'), { dataDir: shortData }).ruleId, 'SELF_PROTECT_WRITE');
+  assert.equal(w('allowlist.json', { dataDir: data, cwd: shortData }).ruleId, 'SELF_PROTECT_WRITE');
+  assert.equal(w('../skill-sentry/allowlist.json', { dataDir: data, cwd: shortData }).ruleId, 'SELF_PROTECT_WRITE');
+});
+
 test('P3: relative resolutions share the 16-per-decision realpath cap', () => {
   const words = n => Array.from({ length: n }, (_, i) => `d${i}/skill-sentry`).join(' ');
   noneSelf('Bash', `ls ${words(3)}`, atVault);

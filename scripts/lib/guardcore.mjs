@@ -195,12 +195,39 @@ const fileId = p => {
 function makeResolver(cwd, mcp) {
   const io = new Map();
   const state = { left: MAX_IO_PATHS, unresolved: false };
+  // The trusted base (the hook cwd) is canonicalised once: realpath expands 8.3 short names (`C:\Users\RUNNER~1`),
+  // so a path is never flagged as unusual only because the cwd it is relative to is spelled in 8.3 form. A path
+  // written as `<cwd spelling>/rest` counts the same way: only `rest` (what the caller wrote) is form-checked.
+  const cwdGiven = str(cwd) ? path.resolve(cwd) : null;
+  let base;
+  const baseDir = () => {
+    if (base === undefined) {
+      const c = cwdGiven ?? process.cwd();
+      try { base = fs.realpathSync.native(c); } catch { base = c; }
+    }
+    return base;
+  };
+  const cwdSpelling = cwdGiven ? lowerOnWin(slashes(cwdGiven)) : null;
   const get = p => {
     const raw = String(p);
+    let written = raw;
     let abs = raw;
-    try { abs = path.resolve(cwd || process.cwd(), plainPath(raw)); } catch { /* keep raw */ }
+    try {
+      const plain = plainPath(raw);
+      const fwd = lowerOnWin(slashes(plain));
+      // (Lowercasing must keep the length, so the prefix can be cut from the written path at the same index.)
+      if (cwdSpelling && cwdSpelling.length > 3 && lowerOnWin(plain).length === plain.length
+        && (fwd === cwdSpelling || fwd.startsWith(`${cwdSpelling}/`))) {
+        written = plain.slice(cwdSpelling.length).replace(/^[\\/]+/, '');
+        abs = path.join(baseDir(), written);
+      } else {
+        abs = path.resolve(baseDir(), plain);
+      }
+    } catch { /* keep raw */ }
     const checkForm = !mcp || PATH_SHAPED.test(raw);
-    const unusual = checkForm && (isUnusualPath(raw) || isUnusualPath(abs));
+    // Relative paths: only the written form is checked (the base is trusted and canonical).
+    const relative = written !== raw || !path.isAbsolute(plainPath(raw));
+    const unusual = checkForm && (isUnusualPath(written) || (!relative && isUnusualPath(abs)));
     if (unusual || (mcp && URL_LIKE.test(raw))) return { abs, long: null, unusual, io: null };
     const key = normForCompare(abs);
     let e = io.get(key);
@@ -966,7 +993,9 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
 
   if (t.writePaths.length) {
     const protectedRoots = [dataDir, selfRoot].filter(str);
-    const roots = protectedRoots.map(canonRoot);
+    // Canonical and as-given forms: a data dir configured in 8.3 form (`C:\Users\RUNNER~1\…`) matches the spelling
+    // a caller copies from it, which is form-checked (unusual) and so never realpath-resolved.
+    const roots = protectedRoots.flatMap(rootForms);
     const rootIds = new Set(protectedRoots.map(r => fileId(path.resolve(r))).filter(Boolean));
     for (const p of t.writePaths) {
       const r = R.get(p);

