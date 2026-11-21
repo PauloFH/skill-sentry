@@ -173,8 +173,8 @@ const CODEX_RECS = [
   {
     id: 'hooks-enabled', rules: ['CODEX_HOOKS_DISABLED'],
     title: 'Keep Codex hooks enabled',
-    why: 'features.hooks = false turns every hook off, including the skill-sentry guard, so risky commands are no longer checked.',
-    snippet: () => '[features]\nhooks = true',
+    why: 'features.hooks = false (or the deprecated features.codex_hooks = false) turns every hook off, including the skill-sentry guard, so risky commands are no longer checked.',
+    snippet: () => '[features]\nhooks = true\n# and delete any "codex_hooks = false" line',
   },
   {
     id: 'trust-guard-hook', title: 'Trust the skill-sentry hook',
@@ -200,9 +200,11 @@ const guardHook = c => {
 /**
  * Recommendations for a Codex install. Recommend only: applicable is always false.
  * @param {object[]} components output of discoverCodex().components (kinds config, rules, mcp, hook, ...)
- * @returns {{id:string,title:string,why:string,snippet:string,applicable:false,present:boolean,homes?:string[]}[]}
+ * @param {{ noHome?: boolean }} [opts] `noHome`: no Codex home was found, so nothing could be checked (m2): every
+ *   item is `present: null` with a note instead of reading as already done.
+ * @returns {{id:string,title:string,why:string,snippet:string,applicable:false,present:boolean|null,homes?:string[],note?:string}[]}
  */
-export function checkCodexHardening(components) {
+export function checkCodexHardening(components, { noHome = false } = {}) {
   const list = Array.isArray(components) ? components : [];
   const hits = new Map(); // rule id -> [{c, f}]
   const reviewer = [];
@@ -221,6 +223,7 @@ export function checkCodexHardening(components) {
       : r.rules.flatMap(id => hits.get(id) ?? []);
     const rec = { id: CODEX_PREFIX + r.id, title: r.title, why: r.why, snippet: r.snippet(found), applicable: false, present: found.length === 0 };
     if (found.length) rec.homes = [...new Set(found.map(({ c }) => c.meta?.home).filter(Boolean))];
+    if (noHome) Object.assign(rec, { present: null, note: 'no Codex home found' });
     return rec;
   });
 }
@@ -251,7 +254,7 @@ function codexRecommendations(o) {
     env: process.env, homeDir, platform: process.platform, explicit: o.codexHomes,
     includeWsl: !o.noWsl && process.env.SKILL_SENTRY_NO_WSL !== '1', problems: [],
   });
-  return checkCodexHardening(discoverCodex({ homes }).components);
+  return checkCodexHardening(discoverCodex({ homes }).components, { noHome: homes.length === 0 });
 }
 
 function main(argv) {

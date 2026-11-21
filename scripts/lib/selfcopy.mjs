@@ -40,6 +40,8 @@ const MAX_MARKER_BYTES = 4096;
 // Never shipped: VCS and gitignored dev dirs of a checkout. Skipped on the running scanner's side only (it may
 // run from a dev checkout); on the side of the copy under inspection they are files like any other.
 const DEV_DIRS = new Set(['.git', 'node_modules', '.omc', '.superpowers', 'docs/superpowers']);
+// Top-level dirs skipped in the copy being compared: only those the scanner also never reads (inventory SKIP_DIRS).
+const OTHER_COPY_SKIP_DIRS = new Set(['.git', 'node_modules']);
 
 const late = deadline => deadline !== undefined && Date.now() >= deadline;
 const abs = (root, rel) => path.join(root, ...rel.split('/'));
@@ -144,7 +146,9 @@ export function isCopyOfSelf(root, selfRoot, { limits = COPY_LIMITS, deadline } 
     }
     const mine = shippedFiles(selfRoot, { skipDirs: DEV_DIRS, limits, deadline });
     if (!mine || !mine.size) return false;
-    const theirs = shippedFiles(root, { allowed: new Set(mine.keys()), limits, deadline });
+    // m6: the other copy may carry a `.git` (or `node_modules`) dir too; nothing in either is ever executed and the
+    // scanner never reads them. Every other extra file still makes the copy not-self.
+    const theirs = shippedFiles(root, { allowed: new Set(mine.keys()), skipDirs: OTHER_COPY_SKIP_DIRS, limits, deadline });
     if (!theirs || theirs.size !== mine.size) return false;
     for (const [rel, size] of theirs) if (!sameUpToEol(size, mine.get(rel))) return false;
     for (const [rel, size] of theirs) {

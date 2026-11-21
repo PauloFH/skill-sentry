@@ -1300,6 +1300,22 @@ test('codex guard p50 under 150ms for a none decision', async () => {
   assert.ok(median < 150, `median ${median.toFixed(1)} ms`);
 });
 
+// ---------------------------------------------------------------- final review m3: backslash-newline
+test('codex m3: a backslash-newline inside the apply_patch command word is joined, so the non-inline call is denied', async () => {
+  const AP = j('apply', '_patch');
+  for (const command of [`apply\\\n_patch < p.txt`, `ap\\\nply_patch < p.txt`, `apply\\\r\n_patch < p.txt`, `bash -c 'apply\\\n_patch < p.txt'`]) {
+    const sp = shellPatch(command);
+    assert.ok(sp && sp.inline === false, `${JSON.stringify(command)} -> ${JSON.stringify(sp)}`);
+    const r = await runGuard(codex('Bash', { command }));
+    assert.match(assertDeny(JSON.parse(r.stdout), command), /PATCH_UNINSPECTABLE/, command);
+  }
+  // An inline heredoc patch whose body has a backslash-newline is still read from the original text.
+  const inline = shellPatch(`${AP} <<'EOF'\n*** Begin Patch\n*** Add File: a.txt\n+x \\\n+y\n*** End Patch\nEOF`);
+  assert.ok(inline && inline.inline === true, JSON.stringify(inline));
+  assert.deepEqual(inline.paths, ['a.txt']);
+  assert.equal(shellPatch('echo apply\\\nX'), null);
+});
+
 // ---------------------------------------------------------------- final review I3: Codex control files
 test('codex I3: attributed writes to Codex config, hooks, rules (patch and shell) are paused; unattributed ones are logged', async () => {
   const home = os.homedir().replace(/\\/g, '/');

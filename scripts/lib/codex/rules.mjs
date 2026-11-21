@@ -31,7 +31,7 @@ export const CODEX_RULES = [
     'MCP tools auto-approved (approval mode "approve"); high when the server comes from a plugin or is remote'),
   rule('CODEX_TRUSTED_TMP_PROJECT', 'config', 'medium', 'Project under a temp directory marked trusted: its config, hooks and rules load'),
   rule('CODEX_HOOK_TRUST_BYPASS', 'config', 'high', 'Hook trust bypass flag: unreviewed hooks run without the trust check'),
-  rule('CODEX_HOOKS_DISABLED', 'config', 'medium', '[features] hooks = false: no hook runs, including the skill-sentry guard'),
+  rule('CODEX_HOOKS_DISABLED', 'config', 'medium', '[features] hooks = false (or the deprecated codex_hooks = false): no hook runs, including the skill-sentry guard'),
   rule('CODEX_ENV_SECRETS_PASSED', 'config', 'info',
     'shell_environment_policy.ignore_default_excludes is true or unset (default true): secret-looking env vars reach commands'),
   rule('CODEX_RULES_ERROR', 'config', 'info', 'The Codex config rules failed on this component; it was not evaluated (verdict at least review)'),
@@ -129,7 +129,9 @@ function layerFindings(c, raw, src) {
     if (never && full) out.push(emit('CODEX_NO_APPROVAL_FULL_ACCESS', `${where}approval_policy = "never" with sandbox_mode = "danger-full-access" in ${src}`));
     else if (never) out.push(emit('CODEX_APPROVAL_NEVER', `${where}approval_policy = "never" in ${src}`));
     else if (full) out.push(emit('CODEX_SANDBOX_FULL_ACCESS', `${where}sandbox_mode = "danger-full-access" in ${src}`));
-    if (isObj(v.features) && v.features.hooks === false) out.push(emit('CODEX_HOOKS_DISABLED', `${where}features.hooks = false in ${src}`));
+    // `codex_hooks` is the deprecated alias of `hooks` (m1): either one set to false is reported.
+    const off = isObj(v.features) ? ['hooks', 'codex_hooks'].filter(k => v.features[k] === false) : [];
+    if (off.length) out.push(emit('CODEX_HOOKS_DISABLED', `${where}${off.map(k => `features.${k} = false`).join(', ')} in ${src}`));
     // Final review I4: developer_instructions reach the model like an AGENTS.md, so they get the same text rules
     // (as markdown); snippets redacted. The trust-bypass flag is reported by the leaf loop, not here.
     if (typeof v.developer_instructions === 'string') {

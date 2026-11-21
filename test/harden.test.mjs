@@ -160,6 +160,36 @@ test('codex: every recommendation is recommend-only and carries a fixed snippet'
   }
 });
 
+test('codex m1: the deprecated [features] codex_hooks = false alias fires codex-hooks-enabled', () => {
+  assert.equal(recsOf({ 'config.toml': SAFE_CONFIG })['codex-hooks-enabled'].present, true);
+  for (const bad of ['[features]\ncodex_hooks = false\n', '[features]\nhooks = true\ncodex_hooks = false\n', '[profiles.p.features]\ncodex_hooks = false\n']) {
+    assert.equal(recsOf({ 'config.toml': SAFE_CONFIG + bad })['codex-hooks-enabled'].present, false, bad);
+  }
+});
+
+test('codex m2: with no Codex home, every Codex recommendation is present: null with a note', () => {
+  const env = { ...process.env, SKILL_SENTRY_CLAUDE_HOME: tmpHome(), SKILL_SENTRY_HOME_DIR: tmpCodex(), SKILL_SENTRY_NO_WSL: '1' };
+  delete env.CODEX_HOME;
+  delete env.SKILL_SENTRY_CODEX_HOME;
+  for (const extra of [{}, { SKILL_SENTRY_CODEX_HOME: path.join(tmpCodex(), 'missing') }]) {
+    const r = spawnSync(process.execPath, [HARDEN, 'check', '--agent', 'codex'], { encoding: 'utf8', env: { ...env, ...extra } });
+    assert.equal(r.status, 0, r.stderr);
+    const recs = JSON.parse(r.stdout);
+    assert.deepEqual(recs.map(x => x.id), CODEX_IDS);
+    for (const x of recs) {
+      assert.equal(x.present, null, x.id);
+      assert.equal(x.note, 'no Codex home found', x.id);
+    }
+  }
+  // A home that exists keeps the boolean answers.
+  const dir = tmpCodex();
+  fs.writeFileSync(path.join(dir, 'config.toml'), SAFE_CONFIG);
+  for (const x of JSON.parse(runCx(dir, ['check', '--agent', 'codex']).stdout)) {
+    assert.equal(typeof x.present, 'boolean', x.id);
+    assert.equal(x.note, undefined, x.id);
+  }
+});
+
 test('codex: a safe config leaves every recommendation present', () => {
   // The guard hook is not installed here: nothing to trust.
   for (const r of checkCodexHardening(inventory({ 'config.toml': SAFE_CONFIG }).components)) assert.equal(r.present, true, r.id);

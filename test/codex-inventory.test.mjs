@@ -213,6 +213,19 @@ test('discoverCodex: dev-only dirs of the running checkout are not part of its s
   assert.equal(pluginOf(discoverCodex({ homes: [home], projectDir: null, selfRoot: self }).components).self, true);
 });
 
+test('discoverCodex m6: a same-version copy carrying .git (or node_modules) is still self; other extra dirs are not', () => {
+  const self = buildSelfTree(tmp('self'));
+  const extra = rel => c => { fs.mkdirSync(path.dirname(path.join(c, rel)), { recursive: true }); fs.writeFileSync(path.join(c, rel), 'x\n'); };
+  for (const rel of ['.git/HEAD', '.git/hooks/pre-commit', 'node_modules/x/index.js']) {
+    const { home } = codexHomeWithCopy(self, extra(rel));
+    assert.equal(pluginOf(discoverCodex({ homes: [home], projectDir: null, selfRoot: self }).components).self, true, rel);
+  }
+  for (const rel of ['.omc/run.mjs', 'docs/superpowers/x.mjs', 'scripts/lib/.git/x.mjs', 'extra.mjs']) {
+    const { home } = codexHomeWithCopy(self, extra(rel));
+    assert.ok(!pluginOf(discoverCodex({ homes: [home], projectDir: null, selfRoot: self }).components).self, rel);
+  }
+});
+
 test('discoverCodex: Claude Code in-use markers (.in_use/<pid>) on either side do not break a same-version match', () => {
   const marker = (dir, pid) => {
     fs.mkdirSync(path.join(dir, '.in_use'), { recursive: true });

@@ -584,6 +584,15 @@ test('redaction I1: quoted header values (JSON key, quoted value, whole quoted h
   assert.equal(redactSecrets(`"x-api-key": "${V1} ${V2}\nnext line`), '"x-api-key": "<redacted>\nnext line');
 });
 
+test('m1: CODEX_HOOKS_DISABLED also fires on the deprecated [features] codex_hooks = false alias', () => {
+  for (const text of ['[features]\ncodex_hooks = false\n', '[features]\nhooks = true\ncodex_hooks = false\n', '[profiles.p.features]\ncodex_hooks = false\n']) {
+    const f = only(codexConfigFindings(cfg(text)), 'CODEX_HOOKS_DISABLED');
+    assert.equal(f.length, 1, text);
+    assert.match(f[0].snippet, /codex_hooks = false/, text);
+  }
+  assert.deepEqual(only(codexConfigFindings(cfg('[features]\ncodex_hooks = true\nhooks = true\n')), 'CODEX_HOOKS_DISABLED'), []);
+});
+
 test('I4: developer_instructions get the text rules (root, profiles, agent TOML), redacted, like an AGENTS.md', () => {
   // Fragment-assembled injection text; the secret is shapeless so only header redaction can hide it.
   const V = ['Hd5Je0Fq', 'Zx1Cv2Bn'].join('');

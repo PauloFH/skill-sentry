@@ -384,8 +384,11 @@ const MAYBE = /apply_?patch/i;
  */
 export function shellPatch(command) {
   if (typeof command !== 'string') return null;
-  let maybe = MAYBE.test(command);
-  if (!maybe) try { maybe = MAYBE.test(deobfuscate(command)); } catch { maybe = true; }
+  // m3: a backslash-newline inside the command word (`apply\<newline>_patch`) is a line continuation; join it for
+  // finding the invocation only (as guardcore does). Header paths are still read from the original text.
+  const joined = command.replace(/\\\r?\n/g, '');
+  let maybe = MAYBE.test(command) || MAYBE.test(joined);
+  if (!maybe) try { maybe = MAYBE.test(deobfuscate(joined)); } catch { maybe = true; }
   if (!maybe) return null;
   const uninspectable = { paths: [], truncated: false, workdir: null, inline: false };
   try {
@@ -395,11 +398,12 @@ export function shellPatch(command) {
     } catch {
       return { ...uninspectable, ...scanPatch(command), inline: false };
     }
-    // cmd `^` / PowerShell backtick escapes inside the command word (`ap^ply_patch`, ap`ply_patch): one more
-    // pass over the text without them, only when the raw scan found nothing (quote structure is kept). This
+    // cmd `^` / PowerShell backtick escapes and backslash-newlines inside the command word (`ap^ply_patch`,
+    // ap`ply_patch, apply\<newline>_patch): one more pass over the text without them, only when the raw scan found
+    // nothing (quote structure is kept). This
     // text is a guess, not what a shell parses: when it cannot be scanned to the end it is ignored.
     if (!calls.length) {
-      const unescaped = command.replace(/\^/g, '').replace(/`(?=[A-Za-z])/g, '');
+      const unescaped = joined.replace(/\^/g, '').replace(/`(?=[A-Za-z])/g, '');
       if (unescaped !== command) {
         try { scan(unescaped, 0, 0, calls = [], false); } catch (e) { if (!(e instanceof Incomplete)) throw e; calls = []; }
       }

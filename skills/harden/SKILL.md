@@ -38,6 +38,7 @@ Check the user's Claude Code settings and apply only the hardening items the use
 Every Codex item has an id starting with `codex-` and `applicable: false`. They are recommendations only.
 
 - For each item with `present: false`, explain what it does and why it reduces risk, then show its `snippet` exactly as printed. The user pastes it into `config.toml` (or the rules file the snippet names) themselves.
+- `present: null` with `note: "no Codex home found"` means there was nothing to check. Say that no Codex install was found; do not report these items as done.
 - Never edit `config.toml`, a rules file or anything else under the Codex home yourself, and do not offer to. `apply` refuses `codex-` ids and exits with code 2.
 - Snippets are fixed recommended text and never contain the user's own values. Where a snippet lists key names, the values stay in the user's file.
 - `codex-trust-guard-hook` is not a TOML change: the user opens `/hooks` in Codex and trusts the skill-sentry hook there.
