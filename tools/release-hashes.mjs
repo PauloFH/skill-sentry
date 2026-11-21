@@ -2,7 +2,9 @@
 // Dev tool: prints the KNOWN_RELEASES / KNOWN_RELEASE_SIZES entries (scripts/lib/releases.mjs) for one release.
 // Not part of the plugin runtime: nothing under scripts/ imports it.
 //
-// For each new release, after tagging it (example: v0.1.1):
+// Releases are tagged by the release pipeline (docs/RELEASING.md). test/known-releases.test.mjs fails every pull
+// request after a release until that release's entry is added here, in a `chore:` commit that ships with the next
+// release. For each new release, once it is tagged (example: v0.1.1):
 //   1. Export the tagged tree into an empty temp dir (exactly what a marketplace install of the tag contains):
 //        mkdir <tmp> && git archive v0.1.1 | tar -x -C <tmp>
 //   2. Print its entry:
