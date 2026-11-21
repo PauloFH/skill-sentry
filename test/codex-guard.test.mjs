@@ -886,6 +886,31 @@ test('codex: the SKILL.md read exemption is Codex-only (Claude Code still asks; 
   const back = path.join(SELF_REAL, 'skills', 'audit', 'SKILL.md');
   assert.equal(decide({ ...base, toolName: 'Bash', toolInput: { command: `cat "${back.replace(/\//g, '\\')}"` }, selfViews: true }).ruleId, 'SELF_PROTECT');
 });
+test('codex: harden check --agent <claude|codex|all> and scan --agent <...> pass (the Codex harden flow needs --agent codex)', async () => {
+  const harden = fwdSlash(path.join(SELF_REAL, 'scripts', 'harden.mjs'));
+  const scan = fwdSlash(path.join(SELF_REAL, 'skills', 'audit', '..', '..', 'scripts', 'scan.mjs'));
+  for (const command of [
+    `node "${harden}" check --agent codex`, `node "${harden}" check --agent all`, `node "${harden}" check --agent claude`,
+    `node "${scan}" --json --agent codex`, `node "${scan}" --agent all --json`, `node "${scan}" --json --diff-only --agent claude`,
+  ]) {
+    const r = await runGuard(codex('Bash', { command }));
+    assert.equal(r.stdout, '', command);
+  }
+  for (const command of [
+    `node "${harden}" check --agent`, `node "${harden}" check --agent x`, `node "${harden}" check --agent codex --agent all`,
+    `node "${harden}" check --agent codex --codex-home /tmp/x`, `node "${harden}" apply --agent codex`,
+    `node "${scan}" --json --agent`, `node "${scan}" --agent codex --update-baseline`, `node "${scan}" --agent=codex`,
+    `node "${scan}" --agent codex --agent claude`, `node "${scan}" --agent ,codex,--update-baseline`, `node "${scan}" --agent '' codex`,
+  ]) {
+    const r = await runGuard(codex('Bash', { command }));
+    assert.match(assertDeny(JSON.parse(r.stdout), command), RUN_YOURSELF, command);
+  }
+});
+test('codex: the --agent self-invocation tokens are Codex-only (Claude Code still asks)', async () => {
+  const harden = fwdSlash(path.join(SELF_REAL, 'scripts', 'harden.mjs'));
+  const r = await runGuard(claude('Bash', { command: `node "${harden}" check --agent codex` }));
+  assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'ask');
+});
 test('codex: apply_patch to a normal file → none', async () => {
   const patch = '*** Begin Patch\n*** Add File: src/hello.txt\n+hi\n*** Update File: README.md\n@@\n-a\n+b\n*** End Patch';
   const r = await runGuard(codex('apply_patch', { command: patch }));

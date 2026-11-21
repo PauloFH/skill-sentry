@@ -543,8 +543,25 @@ function rootForms(r) {
 const SELF_INVOCATION = /^node(?:\.exe)? +(?:"([^"]*)"|'([^']*)'|([^ "']+))((?: +[^ ]+)*) *$/i;
 const SELF_PATH = /^[A-Za-z0-9 ._:/\\~-]+$/;
 
-/** Exact read-only self invocation (Ruling M); mutating or parameterized forms return false. */
-export function isReadOnlySelfInvocation(cmd, selfRoot, toolName = 'Bash') {
+const AGENT_VALUES = new Set(['claude', 'codex', 'all']);
+/** Fixed tokens only: flags from `flags` (repeatable) and, with `agentFlag`, one `--agent claude|codex|all` pair. */
+function fixedTokens(args, flags, agentFlag) {
+  let agent = false;
+  for (let i = 0; i < args.length; i++) {
+    if (flags.has(args[i])) continue;
+    if (agentFlag && !agent && args[i] === '--agent' && AGENT_VALUES.has(args[i + 1])) { agent = true; i++; continue; }
+    return false;
+  }
+  return true;
+}
+const SCAN_FLAGS = new Set(['--json', '--diff-only']);
+
+/**
+ * Exact read-only self invocation (Ruling M); mutating or parameterized forms return false.
+ * `agentFlag` (Codex only, T7) also accepts one `--agent claude|codex|all` pair after `scan.mjs` or `harden.mjs check`:
+ * a closed set of values that only narrows what is read (and a partial scan never writes the baseline).
+ */
+export function isReadOnlySelfInvocation(cmd, selfRoot, toolName = 'Bash', { agentFlag = false } = {}) {
   if (!str(cmd) || !str(selfRoot)) return false;
   const m = SELF_INVOCATION.exec(cmd);
   if (!m) return false;
@@ -555,8 +572,8 @@ export function isReadOnlySelfInvocation(cmd, selfRoot, toolName = 'Bash') {
   const target = lowerOnWin(slashes(path.resolve(script)));
   const is = name => rootForms(selfRoot).some(f => target === `${f}/scripts/${lowerOnWin(name)}`);
   const args = m[4].split(' ').filter(Boolean);
-  if (is('harden.mjs')) return args.length === 1 && args[0] === 'check';
-  return is('scan.mjs') && args.every(a => a === '--json' || a === '--diff-only');
+  if (is('harden.mjs')) return args[0] === 'check' && fixedTokens(args.slice(1), new Set(), agentFlag);
+  return is('scan.mjs') && fixedTokens(args, SCAN_FLAGS, agentFlag);
 }
 
 // Codex only (T7): Codex has no Skill tool, the model loads a skill by reading its SKILL.md with the shell.
@@ -678,7 +695,7 @@ export function decide({ toolName, toolInput, origin = null, allowlist = null, s
       const ask = reason => ({ decision: 'ask', ruleId: 'SELF_PROTECT', severity: 'high', reason, snippet: snip(c) });
       if (ps && changesPsDrive(c)) return ask('PowerShell command creates or removes a drive (Ruling R14)');
       if (relinksClaude(c, ps)) return ask('shell command moves or links the Claude config directory');
-      if (isReadOnlySelfInvocation(c, selfRoot, toolName)) continue; // Rulings L2, L3
+      if (isReadOnlySelfInvocation(c, selfRoot, toolName, { agentFlag: selfViews })) continue; // Rulings L2, L3 (+ Codex --agent)
       if (selfViews && isReadOnlySelfView(c, selfRoot, toolName)) continue; // Codex skill loading (T7)
       // Line continuations (bash `\`, PowerShell backtick) are joined in the de-obfuscated copy.
       const joined = String(c).replace(/\\\r?\n/g, '').replace(/`\r?\n/g, ' ');
