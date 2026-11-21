@@ -45,3 +45,35 @@ practice: a scanner recognises copies of itself byte for byte (`isCopyOfSelf`, i
 later release lists all earlier ones; no table can list a release newer than itself. `test/known-releases.test.mjs` checks
 the rule on every pull request: every release tag reachable from `HEAD` except the newest must be in the table, and
 every entry must match a clean `git archive` of its tag.
+
+## Recovery
+
+semantic-release pushes the release commit first, then the tag, then creates the GitHub Release; a failure in the
+middle leaves one of these states. A failed release also opens a GitHub issue (`failComment`).
+
+**The release commit is on `main`, its tag is not.** `main` then carries `chore: release X.Y.Z` with version X.Y.Z in
+the manifests, but the last tag is still the previous release. Left alone, the next run analyses those same commits
+again: it would release X.Y.Z a second time on a newer commit (two commits claiming one version, a duplicated
+CHANGELOG section), or a different version while the manifests already said X.Y.Z. Fix it before anything else
+merges, in one of two ways:
+- tag the release commit by hand, then create its Release (next item):
+  `git tag vX.Y.Z <sha of the chore: release X.Y.Z commit> && git push origin vX.Y.Z`
+  (the ruleset must let you push the tag);
+- or revert the release commit through a pull request (`git revert <sha>`); the next push to `main` releases X.Y.Z
+  again, cleanly.
+
+**The tag exists, the GitHub Release does not.** Create the Release from the tag:
+`gh release create vX.Y.Z --verify-tag --title vX.Y.Z --notes-file <notes>`, with the notes being the release's
+section of `CHANGELOG.md` (from its `## [X.Y.Z]` heading to the next `## `). `--notes-from-tag` is not enough here:
+semantic-release creates lightweight tags, which carry no message.
+
+**`record-release` cannot hash a released tree.** The prepare step fails and nothing is pushed. Causes and fixes:
+- a symlink or special file in the tag: no scanner can vouch for such a tree (`shippedFiles` refuses links), so the
+  release can never be recognised. Remove the link in a `fix:` commit, and list the old version in
+  `tools/ci/release/unrecordable.json` (`{ "X.Y.Z": "contains a symlink" }`), which `record-release` and
+  `test/known-releases.test.mjs` skip;
+- a size limit (more than 3000 files, 500 directories or 64 MB): the runtime has the same limits
+  (`scripts/lib/selfcopy.mjs` COPY_LIMITS), so raise both together in a `fix:` commit, or list the version as above;
+- `export-ignore` in a `.gitattributes`: `git archive` then leaves files out that a git install still contains, so
+  the recorded entry would never match an install. Do not use `export-ignore`; if one was added, remove it in a
+  `fix:` commit and list the affected version as above.

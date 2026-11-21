@@ -43,7 +43,10 @@ test('releases: every release tag but the newest is in KNOWN_RELEASES, and every
     return;
   }
   const [newest, ...older] = tags;
-  for (const tag of older) {
+  // Releases the pipeline cannot record (docs/RELEASING.md, "Recovery") are listed with a reason.
+  const skipFile = path.join(ROOT, 'tools', 'ci', 'release', 'unrecordable.json');
+  const unrecordable = fs.existsSync(skipFile) ? JSON.parse(fs.readFileSync(skipFile, 'utf8')) : {};
+  for (const tag of older.filter(x => !Object.hasOwn(unrecordable, x.slice(1)))) {
     assert.ok(KNOWN_RELEASES[tag.slice(1)], `KNOWN_RELEASES has no entry for ${tag.slice(1)}: the release after it should have recorded it`);
   }
   for (const tag of [newest, ...older].filter(x => KNOWN_RELEASES[x.slice(1)])) {

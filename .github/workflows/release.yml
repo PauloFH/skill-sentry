@@ -35,9 +35,13 @@ jobs:
     # A real model asked to run a fixed, harmless high-risk command; the installed guard must block it. Push to main
     # only: the keys never reach pull request code. They live in the `model-e2e` environment (deployments limited
     # to main) or in repository secrets; without them the job warns and succeeds, so it does not block a release.
+    # Not on the release commit's own run (`chore: release x.y.z`, pushed by the release App): that run releases
+    # nothing, so the model calls would be spent twice per release.
     name: model e2e
     needs: ci
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      !startsWith(github.event.head_commit.message, 'chore: release ')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: model-e2e
@@ -83,12 +87,16 @@ jobs:
 
   publish:
     # The only job that changes the repository: a push to main, after every check passed. Its own token stays
-    # read-only; every write uses the release App's token.
+    # read-only; every write uses the release App's token. The App key lives in the `release` environment, whose
+    # deployments are restricted to main. A skipped model e2e (only on the release commit's own run) does not stop it.
     name: release
     needs: [ci, model-e2e]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      always() && github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      needs.ci.result == 'success' && (needs.model-e2e.result == 'success' || needs.model-e2e.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    environment: release
     permissions:
       contents: read
     outputs:

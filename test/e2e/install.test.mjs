@@ -392,6 +392,22 @@ function defineTests() {
     } finally { await s.close(); }
   });
 
+  if (process.env.SKILL_SENTRY_E2E_CRITICAL === '1') {
+    test('A: real codex: a download piped to a shell is blocked before it runs', async () => {
+      const { s, threadId } = await codexSession(A);
+      try {
+        stub.state.command = CRITICAL_SAFE;
+        stub.reset();
+        const { out: r, log } = await newLog(A.home, () => codexTurn(s, threadId));
+        assert.equal(r.hooks[0]?.status, 'blocked', JSON.stringify(r.hooks));
+        assert.match(stub.toolResults[0]?.text ?? '', CODEX_BLOCKED);
+        assert.match(stub.toolResults[0].text, /skill-sentry/);
+        assert.equal(log.at(-1)?.decision, 'deny');
+        assert.equal(log.at(-1)?.ruleId, 'RCE_DOWNLOAD_PIPE_SHELL');
+      } finally { await s.close(); }
+    });
+  }
+
   test('A: real codex: writing into the installed copy is blocked (self-protect)', async () => {
     const probe = path.join(a.codexRoot, 'e2e-probe.txt');
     const { s, threadId } = await codexSession(A);
@@ -416,11 +432,18 @@ function defineTests() {
   // ======================================================================= B. git marketplace
 
   const B = makeHome('git');
-  const GIT_URL = 'https://github.com/skill-sentry-e2e/skill-sentry.git';
-  const b = { claudeRoot: null, codexRoot: null, firstHash: null };
+  // A URL under the repository owner's own account that must NEVER exist on GitHub: the tmp ~/.gitconfig rewrites
+  // it to the local bare repo, and if that rewrite were ever lost, git must fail instead of fetching someone's code.
+  const GIT_URL = 'https://github.com/PauloFH/skill-sentry-e2e-fixture.git';
+  const b = { claudeRoot: null, codexRoot: null, firstHash: null, src: path.join(B.base, 'src'), verified: false };
+  // Every B test after the install check refuses to run (fails fast) unless both installed trees equal the export.
+  const bTest = (name, fn) => test(name, async t => {
+    assert.ok(b.verified, 'B: the git-installed trees were not verified against the export; nothing is run from them');
+    await fn(t);
+  });
 
   test('B: a bare git repo of HEAD serves the marketplace URL (insteadOf in the tmp ~/.gitconfig)', async () => {
-    const src = path.join(B.base, 'src');
+    const src = b.src;
     exportHead(REPO, src);
     gitMarketplace(src, { base: B.base, home: B.home, url: GIT_URL });
     const r = await run(['git'], ['ls-remote', GIT_URL, 'HEAD'], { env: B.env, cwd: B.work });
@@ -438,7 +461,16 @@ function defineTests() {
     assert.ok(fs.existsSync(path.join(b.codexRoot, '.git')), 'a git install carries .git');
   });
 
-  test('B: codex first start writes the install marker, which changes the hook fingerprint', async () => {
+  test('B: both git-installed trees equal the export of HEAD (before any of their hooks runs)', () => {
+    // The export, minus what `git init` added to it for the bare repo.
+    const want = new Map([...readTree(b.src)].filter(([rel]) => !rel.startsWith('.git/')));
+    assert.ok(want.size > 50, `export has ${want.size} files`);
+    assertSameTree(want, b.claudeRoot, 'claude git copy');
+    assertSameTree(want, b.codexRoot, 'codex git copy');
+    b.verified = true;
+  });
+
+  bTest('B: codex first start writes the install marker, which changes the hook fingerprint', async () => {
     const s = await appServer(cli.codex, { env: B.env, cwd: B.work });
     try {
       const first = ourHook(await s.request('hooks/list', { cwds: [B.work] }));
@@ -454,13 +486,13 @@ function defineTests() {
     } finally { await s.close(); }
   });
 
-  test('B: codex trust after the first start holds on a fresh start', async () => {
+  bTest('B: codex trust after the first start holds on a fresh start', async () => {
     const trusted = await trustCodexHook(B);
     assert.notEqual(trusted, b.firstHash);
     await assertCodexHookTrusted(B, b.codexRoot);
   });
 
-  test('B: real claude code runs the hook from the plugin cache (self-protect ask)', async () => {
+  bTest('B: real claude code runs the hook from the plugin cache (self-protect ask)', async () => {
     const probe = path.join(b.claudeRoot, 'e2e-probe.txt');
     stub.state.command = `touch "${slash(probe)}"`;
     const { out: r, log } = await newLog(B.home, () => claudeTurn(cli, { env: B.env, cwd: B.work, stubUrl: stub.url }));
@@ -472,7 +504,7 @@ function defineTests() {
     assert.ok(!fs.existsSync(probe), 'the command must not have run');
   });
 
-  test('B: real codex runs the trusted hook from the plugin cache (secret read blocked)', async () => {
+  bTest('B: real codex runs the trusted hook from the plugin cache (secret read blocked)', async () => {
     plantFakeKey(B.work);
     const { s, threadId } = await codexSession(B);
     try {
@@ -485,7 +517,7 @@ function defineTests() {
     } finally { await s.close(); }
   });
 
-  test('B: installed scanners still recognise both git-installed copies (marker included) as skill-sentry', async () => {
+  bTest('B: installed scanners still recognise both git-installed copies (marker included) as skill-sentry', async () => {
     plantEvilSkills(B);
     await assertScanners(B, [['claude', b.claudeRoot], ['codex', b.codexRoot]]);
   });

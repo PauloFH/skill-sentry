@@ -59,7 +59,9 @@ export function isolatedEnv(base) {
   const home = path.join(base, 'home');
   const env = { ...process.env };
   for (const k of Object.keys(env)) {
-    if (/^(SKILL_SENTRY_|CLAUDE|CODEX_|ANTHROPIC_|OPENAI_)/i.test(k)) delete env[k];
+    // GIT_CONFIG_* covers GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM, GIT_CONFIG_NOSYSTEM and GIT_CONFIG_COUNT/KEY/VALUE:
+    // git must read only the tmp home's ~/.gitconfig (the marketplace insteadOf lives there).
+    if (/^(SKILL_SENTRY_|CLAUDE|CODEX_|ANTHROPIC_|OPENAI_|GIT_CONFIG)/i.test(k)) delete env[k];
   }
   Object.assign(env, {
     HOME: home, USERPROFILE: home, CODEX_HOME: path.join(home, '.codex'),

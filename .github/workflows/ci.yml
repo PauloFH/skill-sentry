@@ -106,4 +106,4 @@ jobs:
           # The download-to-shell deny case runs only here: if the guard ever failed open, the real CLI would put
           # that command line on the process list, which antivirus on a developer machine may flag.
           SKILL_SENTRY_E2E_CRITICAL: '1'
-        run: node tools/ci/run-e2e.mjs test/e2e/install.test.mjs 29
+        run: node tools/ci/run-e2e.mjs test/e2e/install.test.mjs 31

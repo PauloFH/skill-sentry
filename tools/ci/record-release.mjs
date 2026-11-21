@@ -23,6 +23,14 @@ async function main(tag) {
   }
   const m = /^v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/.exec(tag);
   if (!m) { console.error(`record-release: not a release tag: ${JSON.stringify(tag)}`); return 1; }
+  // Escape hatch for a release whose tree can never be recorded (docs/RELEASING.md, "Recovery"):
+  // tools/ci/release/unrecordable.json maps "<version>" to the reason.
+  const skipFile = path.join(ROOT, 'tools', 'ci', 'release', 'unrecordable.json');
+  const skip = fs.existsSync(skipFile) ? JSON.parse(fs.readFileSync(skipFile, 'utf8')) : {};
+  if (Object.hasOwn(skip, m[1])) {
+    console.log(`record-release: ${m[1]} is listed in tools/ci/release/unrecordable.json (${skip[m[1]]}); not recorded`);
+    return 0;
+  }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ss-record-'));
   try {
     const a = spawnSync('git', ['-C', ROOT, 'archive', '--format=tar', tag], { maxBuffer: 256 * 1024 * 1024 });

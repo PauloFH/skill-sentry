@@ -6,4 +6,11 @@ updates:
     schedule:
       interval: weekly
     commit-message:
-      prefix: ci
+      prefix: "ci"
+  # The locked semantic-release toolchain of the release job (CI-only; the plugin itself has no dependencies).
+  - package-ecosystem: npm
+    directory: /tools/ci/release
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
