@@ -102,11 +102,19 @@ jobs:
         with:
           node-version: '22'
       - name: Install semantic-release
-        run: npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/semrel" $SEMANTIC_RELEASE_PACKAGES
+        run: |
+          mkdir -p "$RUNNER_TEMP/semrel" && echo '{"private":true}' > "$RUNNER_TEMP/semrel/package.json"
+          npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/semrel" $SEMANTIC_RELEASE_PACKAGES
+          # semantic-release resolves the plugins of an --extends config from the config's own dir.
+          cp tools/ci/release.config.cjs "$RUNNER_TEMP/semrel/release.config.cjs"
       - name: semantic-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: '"$RUNNER_TEMP/semrel/node_modules/.bin/semantic-release" --extends ./tools/ci/release.config.cjs'
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: '"$RUNNER_TEMP/semrel/node_modules/.bin/semantic-release" --extends "$RUNNER_TEMP/semrel/release.config.cjs"'
       - name: Result
         id: result
         run: |
@@ -140,13 +148,16 @@ jobs:
         with:
           node-version: '22'
       - name: Install semantic-release
-        run: npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/semrel" $SEMANTIC_RELEASE_PACKAGES
+        run: |
+          mkdir -p "$RUNNER_TEMP/semrel" && echo '{"private":true}' > "$RUNNER_TEMP/semrel/package.json"
+          npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/semrel" $SEMANTIC_RELEASE_PACKAGES
+          cp tools/ci/release.config.cjs "$RUNNER_TEMP/semrel/release.config.cjs"
       - name: semantic-release --dry-run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -o pipefail
-          "$RUNNER_TEMP/semrel/node_modules/.bin/semantic-release" --extends ./tools/ci/release.config.cjs \
+          "$RUNNER_TEMP/semrel/node_modules/.bin/semantic-release" --extends "$RUNNER_TEMP/semrel/release.config.cjs" \
             --dry-run --no-ci --branches "$GITHUB_REF_NAME" 2>&1 | tee "$RUNNER_TEMP/semrel.log"
           {
             echo "### semantic-release --dry-run on $GITHUB_REF_NAME"

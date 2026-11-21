@@ -1,6 +1,7 @@
-// semantic-release configuration, loaded by .github/workflows/release.yml with
-// `semantic-release --extends ./tools/ci/release.config.cjs`. CI-only: the tooling is installed in the release
-// job with pinned versions and is never a dependency of the plugin.
+// semantic-release configuration for .github/workflows/release.yml. CI-only: the release job installs the pinned
+// tooling into a tmp prefix, copies this file next to that node_modules (semantic-release resolves the plugins of
+// an --extends config from the config's dir) and runs `semantic-release --extends <copy>`. Never a dependency of
+// the plugin.
 //
 // Conventional Commits since the last v* tag decide the version (conventionalcommits preset): fix -> patch,
 // feat -> minor, a breaking change (`type!:` or a BREAKING CHANGE footer) -> major; docs, chore, ci, test,
